@@ -41,5 +41,26 @@ def intersect_ray_casting(rayOrigin,rayDir,seg):
     return None
 
 
+#emulates lidar scan, rotates 360 degrees
 def lidar_scan(pos,num_beans=120,max_range=15.0):
-    
+    #generates angles from 2 to 2pi
+    angles=np.linspace(0,2*np.pi,num_beans,endpoint=False)
+    #initialize distance array
+    dists=np.full(num_beans,max_range)
+
+    for i,theta in enumerate(angles):
+        rayDir=np.array([np.cos(theta),np.sin(theta)])
+        closest=max_range
+        
+        #for each wall check intersection
+        for seg in walls:
+            intersectionPoint=intersect_ray_casting(pos,rayDir,seg)
+            if intersectionPoint is not None:
+                dist=np.linalg.norm(intersectionPoint-pos)
+                if dist<closest:
+                    closest=dist
+
+        #update distance
+        dists[i]=closest
+
+    return angles,dists
