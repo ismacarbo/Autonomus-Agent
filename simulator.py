@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 
 #defining walls, segments of (x1, y1), (x2, y2)
@@ -64,3 +65,69 @@ def lidar_scan(pos,num_beans=120,max_range=15.0):
         dists[i]=closest
 
     return angles,dists
+
+def reactive_control(dists,angles,safe_dist=0.5,max_v=0.5,max_omega=1.0):
+    #find the angle with the minimum distance
+    N=len(dists)
+    mid=N//2
+
+    front_idxs=[(mid-1)%N ,mid, (mid+1)%N]
+    front_dists=dists[front_idxs]
+    front_angles=angles[front_idxs]
+
+    idx_min=front_dists.argmin()
+    min_angle=front_angles[idx_min]
+    min_dist=front_dists[idx_min]
+
+    if min_dist<safe_dist:
+        #obstacle too close: stop and turn away
+        v=0.0
+
+        omega=-np.sign(min_angle)*max_omega
+    else:
+        #obstacle far enough: move forward and turn to face the obstacle based on min_angle
+        #if obstacle is moved lateraly then min_angle will change
+        v=max_v*(min_dist/safe_dist) if min_dist<2*safe_dist else max_v
+        omega=-min_angle #turn to face the obstacle
+    return v,omega
+
+#plotting
+plt.ion()
+fig, ax = plt.subplots(figsize=(6,6))
+
+for seg in walls:
+    (x0, y0), (x1, y1) = seg
+    ax.plot([x0, x1], [y0, y1], 'k-')
+ax.set_xlim(-1, 11)
+ax.set_ylim(-1, 11)
+ax.set_aspect('equal')
+ax.set_title("LiDAR Simulation 2D")
+ax.set_xlabel("X"); ax.set_ylabel("Y")
+
+#trajectory of the robot
+traj_line, = ax.plot([], [], 'b.-', lw=1)
+robot_dot, = ax.plot([], [], 'ro', ms=8)
+
+dt = 0.1
+pos = np.array([5.0, 1.0])
+theta = np.pi/2
+trajectory = [pos.copy()]
+
+for _ in range(200):
+    angles, dists = lidar_scan(pos)
+    v, omega = reactive_control(dists, angles)
+
+    pos += np.array([np.cos(theta), np.sin(theta)]) * v * dt
+    theta += omega * dt
+    trajectory.append(pos.copy())
+
+    traj = np.array(trajectory)
+    traj_line.set_data(traj[:,0], traj[:,1])
+    robot_dot.set_data([pos[0]], [pos[1]])
+
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+    time.sleep(dt)
+
+plt.ioff()
+plt.show()
