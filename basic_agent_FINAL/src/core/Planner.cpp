@@ -28,4 +28,14 @@ Manoeuvre Planner::buildLongitudinal(const ScenarioMsg& s) {
     out.tf = T2;
     out.af = 0.0;
   }
+
+  double Tmin = 0.0, Tmax = std::max(0.0, s.trafficLight.timeToChange);
+  pass_primitive(vel, acc, s.trafficLight.dist, 3.0, 15.0, Tmin, Tmax, coeffsT2, &v2, &T2, coeffsT1, &v1, &T1);
+
+  const bool chooseT1 = std::fabs(coeffsT2[3]) > std::fabs(coeffsT1[3]);
+  out.sf = s.trafficLight.dist;
+  out.vf = chooseT1 ? v1 : v2;
+  out.tf = chooseT1 ? T1 : T2;
+  out.af = 0.0;
+  return out;
 }
