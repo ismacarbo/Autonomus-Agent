@@ -6,6 +6,9 @@ extern "C" {
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <iomanip>
+#include <iostream>
 
 Manoeuvre Planner::plan(const ScenarioMsg& s) { return buildLongitudinal(s); }
 

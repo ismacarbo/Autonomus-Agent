@@ -1,6 +1,6 @@
 file(REMOVE_RECURSE
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/primitives"
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/primitives.pdb"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/primitives"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/primitives.pdb"
   "CMakeFiles/primitives.dir/log/logvars.cc.o"
   "CMakeFiles/primitives.dir/log/logvars.cc.o.d"
   "CMakeFiles/primitives.dir/log/screen_print.c.o"

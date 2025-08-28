@@ -1,6 +1,6 @@
 file(REMOVE_RECURSE
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/acc_brake"
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/acc_brake.pdb"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/acc_brake"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/acc_brake.pdb"
   "CMakeFiles/acc_brake.dir/log/logvars.cc.o"
   "CMakeFiles/acc_brake.dir/log/logvars.cc.o.d"
   "CMakeFiles/acc_brake.dir/log/screen_print.c.o"

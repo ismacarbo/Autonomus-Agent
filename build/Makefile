@@ -207,6 +207,19 @@ test_traffic_light/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/build
 .PHONY : test_traffic_light/fast
 
+#=============================================================================
+# Target rules for targets named modular_agent_class
+
+# Build rule for target.
+modular_agent_class: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 modular_agent_class
+.PHONY : modular_agent_class
+
+# fast build rule for target.
+modular_agent_class/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/build
+.PHONY : modular_agent_class/fast
+
 basic_agent.o: basic_agent.cc.o
 .PHONY : basic_agent.o
 
@@ -231,6 +244,126 @@ basic_agent.cc.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/basic_agent.dir/build.make CMakeFiles/basic_agent.dir/basic_agent.cc.s
 .PHONY : basic_agent.cc.s
 
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.o: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.o
+
+# target to build an object file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.o
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.i: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.i
+
+# target to preprocess a source file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.i
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.s: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.s
+
+# target to generate assembly for a file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.cpp.s
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.o: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.o
+
+# target to build an object file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.o
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.i: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.i
+
+# target to preprocess a source file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.i
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.s: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.s
+
+# target to generate assembly for a file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.cpp.s
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.o: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.o
+
+# target to build an object file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.o
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.i: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.i
+
+# target to preprocess a source file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.i
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.s: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.s
+
+# target to generate assembly for a file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.cpp.s
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.o: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.o
+
+# target to build an object file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.o
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.i: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.i
+
+# target to preprocess a source file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.i
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.s: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.s
+
+# target to generate assembly for a file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.cpp.s
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.o: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.o
+
+# target to build an object file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.o
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.o
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.i: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.i
+
+# target to preprocess a source file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.i
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.i
+
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.s: home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.s
+
+# target to generate assembly for a file
+home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.s
+.PHONY : home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.cpp.s
+
 log/logvars.o: log/logvars.cc.o
 .PHONY : log/logvars.o
 
@@ -243,6 +376,7 @@ log/logvars.cc.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/log/logvars.cc.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/log/logvars.cc.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/log/logvars.cc.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/log/logvars.cc.o
 .PHONY : log/logvars.cc.o
 
 log/logvars.i: log/logvars.cc.i
@@ -257,6 +391,7 @@ log/logvars.cc.i:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/log/logvars.cc.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/log/logvars.cc.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/log/logvars.cc.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/log/logvars.cc.i
 .PHONY : log/logvars.cc.i
 
 log/logvars.s: log/logvars.cc.s
@@ -271,6 +406,7 @@ log/logvars.cc.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/log/logvars.cc.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/log/logvars.cc.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/log/logvars.cc.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/log/logvars.cc.s
 .PHONY : log/logvars.cc.s
 
 log/screen_print.o: log/screen_print.c.o
@@ -285,6 +421,7 @@ log/screen_print.c.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/log/screen_print.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/log/screen_print.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/log/screen_print.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/log/screen_print.c.o
 .PHONY : log/screen_print.c.o
 
 log/screen_print.i: log/screen_print.c.i
@@ -299,6 +436,7 @@ log/screen_print.c.i:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/log/screen_print.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/log/screen_print.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/log/screen_print.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/log/screen_print.c.i
 .PHONY : log/screen_print.c.i
 
 log/screen_print.s: log/screen_print.c.s
@@ -313,6 +451,7 @@ log/screen_print.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/log/screen_print.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/log/screen_print.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/log/screen_print.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/log/screen_print.c.s
 .PHONY : log/screen_print.c.s
 
 matlab/codegen/lib/primitives/primitives.o: matlab/codegen/lib/primitives/primitives.c.o
@@ -327,6 +466,7 @@ matlab/codegen/lib/primitives/primitives.c.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/primitives.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/primitives.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/primitives.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/matlab/codegen/lib/primitives/primitives.c.o
 .PHONY : matlab/codegen/lib/primitives/primitives.c.o
 
 matlab/codegen/lib/primitives/primitives.i: matlab/codegen/lib/primitives/primitives.c.i
@@ -341,6 +481,7 @@ matlab/codegen/lib/primitives/primitives.c.i:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/primitives.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/primitives.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/primitives.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/matlab/codegen/lib/primitives/primitives.c.i
 .PHONY : matlab/codegen/lib/primitives/primitives.c.i
 
 matlab/codegen/lib/primitives/primitives.s: matlab/codegen/lib/primitives/primitives.c.s
@@ -355,6 +496,7 @@ matlab/codegen/lib/primitives/primitives.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/primitives.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/primitives.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/primitives.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/matlab/codegen/lib/primitives/primitives.c.s
 .PHONY : matlab/codegen/lib/primitives/primitives.c.s
 
 matlab/codegen/lib/primitives/rt_nonfinite.o: matlab/codegen/lib/primitives/rt_nonfinite.c.o
@@ -369,6 +511,7 @@ matlab/codegen/lib/primitives/rt_nonfinite.c.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o
 .PHONY : matlab/codegen/lib/primitives/rt_nonfinite.c.o
 
 matlab/codegen/lib/primitives/rt_nonfinite.i: matlab/codegen/lib/primitives/rt_nonfinite.c.i
@@ -383,6 +526,7 @@ matlab/codegen/lib/primitives/rt_nonfinite.c.i:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i
 .PHONY : matlab/codegen/lib/primitives/rt_nonfinite.c.i
 
 matlab/codegen/lib/primitives/rt_nonfinite.s: matlab/codegen/lib/primitives/rt_nonfinite.c.s
@@ -397,6 +541,7 @@ matlab/codegen/lib/primitives/rt_nonfinite.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_primitive_stop.dir/build.make CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/primitives.dir/build.make CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_traffic_light.dir/build.make CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/modular_agent_class.dir/build.make CMakeFiles/modular_agent_class.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s
 .PHONY : matlab/codegen/lib/primitives/rt_nonfinite.c.s
 
 preliminary_works/acc_brake/test_acc_brake.o: preliminary_works/acc_brake/test_acc_brake.cc.o
@@ -554,6 +699,7 @@ help:
 	@echo "... acc_brake"
 	@echo "... basic_agent"
 	@echo "... constant_acc"
+	@echo "... modular_agent_class"
 	@echo "... primitives"
 	@echo "... test_primitive_pass"
 	@echo "... test_primitive_stop"
@@ -561,6 +707,21 @@ help:
 	@echo "... basic_agent.o"
 	@echo "... basic_agent.i"
 	@echo "... basic_agent.s"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.o"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.i"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Agent.s"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.o"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.i"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Controller.s"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.o"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.i"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/core/Planner.s"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.o"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.i"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/main.s"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.o"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.i"
+	@echo "... home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/src/net/UDPSocket.s"
 	@echo "... log/logvars.o"
 	@echo "... log/logvars.i"
 	@echo "... log/logvars.s"

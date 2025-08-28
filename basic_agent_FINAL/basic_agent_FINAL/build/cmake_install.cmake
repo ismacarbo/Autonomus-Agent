@@ -1,4 +1,4 @@
-# Install script for directory: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL
+# Install script for directory: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -57,6 +57,6 @@ endif()
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-  file(WRITE "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

@@ -13,5 +13,5 @@ CXX_DEFINES = -DDEBUG -DLOG_INTERNAL
 
 CXX_INCLUDES = -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib
 
-CXX_FLAGS = -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER
+CXX_FLAGS = -g -std=c++17   -O2 -DNOT_INLINED -DSERVER
 

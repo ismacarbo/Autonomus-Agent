@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL
+CMAKE_SOURCE_DIR = /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build
+CMAKE_BINARY_DIR = /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build
 
 # Include any dependencies generated for this target.
 include CMakeFiles/constant_acc.dir/depend.make
@@ -70,74 +70,74 @@ include CMakeFiles/constant_acc.dir/progress.make
 include CMakeFiles/constant_acc.dir/flags.make
 
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o: CMakeFiles/constant_acc.dir/flags.make
-CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c
+CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o: CMakeFiles/constant_acc.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building C object CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -MF CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o.d -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building C object CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -MF CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o.d -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c
 
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c > CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c > CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.i
 
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.s
 
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o: CMakeFiles/constant_acc.dir/flags.make
-CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c
+CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o: CMakeFiles/constant_acc.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building C object CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o -MF CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o.d -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building C object CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o -MF CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o.d -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c
 
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c > CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c > CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.i
 
 CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.s
 
 CMakeFiles/constant_acc.dir/log/screen_print.c.o: CMakeFiles/constant_acc.dir/flags.make
-CMakeFiles/constant_acc.dir/log/screen_print.c.o: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c
+CMakeFiles/constant_acc.dir/log/screen_print.c.o: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c
 CMakeFiles/constant_acc.dir/log/screen_print.c.o: CMakeFiles/constant_acc.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object CMakeFiles/constant_acc.dir/log/screen_print.c.o"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/log/screen_print.c.o -MF CMakeFiles/constant_acc.dir/log/screen_print.c.o.d -o CMakeFiles/constant_acc.dir/log/screen_print.c.o -c /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object CMakeFiles/constant_acc.dir/log/screen_print.c.o"
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/log/screen_print.c.o -MF CMakeFiles/constant_acc.dir/log/screen_print.c.o.d -o CMakeFiles/constant_acc.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c
 
 CMakeFiles/constant_acc.dir/log/screen_print.c.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/constant_acc.dir/log/screen_print.c.i"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c > CMakeFiles/constant_acc.dir/log/screen_print.c.i
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c > CMakeFiles/constant_acc.dir/log/screen_print.c.i
 
 CMakeFiles/constant_acc.dir/log/screen_print.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/constant_acc.dir/log/screen_print.c.s"
-	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c -o CMakeFiles/constant_acc.dir/log/screen_print.c.s
+	/usr/bin/clang $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c -o CMakeFiles/constant_acc.dir/log/screen_print.c.s
 
 CMakeFiles/constant_acc.dir/log/logvars.cc.o: CMakeFiles/constant_acc.dir/flags.make
-CMakeFiles/constant_acc.dir/log/logvars.cc.o: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc
+CMakeFiles/constant_acc.dir/log/logvars.cc.o: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc
 CMakeFiles/constant_acc.dir/log/logvars.cc.o: CMakeFiles/constant_acc.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/constant_acc.dir/log/logvars.cc.o"
-	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/log/logvars.cc.o -MF CMakeFiles/constant_acc.dir/log/logvars.cc.o.d -o CMakeFiles/constant_acc.dir/log/logvars.cc.o -c /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/constant_acc.dir/log/logvars.cc.o"
+	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/log/logvars.cc.o -MF CMakeFiles/constant_acc.dir/log/logvars.cc.o.d -o CMakeFiles/constant_acc.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc
 
 CMakeFiles/constant_acc.dir/log/logvars.cc.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/constant_acc.dir/log/logvars.cc.i"
-	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc > CMakeFiles/constant_acc.dir/log/logvars.cc.i
+	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc > CMakeFiles/constant_acc.dir/log/logvars.cc.i
 
 CMakeFiles/constant_acc.dir/log/logvars.cc.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/constant_acc.dir/log/logvars.cc.s"
-	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc -o CMakeFiles/constant_acc.dir/log/logvars.cc.s
+	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc -o CMakeFiles/constant_acc.dir/log/logvars.cc.s
 
 CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o: CMakeFiles/constant_acc.dir/flags.make
-CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc
+CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc
 CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o: CMakeFiles/constant_acc.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o"
-	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o -MF CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o.d -o CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o -c /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o"
+	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o -MF CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o.d -o CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc
 
 CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.i"
-	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc > CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.i
+	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc > CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.i
 
 CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.s"
-	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc -o CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.s
+	/usr/bin/clang++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc -o CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.s
 
 # Object files for target constant_acc
 constant_acc_OBJECTS = \
@@ -150,19 +150,19 @@ constant_acc_OBJECTS = \
 # External object files for target constant_acc
 constant_acc_EXTERNAL_OBJECTS =
 
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/log/screen_print.c.o
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/log/logvars.cc.o
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/build.make
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/lib/linux/libagent_lib.a
-/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Linking CXX executable /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc"
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/log/screen_print.c.o
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/log/logvars.cc.o
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/build.make
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib/linux/libagent_lib.a
+/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc: CMakeFiles/constant_acc.dir/link.txt
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Linking CXX executable /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/constant_acc.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
-CMakeFiles/constant_acc.dir/build: /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc
+CMakeFiles/constant_acc.dir/build: /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/constant_acc
 .PHONY : CMakeFiles/constant_acc.dir/build
 
 CMakeFiles/constant_acc.dir/clean:
@@ -170,6 +170,6 @@ CMakeFiles/constant_acc.dir/clean:
 .PHONY : CMakeFiles/constant_acc.dir/clean
 
 CMakeFiles/constant_acc.dir/depend:
-	cd /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles/constant_acc.dir/DependInfo.cmake "--color=$(COLOR)"
+	cd /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/build/CMakeFiles/constant_acc.dir/DependInfo.cmake "--color=$(COLOR)"
 .PHONY : CMakeFiles/constant_acc.dir/depend
 

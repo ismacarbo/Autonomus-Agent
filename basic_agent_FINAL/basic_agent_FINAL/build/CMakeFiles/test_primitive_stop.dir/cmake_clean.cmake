@@ -1,6 +1,6 @@
 file(REMOVE_RECURSE
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/test_primitive_stop"
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/test_primitive_stop.pdb"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/test_primitive_stop"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/test_primitive_stop.pdb"
   "CMakeFiles/test_primitive_stop.dir/log/logvars.cc.o"
   "CMakeFiles/test_primitive_stop.dir/log/logvars.cc.o.d"
   "CMakeFiles/test_primitive_stop.dir/log/screen_print.c.o"

@@ -1,0 +1,123 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-f5ebdc15457944623624.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.5"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "basic_agent",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "acc_brake::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-acc_brake-Debug-316ba7161add01680020.json",
+					"name" : "acc_brake",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "basic_agent::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-basic_agent-Debug-d3a7283c74cb72185005.json",
+					"name" : "basic_agent",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "constant_acc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-constant_acc-Debug-abdfb681c39e03f6f474.json",
+					"name" : "constant_acc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "modular_agent_class::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-modular_agent_class-Debug-8ac5aca22013979d74e1.json",
+					"name" : "modular_agent_class",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "primitives::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-primitives-Debug-1fc4afd93fc6b5338a96.json",
+					"name" : "primitives",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_primitive_pass::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_primitive_pass-Debug-070e27944d280040b6c1.json",
+					"name" : "test_primitive_pass",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_primitive_stop::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_primitive_stop-Debug-4f7573a5142e0c239c6a.json",
+					"name" : "test_primitive_stop",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_traffic_light::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_traffic_light-Debug-19e87846ba8bb89b1c76.json",
+					"name" : "test_traffic_light",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/isma/Desktop/Autonomus-Agent/build",
+		"source" : "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 7
+	}
+}

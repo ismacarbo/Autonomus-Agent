@@ -62,4 +62,5 @@ set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/test_primitive_stop.dir/DependInfo.cmake"
   "CMakeFiles/primitives.dir/DependInfo.cmake"
   "CMakeFiles/test_traffic_light.dir/DependInfo.cmake"
+  "CMakeFiles/modular_agent_class.dir/DependInfo.cmake"
   )

@@ -1,6 +1,6 @@
 file(REMOVE_RECURSE
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/test_traffic_light"
-  "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/bin/test_traffic_light.pdb"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/test_traffic_light"
+  "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/bin/test_traffic_light.pdb"
   "CMakeFiles/test_traffic_light.dir/log/logvars.cc.o"
   "CMakeFiles/test_traffic_light.dir/log/logvars.cc.o.d"
   "CMakeFiles/test_traffic_light.dir/log/screen_print.c.o"

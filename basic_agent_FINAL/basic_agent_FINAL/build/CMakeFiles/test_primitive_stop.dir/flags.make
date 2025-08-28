@@ -5,13 +5,13 @@
 # compile CXX with /usr/bin/clang++
 C_DEFINES = -DLOG_INTERNAL
 
-C_INCLUDES = -I/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/lib
+C_INCLUDES = -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib
 
 C_FLAGS =   -O2 -DNOT_INLINED -DSERVER
 
 CXX_DEFINES = -DLOG_INTERNAL
 
-CXX_INCLUDES = -I/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL/lib
+CXX_INCLUDES = -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib
 
-CXX_FLAGS = -std=gnu++11   -O2 -DNOT_INLINED -DSERVER
+CXX_FLAGS = -std=c++17   -O2 -DNOT_INLINED -DSERVER
 
