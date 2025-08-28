@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-#include "model/Msgs.h"
+#include "../model/Msgs.h"
 
 extern "C" {
 #include "server_lib.h"

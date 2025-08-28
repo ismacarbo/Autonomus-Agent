@@ -8,5 +8,8 @@
     },
     "C_Cpp.clang_format_style": "file",
     "editor.formatOnSave": true,
-    "C_Cpp.errorSquiggles": "enabled"
+    "C_Cpp.errorSquiggles": "enabled",
+    "files.associations": {
+        "format": "cpp"
+    }
 }
