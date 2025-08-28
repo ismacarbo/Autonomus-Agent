@@ -1,0 +1,212 @@
+[
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/basic_agent.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "output": "CMakeFiles/basic_agent.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/basic_agent.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "output": "CMakeFiles/basic_agent.dir/matlab/codegen/lib/primitives/primitives.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/basic_agent.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "output": "CMakeFiles/basic_agent.dir/log/screen_print.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/basic_agent.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "output": "CMakeFiles/basic_agent.dir/log/logvars.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/basic_agent.dir/basic_agent.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/basic_agent.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/basic_agent.cc",
+  "output": "CMakeFiles/basic_agent.dir/basic_agent.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "output": "CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "output": "CMakeFiles/constant_acc.dir/matlab/codegen/lib/primitives/primitives.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/constant_acc.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "output": "CMakeFiles/constant_acc.dir/log/screen_print.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/constant_acc.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "output": "CMakeFiles/constant_acc.dir/log/logvars.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/constant_acc/test_constant_acc.cc",
+  "output": "CMakeFiles/constant_acc.dir/preliminary_works/constant_acc/test_constant_acc.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/acc_brake.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "output": "CMakeFiles/acc_brake.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/acc_brake.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "output": "CMakeFiles/acc_brake.dir/matlab/codegen/lib/primitives/primitives.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/acc_brake.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "output": "CMakeFiles/acc_brake.dir/log/screen_print.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/acc_brake.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "output": "CMakeFiles/acc_brake.dir/log/logvars.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/acc_brake.dir/preliminary_works/acc_brake/test_acc_brake.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/acc_brake/test_acc_brake.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/acc_brake/test_acc_brake.cc",
+  "output": "CMakeFiles/acc_brake.dir/preliminary_works/acc_brake/test_acc_brake.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_pass.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "output": "CMakeFiles/test_primitive_pass.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_pass.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "output": "CMakeFiles/test_primitive_pass.dir/matlab/codegen/lib/primitives/primitives.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_pass.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "output": "CMakeFiles/test_primitive_pass.dir/log/screen_print.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_pass.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "output": "CMakeFiles/test_primitive_pass.dir/log/logvars.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_pass.dir/preliminary_works/test_pass/test_primitive_pass.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/test_pass/test_primitive_pass.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/test_pass/test_primitive_pass.cc",
+  "output": "CMakeFiles/test_primitive_pass.dir/preliminary_works/test_pass/test_primitive_pass.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "output": "CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "output": "CMakeFiles/test_primitive_stop.dir/matlab/codegen/lib/primitives/primitives.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_stop.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "output": "CMakeFiles/test_primitive_stop.dir/log/screen_print.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_stop.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "output": "CMakeFiles/test_primitive_stop.dir/log/logvars.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_primitive_stop.dir/preliminary_works/test_pass_stop/test_primitive_pass_stop.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/test_pass_stop/test_primitive_pass_stop.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/test_pass_stop/test_primitive_pass_stop.cc",
+  "output": "CMakeFiles/test_primitive_stop.dir/preliminary_works/test_pass_stop/test_primitive_pass_stop.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "output": "CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "output": "CMakeFiles/primitives.dir/matlab/codegen/lib/primitives/primitives.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/primitives.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "output": "CMakeFiles/primitives.dir/log/screen_print.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/primitives.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "output": "CMakeFiles/primitives.dir/log/logvars.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/primitives.dir/preliminary_works/primitives/test_primitives.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/primitives/test_primitives.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/primitives/test_primitives.cc",
+  "output": "CMakeFiles/primitives.dir/preliminary_works/primitives/test_primitives.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/rt_nonfinite.c",
+  "output": "CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/rt_nonfinite.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/primitives.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives/primitives.c",
+  "output": "CMakeFiles/test_traffic_light.dir/matlab/codegen/lib/primitives/primitives.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_traffic_light.dir/log/screen_print.c.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/screen_print.c",
+  "output": "CMakeFiles/test_traffic_light.dir/log/screen_print.c.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_traffic_light.dir/log/logvars.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log/logvars.cc",
+  "output": "CMakeFiles/test_traffic_light.dir/log/logvars.cc.o"
+},
+{
+  "directory": "/home/isma/Desktop/Autonomus-Agent/build",
+  "command": "/usr/bin/clang++ -DDEBUG -DLOG_INTERNAL -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab/codegen/lib/primitives -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/matlab -I/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/log -isystem /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/lib -g -std=gnu++11   -O2 -DNOT_INLINED -DSERVER -o CMakeFiles/test_traffic_light.dir/preliminary_works/traffic_light/test_traffic_light.cc.o -c /home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/traffic_light/test_traffic_light.cc",
+  "file": "/home/isma/Desktop/Autonomus-Agent/basic_agent_FINAL/basic_agent_FINAL/preliminary_works/traffic_light/test_traffic_light.cc",
+  "output": "CMakeFiles/test_traffic_light.dir/preliminary_works/traffic_light/test_traffic_light.cc.o"
+}
+]

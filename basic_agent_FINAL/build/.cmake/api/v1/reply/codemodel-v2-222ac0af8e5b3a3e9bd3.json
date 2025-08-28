@@ -1,0 +1,114 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-f5ebdc15457944623624.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.5"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "basic_agent",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "acc_brake::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-acc_brake-Debug-28a9cf7e70afcc22bf04.json",
+					"name" : "acc_brake",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "basic_agent::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-basic_agent-Debug-74b72bcc8957117004f6.json",
+					"name" : "basic_agent",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "constant_acc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-constant_acc-Debug-f38fe2c99f7f4c09017f.json",
+					"name" : "constant_acc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "primitives::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-primitives-Debug-96d7ac0fe975cc4e41ab.json",
+					"name" : "primitives",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_primitive_pass::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_primitive_pass-Debug-4bc6a1e77c77a4891109.json",
+					"name" : "test_primitive_pass",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_primitive_stop::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_primitive_stop-Debug-38e2f8c76a77d8797f5f.json",
+					"name" : "test_primitive_stop",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_traffic_light::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_traffic_light-Debug-33dab9b24d3ca17347ad.json",
+					"name" : "test_traffic_light",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/isma/Desktop/basic_agent_FINAL/build",
+		"source" : "/home/isma/Desktop/basic_agent_FINAL/basic_agent_FINAL"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 7
+	}
+}
