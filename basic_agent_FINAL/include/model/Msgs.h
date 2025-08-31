@@ -26,13 +26,6 @@ struct VehicleState {
   double latOfsLineLeft{0};
   double requestedCruising{0};
 };
-
-struct TrafficLightInfo {
-  std::string state{"unknown"};  // green, yellow, red
-  double dist{0};                // [m]
-  double timeToChange{0};        // [s]
-};
-
 struct ScenarioMsg {
   // real world data
   VehicleState vehicleState;
