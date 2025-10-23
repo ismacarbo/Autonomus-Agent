@@ -7,7 +7,7 @@ class Controller {
   double computeAccel(const VehicleState& x, const Manoeuvre& m);
 
   // TODO: implement pure pursuit/stanley
-  double computeSteer(const VehicleState& /*x*/, const Manoeuvre& /*m*/) { return 0.0; }
+  double computeSteer(const VehicleState& x) const;
 
  private:
   // PID PARAMS
@@ -17,7 +17,8 @@ class Controller {
   // integ v: integrator state
   // prev err v: previous error
   double kp_v{0.02}, ki_v{1.0}, kd_v{0.0};
-  double integ_v{0.0}, prev_err_v{0.0};
+  double integral{0.0}, prev_err_v{0.0};
+  double old_req_acc{0.0};
 
   // saturations of the actuators
   const double minAcc{-10.0}, maxAcc{5.0};

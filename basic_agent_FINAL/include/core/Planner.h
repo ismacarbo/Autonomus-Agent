@@ -1,5 +1,6 @@
 #pragma once
-#include "../model/Msgs.h"
+#include "core/TrafficLightLogic.h"
+#include "model/Msgs.h"
 
 class Planner {
  public:
@@ -7,5 +8,5 @@ class Planner {
 
  private:
   Manoeuvre buildLongitudinal(const ScenarioMsg& s);
-  void buildLateral(const ScenarioMsg /*s*/) { /* TODO in futuro */ }
+  Manoeuvre buildLateral(const ScenarioMsg& s);
 };

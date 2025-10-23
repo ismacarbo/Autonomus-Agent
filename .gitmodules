@@ -1,0 +1,3 @@
+[submodule "third_party/progettotesi"]
+	path = third_party/progettotesi
+	url = git@github.com:SabrinaCiuffo/ProgettoTesi.git
