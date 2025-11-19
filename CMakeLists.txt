@@ -22,10 +22,10 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_custom_target(run_sim
   COMMAND ${CMAKE_COMMAND} -E env
           PYTHONPATH=${CMAKE_BINARY_DIR}/generalEnv/bindings:$ENV{PYTHONPATH}
-          ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/generalEnv/main_lateral.py
+          ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/generalEnv/main.py
   DEPENDS gp_lat
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  COMMENT "Running Python simulator (main_lateral.py) with gp_lat in PYTHONPATH"
+  COMMENT "Running Python simulator (main.py) with gp_lat in PYTHONPATH"
 )
 
 # ------------------------------------------------------------------

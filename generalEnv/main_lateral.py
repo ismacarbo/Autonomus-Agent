@@ -1,4 +1,3 @@
-# main_lateral.py (sostituisci dove serve)
 import math, pygame
 from collections import deque
 from frenet_plant import FrenetLateralPlant
@@ -26,10 +25,9 @@ def main():
     paused = False
     running = True
 
-    # camera lag + trail + history
     cam_s = 0.0
-    trail = deque(maxlen=150)     # ultimi 150 punti nel mondo
-    hist  = deque(maxlen=800)     # per mini-map
+    trail = deque(maxlen=150)     # last 150 points in the world
+    hist  = deque(maxlen=800)     # for mini-map
 
     while running:
         for e in pygame.event.get():
@@ -51,12 +49,9 @@ def main():
         if not paused:
             plant.step()
 
-        # camera lag
         s, n, b, c = plant.x
         cam_s = 0.92*cam_s + 0.08*s
         ORIGIN = camera_origin(cam_s)
-
-        # buffer storici
         trail.append((s, n))
         hist.append((s, n))
 
