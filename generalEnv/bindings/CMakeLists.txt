@@ -14,12 +14,14 @@ set(SABRINA_SRC
   ${SABRINA_ROOT}/mini_lat_codriver/mini_codriver_lib.cpp
   ${SABRINA_ROOT}/mini_lat_codriver/find_minima.cpp
   ${SABRINA_ROOT}/lib/lat/opt_lat_U.cpp
+  ${SABRINA_ROOT}/action_selection.cpp
 )
 
 add_library(minicodriver STATIC ${SABRINA_SRC})
 target_include_directories(minicodriver PUBLIC
   ${SABRINA_ROOT}/mini_lat_codriver
   ${SABRINA_ROOT}/lib/lat
+  ${SABRINA_ROOT}
 )
 
 pybind11_add_module(gp_lat pybind.cpp)
