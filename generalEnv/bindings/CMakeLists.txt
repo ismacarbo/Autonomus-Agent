@@ -15,11 +15,6 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(rerun_sdk)
 
 set(SABRINA_ROOT ${CMAKE_SOURCE_DIR}/third_party/progettotesi)
-
-# -----------------------------
-# Sabrina libs (come nel suo repo)
-# -----------------------------
-
 add_library(trajectory STATIC
   ${SABRINA_ROOT}/lib/lat/opt_lat_U.cpp
   ${SABRINA_ROOT}/lib/long/opt_long_U.cpp
@@ -50,11 +45,9 @@ target_include_directories(mini_codriver_lib PUBLIC
   ${SABRINA_ROOT}/lib/lat
 )
 
-target_link_libraries(mini_codriver_lib PUBLIC trajectory)   # di solito serve
+target_link_libraries(mini_codriver_lib PUBLIC trajectory)
 
 
-
-# include dirs (directory, NON file)
 target_include_directories(trajectory PUBLIC
   ${SABRINA_ROOT}
   ${SABRINA_ROOT}/lib
@@ -82,7 +75,6 @@ target_include_directories(action_selection PUBLIC
   ${SABRINA_ROOT}/lib
 )
 
-# link deps (come Sabrina)
 target_link_libraries(long_primitives PUBLIC trajectory)
 target_link_libraries(salience PUBLIC trajectory long_primitives)
 target_link_libraries(action_selection PUBLIC salience rerun_sdk)
