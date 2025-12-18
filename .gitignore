@@ -26,6 +26,8 @@ venv/
 env/
 .micromamba/
 .mamba/
+.gitmodules
+pygame
 
 # Logs / temp
 *.log
