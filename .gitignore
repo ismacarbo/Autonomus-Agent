@@ -1,2 +1,36 @@
+# scripts/utilities
 commiter.sh
+
+# build artifacts
 build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+
+# Native modules / binaries
+*.so
+*.pyd
+*.dll
+*.dylib
+
+# Local envs (add/remove as needed)
+.venv/
+venv/
+env/
+.micromamba/
+.mamba/
+
+# Logs / temp
+*.log
+*.tmp
+
+# Rerun recordings (if you ever save them)
+*.rrd
+*.rbl
+rerun/

@@ -11,53 +11,43 @@ def rk4_step(f, x, t, dt):
 @dataclass
 class LongitudinalPlant:
     dt: float = 0.01
-
     s0: float = 0.0
     v0: float = 0.0
     a0: float = 0.0
 
-    # reference velocity
-    v_ref: float = 15.0 / 3.6  # 15 km/h ~ 4.17 m/s
-
-    # fake gains for jerk controller: j = k_v*(v_ref - v) - k_a*a
-    k_v: float = 2.0
-    k_a: float = 0.8
-    j_clip: float = 2.0    # jerk max [m/s^3]
+    v_min: float = 0.0        
+    v_max: float = 50.0       
 
     def __post_init__(self):
         self.reset(self.s0, self.v0, self.a0)
 
     def reset(self, s0=0.0, v0=0.0, a0=0.0):
-        self.x = np.array([s0, v0, a0], dtype=float)  # [s, v, a]
+        self.x = np.array([s0, v0, a0], dtype=float)  
         self.t = 0.0
 
-    def j_of_t(self):
-        s, v, a = self.x
-        e_v = self.v_ref - v
-        j = self.k_v * e_v - self.k_a * a
-        return float(np.clip(j, -self.j_clip, +self.j_clip))
-
-    def f(self, t, x):
+    def f_cmd(self, t, x, j_cmd):
         s, v, a = x
-        j = self.j_of_t()
         ds = v
         dv = a
-        da = j
+        da = float(j_cmd)
         return np.array([ds, dv, da], dtype=float)
 
-    def step(self):
-        self.x = rk4_step(self.f, self.x, self.t, self.dt)
+    def step(self, j_cmd=0.0):
+        self.x = rk4_step(lambda t, x: self.f_cmd(t, x, j_cmd), self.x, self.t, self.dt)
         self.t += self.dt
+
+        
+        s, v, a = self.x
+        if v < self.v_min:
+            v = self.v_min
+            a = 0.0
+        if v > self.v_max:
+            v = self.v_max
+            a = 0.0
+        self.x = np.array([s, v, a], dtype=float)
+
         return self.x
 
-    def pose_for_render(self):
+    def pose_for_render(self, j_used=0.0):
         s, v, a = self.x
-        n = 0.0
-        yaw = 0.0
-        V = v
-        # diagnostic info for HUD
-        return [s, n, yaw, V], {
-            "v": float(v),
-            "a": float(a),
-            "j": float(self.j_of_t()),
-        }
+        return [s, 0.0, 0.0, v], {"v": float(v), "a": float(a), "j": float(j_used)}

@@ -17,7 +17,7 @@ class FrenetLateralPlant:
     dt: float = 0.01      # sample time = 0.01 s
 
     T_max: float = 20.0
-    n_ref: float = 0.0    # lateral target
+    n_ref: float = 1.0    # lateral target
 
     # only used if gp_lat is not available
     k_n: float = 0.8
@@ -45,10 +45,10 @@ class FrenetLateralPlant:
         lim = self.r_clip * (self.V**2)
         return float(np.clip(r_val, -lim, +lim))
 
-    def step(self):
+    def step(self, r_cmd=None):
         s, n, b, c = self.x
 
-        r = self.compute_r(self.x)
+        r = self.compute_r(self.x) if r_cmd is None else float(r_cmd)
 
         V  = self.V
         ds = V
@@ -61,6 +61,7 @@ class FrenetLateralPlant:
         self.x = self.x + self.dt * dx
         self.t += self.dt
         return self.x
+
 
     def pose_for_render(self):
         s, n, b, c = self.x

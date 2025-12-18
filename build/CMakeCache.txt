@@ -189,18 +189,43 @@ CMAKE_TAPI:FILEPATH=CMAKE_TAPI-NOTFOUND
 // Studio IDE projects all commands are done without /nologo.
 CMAKE_VERBOSE_MAKEFILE:BOOL=FALSE
 
-//Overwrite cached values read from Python library (classic search).
-// Turn off if cross-compiling and manually setting these values.
-PYBIND11_PYTHONLIBS_OVERWRITE:BOOL=ON
+//Directory under which to collect all populated content
+FETCHCONTENT_BASE_DIR:PATH=/home/isma/Desktop/Autonomus-Agent/build/_deps
 
-//Python version to use for compiling modules
-PYBIND11_PYTHON_VERSION:STRING=
+//Disables all attempts to download or update content and assumes
+// source dirs already exist
+FETCHCONTENT_FULLY_DISCONNECTED:BOOL=OFF
 
-//Path to a program.
-PYTHON_EXECUTABLE:FILEPATH=/usr/bin/python3
+//Enables QUIET option for all content population
+FETCHCONTENT_QUIET:BOOL=ON
 
-//Path to a library.
-PYTHON_LIBRARY:FILEPATH=/usr/lib64/libpython3.13.so
+//When not empty, overrides where to find pre-populated content
+// for rerun_sdk
+FETCHCONTENT_SOURCE_DIR_RERUN_SDK:PATH=
+
+//Enables UPDATE_DISCONNECTED behavior for all content population
+FETCHCONTENT_UPDATES_DISCONNECTED:BOOL=OFF
+
+//Enables UPDATE_DISCONNECTED behavior just for population of rerun_sdk
+FETCHCONTENT_UPDATES_DISCONNECTED_RERUN_SDK:BOOL=OFF
+
+//Link to the Arrow shared library.
+RERUN_ARROW_LINK_SHARED:BOOL=OFF
+
+//Rerun include & source directory
+RERUN_CPP_SOURCE_DIR:PATH=/home/isma/Desktop/Autonomus-Agent/build/_deps/rerun_sdk-src/src
+
+//        Where to find the rerun_c library.
+//\n        If not specified, a local rerun_c with the current system
+// architecture will be used.
+RERUN_C_LIB:PATH=/home/isma/Desktop/Autonomus-Agent/build/_deps/rerun_sdk-src/lib/librerun_c__linux_x64.a
+
+//If enabled, arrow will be added as an external project and built
+// with the minimal set required by the Rerun C++ SDK
+RERUN_DOWNLOAD_AND_BUILD_ARROW:BOOL=ON
+
+//Install rerun_c file.
+RERUN_INSTALL_RERUN_C:BOOL=ON
 
 //Value Computed by CMake
 autonomous_agent_BINARY_DIR:STATIC=/home/isma/Desktop/Autonomus-Agent/build
@@ -222,6 +247,15 @@ gp_lat_bindings_SOURCE_DIR:STATIC=/home/isma/Desktop/Autonomus-Agent/generalEnv/
 
 //The directory containing a CMake configuration file for pybind11.
 pybind11_DIR:PATH=/usr/share/cmake/pybind11
+
+//Value Computed by CMake
+rerun_sdk_BINARY_DIR:STATIC=/home/isma/Desktop/Autonomus-Agent/build/_deps/rerun_sdk-build
+
+//Value Computed by CMake
+rerun_sdk_IS_TOP_LEVEL:STATIC=OFF
+
+//Value Computed by CMake
+rerun_sdk_SOURCE_DIR:STATIC=/home/isma/Desktop/Autonomus-Agent/build/_deps/rerun_sdk-src
 
 
 ########################
@@ -314,7 +348,7 @@ CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_NM
 CMAKE_NM-ADVANCED:INTERNAL=1
 //number of local generators
-CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=2
+CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=3
 //ADVANCED property for variable: CMAKE_OBJCOPY
 CMAKE_OBJCOPY-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_OBJDUMP
@@ -359,32 +393,18 @@ CMAKE_TAPI-ADVANCED:INTERNAL=1
 CMAKE_UNAME:INTERNAL=/usr/bin/uname
 //ADVANCED property for variable: CMAKE_VERBOSE_MAKEFILE
 CMAKE_VERBOSE_MAKEFILE-ADVANCED:INTERNAL=1
-//Details about finding PYTHON
-FIND_PACKAGE_MESSAGE_DETAILS_PYTHON:INTERNAL=/usr/bin/python33.13.5
 //Details about finding Python
 FIND_PACKAGE_MESSAGE_DETAILS_Python:INTERNAL=[/usr/bin/python3.13][/usr/include/python3.13][cfound components: Interpreter Development.Module Development.Embed ][v3.13.5(3.7)]
 //Details about finding Python3
 FIND_PACKAGE_MESSAGE_DETAILS_Python3:INTERNAL=[/usr/bin/python3.13][cfound components: Interpreter ][v3.13.5()]
-//Details about finding PythonInterp
-FIND_PACKAGE_MESSAGE_DETAILS_PythonInterp:INTERNAL=[/usr/bin/python3][v3.13.5(3.7)]
 //Test HAS_FLTO
 HAS_FLTO:INTERNAL=1
 //Python executable during the last CMake run
 PYBIND11_PYTHON_EXECUTABLE_LAST:INTERNAL=/usr/bin/python3.13
-//ADVANCED property for variable: PYTHON_EXECUTABLE
-PYTHON_EXECUTABLE-ADVANCED:INTERNAL=1
-PYTHON_INCLUDE_DIRS:INTERNAL=/usr/include/python3.13
+//Python debug status
 PYTHON_IS_DEBUG:INTERNAL=0
-PYTHON_LIBRARIES:INTERNAL=/usr/lib64/libpython3.13.so
-//ADVANCED property for variable: PYTHON_LIBRARY
-PYTHON_LIBRARY-ADVANCED:INTERNAL=1
 PYTHON_MODULE_DEBUG_POSTFIX:INTERNAL=
 PYTHON_MODULE_EXTENSION:INTERNAL=.cpython-313-x86_64-linux-gnu.so
-PYTHON_MODULE_PREFIX:INTERNAL=
-PYTHON_VERSION:INTERNAL=3.13.5
-PYTHON_VERSION_MAJOR:INTERNAL=3
-PYTHON_VERSION_MINOR:INTERNAL=13
-Python_ADDITIONAL_VERSIONS:INTERNAL=3.12;3.11;3.10;3.9;3.8;3.7
 //linker supports push/pop state
 _CMAKE_LINKER_PUSHPOP_STATE_SUPPORTED:INTERNAL=TRUE
 _PYBIND11_CROSSCOMPILING:INTERNAL=OFF
@@ -413,8 +433,6 @@ _Python_INCLUDE_DIR:INTERNAL=/usr/include/python3.13
 //Python Properties
 _Python_INTERPRETER_PROPERTIES:INTERNAL=Python;3;13;5;64;<none>;cpython-313-x86_64-linux-gnu;abi3;/usr/lib64/python3.13;/usr/local/lib64/python3.13;/usr/local/lib/python3.13/site-packages;/usr/local/lib64/python3.13/site-packages
 _Python_INTERPRETER_SIGNATURE:INTERNAL=1dc78cd40b1c61ccea158fe7a1d7d30d
-//Interpreter reason failure
-_Python_Interpreter_REASON_FAILURE:INTERNAL=
 //Path to a library.
 _Python_LIBRARY_RELEASE:INTERNAL=/usr/lib64/libpython3.13.so
 //NumPy reason failure

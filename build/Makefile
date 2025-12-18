@@ -85,6 +85,51 @@ rebuild_cache:
 rebuild_cache/fast: rebuild_cache
 .PHONY : rebuild_cache/fast
 
+# Special rule for the target list_install_components
+list_install_components:
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Available install components are: \"Unspecified\""
+.PHONY : list_install_components
+
+# Special rule for the target list_install_components
+list_install_components/fast: list_install_components
+.PHONY : list_install_components/fast
+
+# Special rule for the target install
+install: preinstall
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Install the project..."
+	/usr/bin/cmake -P cmake_install.cmake
+.PHONY : install
+
+# Special rule for the target install
+install/fast: preinstall/fast
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Install the project..."
+	/usr/bin/cmake -P cmake_install.cmake
+.PHONY : install/fast
+
+# Special rule for the target install/local
+install/local: preinstall
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing only the local directory..."
+	/usr/bin/cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -P cmake_install.cmake
+.PHONY : install/local
+
+# Special rule for the target install/local
+install/local/fast: preinstall/fast
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing only the local directory..."
+	/usr/bin/cmake -DCMAKE_INSTALL_LOCAL_ONLY=1 -P cmake_install.cmake
+.PHONY : install/local/fast
+
+# Special rule for the target install/strip
+install/strip: preinstall
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing the project stripped..."
+	/usr/bin/cmake -DCMAKE_INSTALL_DO_STRIP=1 -P cmake_install.cmake
+.PHONY : install/strip
+
+# Special rule for the target install/strip
+install/strip/fast: preinstall/fast
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --cyan "Installing the project stripped..."
+	/usr/bin/cmake -DCMAKE_INSTALL_DO_STRIP=1 -P cmake_install.cmake
+.PHONY : install/strip/fast
+
 # The main all target
 all: cmake_check_build_system
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/isma/Desktop/Autonomus-Agent/build/CMakeFiles /home/isma/Desktop/Autonomus-Agent/build//CMakeFiles/progress.marks
@@ -113,6 +158,7 @@ preinstall/fast:
 
 # clear depends
 depend:
+	$(CMAKE_COMMAND) -P /home/isma/Desktop/Autonomus-Agent/build/CMakeFiles/VerifyGlobs.cmake
 	$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 1
 .PHONY : depend
 
@@ -130,17 +176,69 @@ run_sim/fast:
 .PHONY : run_sim/fast
 
 #=============================================================================
-# Target rules for targets named minicodriver
+# Target rules for targets named trajectory
 
 # Build rule for target.
-minicodriver: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 minicodriver
-.PHONY : minicodriver
+trajectory: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 trajectory
+.PHONY : trajectory
 
 # fast build rule for target.
-minicodriver/fast:
-	$(MAKE) $(MAKESILENT) -f generalEnv/bindings/CMakeFiles/minicodriver.dir/build.make generalEnv/bindings/CMakeFiles/minicodriver.dir/build
-.PHONY : minicodriver/fast
+trajectory/fast:
+	$(MAKE) $(MAKESILENT) -f generalEnv/bindings/CMakeFiles/trajectory.dir/build.make generalEnv/bindings/CMakeFiles/trajectory.dir/build
+.PHONY : trajectory/fast
+
+#=============================================================================
+# Target rules for targets named long_primitives
+
+# Build rule for target.
+long_primitives: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 long_primitives
+.PHONY : long_primitives
+
+# fast build rule for target.
+long_primitives/fast:
+	$(MAKE) $(MAKESILENT) -f generalEnv/bindings/CMakeFiles/long_primitives.dir/build.make generalEnv/bindings/CMakeFiles/long_primitives.dir/build
+.PHONY : long_primitives/fast
+
+#=============================================================================
+# Target rules for targets named salience
+
+# Build rule for target.
+salience: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 salience
+.PHONY : salience
+
+# fast build rule for target.
+salience/fast:
+	$(MAKE) $(MAKESILENT) -f generalEnv/bindings/CMakeFiles/salience.dir/build.make generalEnv/bindings/CMakeFiles/salience.dir/build
+.PHONY : salience/fast
+
+#=============================================================================
+# Target rules for targets named action_selection
+
+# Build rule for target.
+action_selection: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 action_selection
+.PHONY : action_selection
+
+# fast build rule for target.
+action_selection/fast:
+	$(MAKE) $(MAKESILENT) -f generalEnv/bindings/CMakeFiles/action_selection.dir/build.make generalEnv/bindings/CMakeFiles/action_selection.dir/build
+.PHONY : action_selection/fast
+
+#=============================================================================
+# Target rules for targets named mini_codriver_lib
+
+# Build rule for target.
+mini_codriver_lib: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 mini_codriver_lib
+.PHONY : mini_codriver_lib
+
+# fast build rule for target.
+mini_codriver_lib/fast:
+	$(MAKE) $(MAKESILENT) -f generalEnv/bindings/CMakeFiles/mini_codriver_lib.dir/build.make generalEnv/bindings/CMakeFiles/mini_codriver_lib.dir/build
+.PHONY : mini_codriver_lib/fast
 
 #=============================================================================
 # Target rules for targets named gp_lat
@@ -155,6 +253,32 @@ gp_lat/fast:
 	$(MAKE) $(MAKESILENT) -f generalEnv/bindings/CMakeFiles/gp_lat.dir/build.make generalEnv/bindings/CMakeFiles/gp_lat.dir/build
 .PHONY : gp_lat/fast
 
+#=============================================================================
+# Target rules for targets named rerun_sdk
+
+# Build rule for target.
+rerun_sdk: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 rerun_sdk
+.PHONY : rerun_sdk
+
+# fast build rule for target.
+rerun_sdk/fast:
+	$(MAKE) $(MAKESILENT) -f _deps/rerun_sdk-build/CMakeFiles/rerun_sdk.dir/build.make _deps/rerun_sdk-build/CMakeFiles/rerun_sdk.dir/build
+.PHONY : rerun_sdk/fast
+
+#=============================================================================
+# Target rules for targets named arrow_cpp
+
+# Build rule for target.
+arrow_cpp: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 arrow_cpp
+.PHONY : arrow_cpp
+
+# fast build rule for target.
+arrow_cpp/fast:
+	$(MAKE) $(MAKESILENT) -f _deps/rerun_sdk-build/CMakeFiles/arrow_cpp.dir/build.make _deps/rerun_sdk-build/CMakeFiles/arrow_cpp.dir/build
+.PHONY : arrow_cpp/fast
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -162,10 +286,20 @@ help:
 	@echo "... clean"
 	@echo "... depend"
 	@echo "... edit_cache"
+	@echo "... install"
+	@echo "... install/local"
+	@echo "... install/strip"
+	@echo "... list_install_components"
 	@echo "... rebuild_cache"
+	@echo "... arrow_cpp"
 	@echo "... run_sim"
+	@echo "... action_selection"
 	@echo "... gp_lat"
-	@echo "... minicodriver"
+	@echo "... long_primitives"
+	@echo "... mini_codriver_lib"
+	@echo "... rerun_sdk"
+	@echo "... salience"
+	@echo "... trajectory"
 .PHONY : help
 
 
@@ -177,6 +311,7 @@ help:
 # No rule that depends on this can have commands that come from listfiles
 # because they might be regenerated.
 cmake_check_build_system:
+	$(CMAKE_COMMAND) -P /home/isma/Desktop/Autonomus-Agent/build/CMakeFiles/VerifyGlobs.cmake
 	$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
 .PHONY : cmake_check_build_system
 

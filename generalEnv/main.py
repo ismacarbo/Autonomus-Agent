@@ -1,6 +1,7 @@
 import math
 import pygame
 from collections import deque
+import gp_lat
 
 from frenet_plant import FrenetLateralPlant
 from longitudinal_plant import LongitudinalPlant
@@ -130,7 +131,7 @@ class LongitudinalSim:
 
     def __init__(self):
         self.font = pygame.font.SysFont("Ubuntu Mono", 18)
-        self.plant = LongitudinalPlant(dt=0.01, v_ref=15.0 / 3.6)
+        self.plant = LongitudinalPlant(dt=0.01)
         self.plant.reset(s0=0.0, v0=0.0, a0=0.0)
 
         self.paused = False
@@ -148,10 +149,6 @@ class LongitudinalSim:
             self.plant.reset(s0=0.0, v0=0.0, a0=0.0)
             self.trail.clear()
             self.hist.clear()
-        elif e.key in (pygame.K_UP, pygame.K_w):
-            self.plant.v_ref += 1.0 / 3.6  # +1 km/h
-        elif e.key in (pygame.K_DOWN, pygame.K_s):
-            self.plant.v_ref = max(0.0, self.plant.v_ref - 1.0 / 3.6)
 
     def update(self):
         if not self.paused:
@@ -279,6 +276,150 @@ class VehicleSim:
         screen.blit(self.font.render(hud3, True, (170, 170, 170)), (20, 64))
 
 
+class CombinedSim:
+    MODE_NAME = "Combined sel_jr (long + lat)"
+
+    def __init__(self):
+        self.font = pygame.font.SysFont("Ubuntu Mono", 18)
+        gp_lat.rerun_spawn("gp_lat_sim")
+        self.cortex = False
+        gp_lat.set_cortex_rerun(False)
+
+
+        # plants
+        self.lat = FrenetLateralPlant(W=3.0, V=3.5, L=2.5, dt=0.01)
+        self.long = LongitudinalPlant(dt=0.01)
+
+        self.lat.reset(n0=0.0, b0=0.0, c0=0.0)
+        self.long.reset(s0=0.0, v0=self.lat.V, a0=0.0)
+
+        gp_lat.set_write_csv(False)
+
+        self.paused = False
+        self.cam_s = 0.0
+        self.trail = deque(maxlen=200)
+        self.hist = deque(maxlen=800)
+
+        self.goal = 50000.0
+        self.la = 10.0
+        self.veh_W = 0.7
+        self.T_max = 20.0
+        self.V_max = 10.0
+        self.lat_tol = 0.3
+        self.tol_obst = 0.3
+        self.k_dot = 0.0
+
+        self.last_j = 0.0
+        self.last_r = 0.0
+
+    def handle_event(self, e: pygame.event.Event):
+        if e.type != pygame.KEYDOWN:
+            return
+
+        if e.key == pygame.K_SPACE:
+            self.paused = not self.paused
+        elif e.key == pygame.K_r:
+            self.lat.reset(n0=0.0, b0=0.0, c0=0.0)
+            self.long.reset(s0=0.0, v0=self.lat.V, a0=0.0)
+            self.trail.clear()
+            self.hist.clear()
+        elif e.key == pygame.K_F1:
+            self.cortex = not self.cortex
+            gp_lat.set_cortex_rerun(self.cortex)
+
+        elif e.key == pygame.K_UP:
+            self.goal += 5.0
+        elif e.key == pygame.K_DOWN:
+            self.goal = max(0.0, self.goal - 5.0)
+
+    def update(self):
+        if self.paused:
+            return
+
+        k0 = gp_lat.states()
+        k1 = gp_lat.states()
+
+        sL, vL, aL = self.long.x
+        sF, nF, bF, cF = self.lat.x
+
+        k0.n = float(nF)
+        k0.b = float(bF)
+        k0.c = float(cF)
+
+        k0.x = float(sL)
+        k0.v = float(vL)
+        k0.a = float(aL)
+
+        k1.n = float(nF)
+        k1.b = float(bF)
+        k1.c = float(cF)
+
+        dt = self.long.dt
+        k1.x = float(sL + vL*dt)
+        k1.v = float(vL + aL*dt)
+        k1.a = float(aL)
+
+        
+        j_cmd, r_cmd = gp_lat.sel_jr(
+            False,          
+            0.0,            
+            float(self.goal),
+            float(self.la),
+            float(self.veh_W),
+            float(self.lat.W),
+            k0, k1,
+            float(self.T_max),
+            float(self.V_max),
+            float(self.lat_tol),
+            float(self.tol_obst),
+            float(self.k_dot),
+        )
+
+        if (not math.isfinite(j_cmd)) or (not math.isfinite(r_cmd)) or abs(j_cmd) > 1e6 or abs(r_cmd) > 1e6:
+            print("sel_jr returned invalid -> resetting/holding commands")
+            j_cmd, r_cmd = 0.0, 0.0
+
+        self.last_j = float(j_cmd)
+        self.last_r = float(r_cmd)
+
+        
+        self.long.step(j_cmd=self.last_j)
+        self.lat.V = max(0.0, float(self.long.x[1]))
+        self.lat.step(r_cmd=self.last_r)
+
+        
+        s, n, b, c = self.lat.x
+        self.cam_s = 0.92*self.cam_s + 0.08*s
+        self.trail.append((s, n))
+        self.hist.append((s, n))
+
+    def draw(self, screen: pygame.Surface):
+        s, n, b, c = self.lat.x
+        ORIGIN = frenet_camera_origin(self.cam_s)
+
+        screen.fill(CLR_BG)
+        draw_road(screen, s_center=self.cam_s, W=self.lat.W, SCALE=SCALE, ORIGIN=ORIGIN)
+        draw_trail(screen, self.trail, SCALE, ORIGIN)
+
+        pose_lat, info_lat = self.lat.pose_for_render()
+        draw_steer_arc_from_c(screen, pose_lat[0], pose_lat[1], pose_lat[2], info_lat["c"], SCALE, ORIGIN, arc_len=12.0)
+        draw_vehicle(screen, pose_lat, SCALE, ORIGIN)
+        draw_minimap(screen, self.hist, self.lat.W, self.lat.V)
+        pose_long, info_long = self.long.pose_for_render(j_used=self.last_j)
+
+
+        # long info
+        sL, vL, aL = self.long.x
+
+        hud1 = f"[COMBINED sel_jr]  j={self.last_j:+.3f}  r={self.last_r:+.3f}   cortex(F1)={'ON' if self.cortex else 'OFF'}"
+        hud2 = f"LONG: s={sL:6.1f} m | v={vL*3.6:5.1f} km/h | a={aL:+.2f} m/s² | goal={self.goal:.1f}m | la={self.la:.1f}m"
+        hud3 = f"LAT:  n={n:+.2f} m | b={math.degrees(b):+.1f}° | c={c:+.3f} 1/m | SPACE pause | R reset | ESC menu"
+
+        screen.blit(self.font.render(hud1, True, (230, 230, 230)), (16, 16))
+        screen.blit(self.font.render(hud2, True, (180, 200, 230)), (16, 40))
+        screen.blit(self.font.render(hud3, True, (170, 170, 170)), (16, 64))
+
+
 # ------------------------------------------------------------
 #  MENU
 # ------------------------------------------------------------
@@ -291,6 +432,7 @@ def draw_menu(screen: pygame.Surface, font: pygame.font.Font):
         "[1] Lateral Frenet controller",
         "[2] Longitudinal controller (fake jerk for now)",
         "[3] Double-track vehicle playground",
+        "[4] Combined sel_jr (j+r together)",
         "",
         "Press ESC to quit.",
     ]
@@ -340,6 +482,9 @@ def main():
                     elif e.key == pygame.K_3:
                         mode = "VEHICLE"
                         sim = VehicleSim()
+                    elif e.key == pygame.K_4:
+                        mode = "COMBINED"
+                        sim = CombinedSim()
             else:
                 if sim is not None and hasattr(sim, "handle_event"):
                     sim.handle_event(e)
