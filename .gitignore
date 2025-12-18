@@ -3,6 +3,7 @@ commiter.sh
 
 # build artifacts
 build/
+basic_agent_FINAL/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
