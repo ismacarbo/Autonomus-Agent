@@ -1,0 +1,120 @@
+cmake_minimum_required(VERSION 3.16)
+
+include(FetchContent)
+
+find_path(
+  SDL2_INCLUDE_DIR
+  NAMES SDL.h
+  HINTS
+    /usr/include
+    /usr/local/include
+    /opt/homebrew/include
+    /opt/local/include
+    /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
+    /usr/local/include/${CMAKE_LIBRARY_ARCHITECTURE}
+  PATH_SUFFIXES SDL2
+)
+
+find_library(
+  SDL2_LIBRARY
+  NAMES SDL2
+  HINTS
+    /usr/lib
+    /usr/local/lib
+    /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}
+    /usr/local/lib/${CMAKE_LIBRARY_ARCHITECTURE}
+)
+
+if(NOT SDL2_INCLUDE_DIR OR NOT SDL2_LIBRARY)
+  message(FATAL_ERROR "SDL2 development files not found. Install SDL2 headers/libs, e.g. package 'libsdl2-dev'.")
+endif()
+
+add_library(simulator_sdl2 INTERFACE)
+target_include_directories(simulator_sdl2 INTERFACE ${SDL2_INCLUDE_DIR})
+target_link_libraries(simulator_sdl2 INTERFACE ${SDL2_LIBRARY})
+
+FetchContent_Declare(
+  imgui
+  GIT_REPOSITORY https://github.com/ocornut/imgui.git
+  GIT_TAG v1.91.9
+  GIT_SHALLOW TRUE
+)
+
+FetchContent_Declare(
+  implot
+  GIT_REPOSITORY https://github.com/epezent/implot.git
+  GIT_TAG v0.17
+  GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(imgui implot)
+
+add_subdirectory(
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/clothoids
+  ${CMAKE_BINARY_DIR}/third_party/progettotesi/clothoids
+)
+
+add_library(imgui STATIC
+  ${imgui_SOURCE_DIR}/imgui.cpp
+  ${imgui_SOURCE_DIR}/imgui_draw.cpp
+  ${imgui_SOURCE_DIR}/imgui_tables.cpp
+  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer2.cpp
+)
+
+target_include_directories(imgui PUBLIC
+  ${imgui_SOURCE_DIR}
+  ${imgui_SOURCE_DIR}/backends
+)
+
+target_link_libraries(imgui PUBLIC simulator_sdl2)
+
+add_library(implot STATIC
+  ${implot_SOURCE_DIR}/implot.cpp
+  ${implot_SOURCE_DIR}/implot_items.cpp
+)
+
+target_include_directories(implot PUBLIC
+  ${implot_SOURCE_DIR}
+  ${imgui_SOURCE_DIR}
+)
+
+target_link_libraries(implot PUBLIC imgui)
+
+add_library(sabrina_planner STATIC
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/common_def.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/state_update.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/behaviours.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/action_selection.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/lat/opt_lat_U.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/lat/lat_salience.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/long/opt_long_U.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/long/long_salience.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/long/primitives/common_fun.cpp
+)
+
+target_include_directories(sabrina_planner PUBLIC
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/include
+  ${CMAKE_SOURCE_DIR}/third_party/rerun_stub
+)
+
+target_link_libraries(sabrina_planner PUBLIC clothoids)
+
+add_executable(thesis_planner_sim
+  src/main.cpp
+  src/planner_sim.cpp
+  src/vehicle_dynamics.cpp
+  src/sim_world.cpp
+)
+
+target_include_directories(thesis_planner_sim PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(thesis_planner_sim PRIVATE
+  sabrina_planner
+  imgui
+  implot
+  simulator_sdl2
+)
