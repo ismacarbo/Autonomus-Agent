@@ -266,8 +266,17 @@ void render_status_window(PlannerDrivenVehicleSim& sim, bool* paused, int* steps
     ImGui::Text("yaw = %.1f deg", vehicle.yaw * 180.0 / 3.14159265358979323846);
     ImGui::Text("v = %.2f m/s   a = %.2f m/s^2", vehicle.speed, vehicle.accel);
     ImGui::Text("j = %.2f m/s^3   r = %.2f 1/(m*s)", sim.last_j(), sim.last_r());
-    ImGui::Text("kappa = %.3f 1/m   steer = %.1f deg", vehicle.curvature, vehicle.steer_angle * 180.0 / 3.14159265358979323846);
-    ImGui::Text("yaw rate = %.2f deg/s   beta = %.1f deg", vehicle.yaw_rate * 180.0 / 3.14159265358979323846, vehicle.sideslip * 180.0 / 3.14159265358979323846);
+    ImGui::Text("kappa = %.3f 1/m   yaw rate = %.2f deg/s", vehicle.curvature, vehicle.yaw_rate * 180.0 / 3.14159265358979323846);
+    ImGui::Text("target v = %.2f m/s   target wz = %.2f deg/s",
+                vehicle.target_speed,
+                vehicle.target_yaw_rate * 180.0 / 3.14159265358979323846);
+    ImGui::Text("wheel v = (%.2f, %.2f) m/s", vehicle.left_wheel_speed, vehicle.right_wheel_speed);
+    ImGui::Text("PWM = (%d, %d)", vehicle.left_pwm, vehicle.right_pwm);
+    ImGui::Text("enc ticks = (%d, %d)   dTicks = (%d, %d)",
+                vehicle.left_encoder_ticks,
+                vehicle.right_encoder_ticks,
+                vehicle.left_encoder_delta,
+                vehicle.right_encoder_delta);
     ImGui::Text("goal distance = %.2f m", sim.distance_to_goal());
     ImGui::Text("min lidar = %.2f m", sim.min_lidar_distance());
     ImGui::Text("chosen gate = %s", chosen_name);
@@ -307,8 +316,14 @@ void render_telemetry_window(PlannerDrivenVehicleSim& sim) {
     std::vector<double> accel;
     std::vector<double> jerk;
     std::vector<double> command_r;
-    std::vector<double> steer;
-    std::vector<double> sideslip;
+    std::vector<double> left_wheel_speed;
+    std::vector<double> right_wheel_speed;
+    std::vector<double> target_speed;
+    std::vector<double> target_yaw_rate;
+    std::vector<double> left_pwm;
+    std::vector<double> right_pwm;
+    std::vector<double> left_encoder_delta;
+    std::vector<double> right_encoder_delta;
     std::vector<double> dist_goal;
     std::vector<double> min_lidar;
     time.reserve(history.size());
@@ -316,8 +331,14 @@ void render_telemetry_window(PlannerDrivenVehicleSim& sim) {
     accel.reserve(history.size());
     jerk.reserve(history.size());
     command_r.reserve(history.size());
-    steer.reserve(history.size());
-    sideslip.reserve(history.size());
+    left_wheel_speed.reserve(history.size());
+    right_wheel_speed.reserve(history.size());
+    target_speed.reserve(history.size());
+    target_yaw_rate.reserve(history.size());
+    left_pwm.reserve(history.size());
+    right_pwm.reserve(history.size());
+    left_encoder_delta.reserve(history.size());
+    right_encoder_delta.reserve(history.size());
     dist_goal.reserve(history.size());
     min_lidar.reserve(history.size());
 
@@ -327,15 +348,24 @@ void render_telemetry_window(PlannerDrivenVehicleSim& sim) {
         accel.push_back(sample.accel);
         jerk.push_back(sample.jerk);
         command_r.push_back(sample.command_r);
-        steer.push_back(sample.steer_angle * 180.0 / 3.14159265358979323846);
-        sideslip.push_back(sample.sideslip * 180.0 / 3.14159265358979323846);
+        left_wheel_speed.push_back(sample.left_wheel_speed);
+        right_wheel_speed.push_back(sample.right_wheel_speed);
+        target_speed.push_back(sample.target_speed);
+        target_yaw_rate.push_back(sample.target_yaw_rate * 180.0 / 3.14159265358979323846);
+        left_pwm.push_back(sample.left_pwm);
+        right_pwm.push_back(sample.right_pwm);
+        left_encoder_delta.push_back(sample.left_encoder_delta);
+        right_encoder_delta.push_back(sample.right_encoder_delta);
         dist_goal.push_back(sample.distance_to_goal);
         min_lidar.push_back(sample.min_lidar);
     }
 
     render_plot_window("Velocity / Acceleration", time, speed, "v [m/s]", &accel, "a [m/s^2]");
     render_plot_window("Planner Commands", time, jerk, "j [m/s^3]", &command_r, "r [1/(m*s)]");
-    render_plot_window("Steering / Sideslip", time, steer, "delta [deg]", &sideslip, "beta [deg]");
+    render_plot_window("Target / Wheel Speed", time, target_speed, "v target [m/s]", &left_wheel_speed, "v left [m/s]");
+    render_plot_window("Right Wheel / Target Yaw", time, right_wheel_speed, "v right [m/s]", &target_yaw_rate, "wz target [deg/s]");
+    render_plot_window("Motor PWM", time, left_pwm, "PWM left", &right_pwm, "PWM right");
+    render_plot_window("Encoder Delta", time, left_encoder_delta, "dTicks left", &right_encoder_delta, "dTicks right");
     render_plot_window("Distance Metrics", time, dist_goal, "goal [m]", &min_lidar, "lidar [m]");
     ImGui::End();
 }

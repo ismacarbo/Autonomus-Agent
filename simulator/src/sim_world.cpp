@@ -181,10 +181,11 @@ WorldMap WorldMap::thesis_demo() {
     world.gates_ = {
         {"gap_entry", {11.0, 11.0}, angle_to({11.0, 11.0}, {21.0, 18.0}), false},
         {"upper_bypass", {21.0, 18.2}, angle_to({21.0, 18.2}, {30.5, 14.0}), false},
-        {"exit_gap", {30.5, 14.0}, angle_to({30.5, 14.0}, world.goal_), false},
+        {"exit_gap", {30.5, 14.0}, angle_to({30.5, 14.0}, {34.0, 17.0}), false},
+        {"goal_approach", {34.0, 17.0}, angle_to({34.0, 17.0}, world.goal_), false},
         {"goal", world.goal_, 0.0, true},
     };
-    world.gates_.back().heading_hint = angle_to(world.gates_[2].position, world.goal_);
+    world.gates_.back().heading_hint = angle_to(world.gates_[3].position, world.goal_);
 
     return world;
 }

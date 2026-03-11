@@ -17,12 +17,23 @@ bool is_finite_pair(double a, double b) {
     return std::isfinite(a) && std::isfinite(b);
 }
 
+double wrap_angle(double angle) {
+    constexpr double kPi = 3.14159265358979323846;
+    while (angle > kPi) {
+        angle -= 2.0 * kPi;
+    }
+    while (angle < -kPi) {
+        angle += 2.0 * kPi;
+    }
+    return angle;
+}
+
 }  // namespace
 
 PlannerDrivenVehicleSim::PlannerDrivenVehicleSim(WorldMap world, SimConfig config)
     : world_(std::move(world)),
       config_(config),
-      vehicle_model_(make_four_wheel_car_model(geometry_)),
+      vehicle_model_(make_differential_drive_robot_model(geometry_)),
       null_stream_("/dev/null") {
     reset();
 }
@@ -127,15 +138,25 @@ void PlannerDrivenVehicleSim::sync_planner_from_vehicle(bool reset_relative_stat
 
 void PlannerDrivenVehicleSim::update_speed_limit() {
     constexpr double kLowCurvature = 1e-4;
-    constexpr double kMinCruise = 2.5;
+    const double kMinCruise = std::min(0.2, config_.cruise_speed_limit);
 
+    double speed_limit = config_.cruise_speed_limit;
     if (std::abs(cl_.kappa) < kLowCurvature) {
-        sim_.V_max = config_.cruise_speed_limit;
-        return;
+        speed_limit = config_.cruise_speed_limit;
+    } else {
+        const double curvature_limit = 1.5 * std::pow(std::abs(cl_.kappa), -1.0 / 3.0);
+        speed_limit = clamp_value(curvature_limit, kMinCruise, config_.cruise_speed_limit);
     }
 
-    const double curvature_limit = 1.5 * std::pow(std::abs(cl_.kappa), -1.0 / 3.0);
-    sim_.V_max = clamp_value(curvature_limit, kMinCruise, config_.cruise_speed_limit);
+    if (distance_to_goal_ < 6.0) {
+        const double stop_profile_limit = clamp_value(
+            0.10 + distance_to_goal_ * 0.10,
+            0.10,
+            config_.cruise_speed_limit);
+        speed_limit = std::min(speed_limit, stop_profile_limit);
+    }
+
+    sim_.V_max = speed_limit;
 }
 
 std::vector<int> PlannerDrivenVehicleSim::select_gate_candidates() const {
@@ -168,7 +189,7 @@ std::vector<int> PlannerDrivenVehicleSim::select_gate_candidates() const {
         candidates.push_back(nearest_idx);
     }
 
-    if (distance_to_goal_ < 7.0) {
+    if (distance_to_goal_ < 12.0) {
         const int final_idx = static_cast<int>(gates_.size()) - 1;
         if (std::find(candidates.begin(), candidates.end(), final_idx) == candidates.end()) {
             candidates.push_back(final_idx);
@@ -242,7 +263,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
     }
 
     last_j_ = clamp_value(next_j, -3.5, 2.5);
-    last_r_ = clamp_value(next_r, -0.9, 0.9);
+    last_r_ = clamp_value(next_r, -1.4, 1.4);
 
     sync_gate_selection(visible_gate_indices_, local_gates, chosen_local);
 }
@@ -263,6 +284,17 @@ void PlannerDrivenVehicleSim::update_vehicle_snapshot() {
     vehicle_.steer_angle = model_state.steer_angle;
     vehicle_.yaw_rate = model_state.yaw_rate;
     vehicle_.sideslip = model_state.sideslip;
+    vehicle_.left_wheel_speed = model_state.left_wheel_speed;
+    vehicle_.right_wheel_speed = model_state.right_wheel_speed;
+    vehicle_.target_speed = model_state.target_speed;
+    vehicle_.target_yaw_rate = model_state.target_yaw_rate;
+    vehicle_.left_encoder_ticks = model_state.left_encoder_ticks;
+    vehicle_.right_encoder_ticks = model_state.right_encoder_ticks;
+    vehicle_.left_encoder_delta = model_state.left_encoder_delta;
+    vehicle_.right_encoder_delta = model_state.right_encoder_delta;
+    vehicle_.left_pwm = model_state.left_pwm;
+    vehicle_.right_pwm = model_state.right_pwm;
+    vehicle_.encoder_dt_ms = model_state.encoder_dt_ms;
     vehicle_.model_name = vehicle_model_->name();
     vehicle_.body_corners = make_box_corners(vehicle_.position, vehicle_.yaw, geometry_.body_length, geometry_.body_width);
 
@@ -273,22 +305,12 @@ void PlannerDrivenVehicleSim::update_vehicle_snapshot() {
         {-geometry_.wheelbase * 0.5, -geometry_.track * 0.5},
     }};
 
-    const double curvature = g_x0_.kappa_veh;
-    const double radius = std::abs(curvature) > 1e-5 ? 1.0 / curvature : std::numeric_limits<double>::infinity();
-
     for (size_t i = 0; i < wheel_local.size(); ++i) {
         const Vec2 global_offset = rotate(wheel_local[i], vehicle_.yaw);
         vehicle_.wheels[i].center = {vehicle_.position.x + global_offset.x, vehicle_.position.y + global_offset.y};
-        vehicle_.wheels[i].steering = i < 2;
-        vehicle_.wheels[i].yaw = vehicle_.yaw + (i < 2 ? vehicle_.steer_angle : 0.0);
-
-        if (std::isfinite(radius)) {
-            const double lateral_sign = wheel_local[i].y >= 0.0 ? 1.0 : -1.0;
-            const double wheel_radius = std::max(0.1, std::abs(radius - lateral_sign * geometry_.track * 0.5));
-            vehicle_.wheels[i].speed = vehicle_.speed * wheel_radius / std::abs(radius);
-        } else {
-            vehicle_.wheels[i].speed = vehicle_.speed;
-        }
+        vehicle_.wheels[i].steering = false;
+        vehicle_.wheels[i].yaw = vehicle_.yaw;
+        vehicle_.wheels[i].speed = wheel_local[i].y >= 0.0 ? vehicle_.left_wheel_speed : vehicle_.right_wheel_speed;
     }
 }
 
@@ -313,6 +335,16 @@ void PlannerDrivenVehicleSim::update_telemetry() {
         last_r_,
         vehicle_.steer_angle,
         vehicle_.sideslip,
+        vehicle_.left_wheel_speed,
+        vehicle_.right_wheel_speed,
+        vehicle_.target_speed,
+        vehicle_.target_yaw_rate,
+        static_cast<double>(vehicle_.left_encoder_ticks),
+        static_cast<double>(vehicle_.right_encoder_ticks),
+        static_cast<double>(vehicle_.left_encoder_delta),
+        static_cast<double>(vehicle_.right_encoder_delta),
+        static_cast<double>(vehicle_.left_pwm),
+        static_cast<double>(vehicle_.right_pwm),
         distance_to_goal_,
         min_lidar_distance_,
     });
@@ -334,6 +366,27 @@ void PlannerDrivenVehicleSim::step() {
     update_speed_limit();
     plan_if_needed();
 
+    const int passed_gates = count_passed_gates();
+    const int final_approach_threshold = std::max(0, static_cast<int>(gates_.size()) - 2);
+    if (passed_gates >= final_approach_threshold || distance_to_goal_ < 5.0) {
+        const Vec2 to_goal{world_.goal().x - vehicle_.position.x, world_.goal().y - vehicle_.position.y};
+        const double desired_heading = std::atan2(to_goal.y, to_goal.x);
+        const double heading_error = wrap_angle(desired_heading - vehicle_.yaw);
+        const double desired_speed = clamp_value(distance_to_goal_ * 0.22, 0.0, 0.45);
+        const double desired_curvature = clamp_value(
+            heading_error / std::max(distance_to_goal_, 0.45) * 2.2,
+            -geometry_.max_curvature,
+            geometry_.max_curvature);
+        const double desired_accel = clamp_value(
+            (desired_speed - vehicle_.speed) / config_.dt,
+            -1.5,
+            1.0);
+
+        last_j_ = clamp_value((desired_accel - vehicle_.accel) / config_.dt, -3.5, 2.5);
+        const double curvature_denom = std::max(std::abs(vehicle_.speed), 0.18) * config_.dt;
+        last_r_ = clamp_value((desired_curvature - vehicle_.curvature) / curvature_denom, -1.4, 1.4);
+    }
+
     vehicle_model_->step(config_.dt, last_j_, last_r_);
     sync_planner_from_vehicle(false);
 
@@ -344,7 +397,7 @@ void PlannerDrivenVehicleSim::step() {
     update_lidar();
     collision_ = world_.collides(vehicle_.body_corners);
     distance_to_goal_ = distance(vehicle_.position, world_.goal());
-    goal_reached_ = distance_to_goal_ < 1.75 && vehicle_.speed < 1.0;
+    goal_reached_ = distance_to_goal_ < 0.75 && std::abs(vehicle_.speed) < 0.15;
     update_telemetry();
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -10,16 +11,31 @@
 namespace thesis_sim {
 
 struct VehicleGeometry {
-    double wheelbase = 1.8;
-    double cg_to_front = 0.95;
-    double cg_to_rear = 0.85;
-    double track = 1.2;
-    double body_length = 2.7;
-    double body_width = 1.55;
-    double wheel_length = 0.38;
-    double wheel_width = 0.16;
-    double max_steer_angle = 0.6;
-    double max_curvature = 0.7;
+    double wheelbase = 0.22;
+    double cg_to_front = 0.11;
+    double cg_to_rear = 0.11;
+    double track = 0.28;
+    double body_length = 0.34;
+    double body_width = 0.24;
+    double wheel_length = 0.07;
+    double wheel_width = 0.02;
+    double wheel_radius = 0.035;
+    double max_steer_angle = 0.0;
+    double max_curvature = 3.2;
+    double max_linear_speed = 0.90;
+    double max_yaw_rate = 4.00;
+    int max_pwm = 255;
+    int min_effective_pwm = 45;
+    double wheel_speed_to_pwm_gain = 190.0;
+    double wheel_speed_to_pwm_bias = 28.0;
+    double speed_estimate_per_pwm = 0.0045;
+    double left_pwm_scale = 1.00;
+    double right_pwm_scale = 1.00;
+    double linear_feedback_gain = 75.0;
+    double yaw_feedback_gain = 55.0;
+    double pwm_slew_rate = 800.0;
+    double motor_time_constant = 0.16;
+    std::int32_t encoder_ticks_per_revolution = 360;
 };
 
 struct VehicleModelState {
@@ -31,6 +47,17 @@ struct VehicleModelState {
     double curvature = 0.0;
     double yaw_rate = 0.0;
     double sideslip = 0.0;
+    double left_wheel_speed = 0.0;
+    double right_wheel_speed = 0.0;
+    double target_speed = 0.0;
+    double target_yaw_rate = 0.0;
+    std::int32_t left_encoder_ticks = 0;
+    std::int32_t right_encoder_ticks = 0;
+    std::int32_t left_encoder_delta = 0;
+    std::int32_t right_encoder_delta = 0;
+    int left_pwm = 0;
+    int right_pwm = 0;
+    double encoder_dt_ms = 0.0;
     Eigen::VectorXd internal_state;
 };
 
@@ -49,5 +76,6 @@ class VehicleDynamicsModel {
 };
 
 std::unique_ptr<VehicleDynamicsModel> make_four_wheel_car_model(const VehicleGeometry& geometry = {});
+std::unique_ptr<VehicleDynamicsModel> make_differential_drive_robot_model(const VehicleGeometry& geometry = {});
 
 }  // namespace thesis_sim

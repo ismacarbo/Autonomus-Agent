@@ -1,4 +1,81 @@
-# 🚗 General Planner Simulator (Python + C++ bindings)
+# 🚗 General Planner Simulator
+
+## New: native C++ thesis simulator
+
+The repository now includes a first native simulator in C++ for the thesis work:
+- Dear ImGui + ImPlot UI
+- 2D map with static obstacles
+- differential-drive robot model aligned to the current Arduino/Raspberry robot
+- simulated motor PWM, wheel speeds, and encoder ticks/delta ticks
+- 2D lidar raycasting
+- goal-directed navigation through Sabrina's `sel_jr` planner in gate-based mode
+
+## New: real robot bridge in C++
+
+The C++ side now also includes the first hardware bridge layer for moving from simulation to the real robot:
+- POSIX serial wrapper for Linux
+- `RPLidarA1` driver translated from the Python implementation
+- full `RSP-v1` protocol encoder/decoder and stream parser
+- `RSPSerialBridge` equivalent to the Python serial bridge for the Arduino/Raspberry link
+- `RealRobotBridge` that unifies controller telemetry and LiDAR scans for the high-level agent
+- `HardwarePlannerRunner` that reuses Sabrina's planner and maps the output to differential `PWM_L/PWM_R`
+
+Main headers:
+- `simulator/include/serial_port.h`
+- `simulator/include/rsp_protocol.h`
+- `simulator/include/rsp_serial_bridge.h`
+- `simulator/include/rplidar_a1.h`
+- `simulator/include/real_robot_bridge.h`
+
+These modules are compiled together with the simulator target, so a normal build also validates the real-robot bridge code.
+
+### Run the first real-robot loop
+
+```bash
+./build/simulator/thesis_robot_runner \
+  --controller-port /dev/ttyACM0 \
+  --lidar-port /dev/ttyUSB0
+```
+
+Current assumptions:
+- known 2D map
+- yaw and yaw-rate from IMU
+- LiDAR-based local pose correction against the known map
+- speed estimated from applied PWM until wheel encoders are added
+
+### Build only the C++ simulator
+
+```bash
+cmake -S . -B build
+cmake --build build --target thesis_planner_sim -j
+```
+
+### Run with GUI
+
+```bash
+./build/simulator/thesis_planner_sim
+```
+
+### Run headless for quick validation
+
+```bash
+./build/simulator/thesis_planner_sim --headless --max-steps 6000
+```
+
+The current demo scenario should terminate with `status=goal_reached`.
+
+### Note on Python bindings
+
+The legacy `generalEnv/bindings` path is no longer built by default.
+If you want to work on it explicitly, enable it with:
+
+```bash
+cmake -S . -B build -DAUTONOMOUS_AGENT_BUILD_PYTHON_BINDINGS=ON
+```
+
+## Legacy Python playground
+
+This part of the repository remains the older pygame-based environment.
 
 This repository contains a pygame-based simulator playground with:
 - **Lateral Frenet plant**

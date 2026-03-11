@@ -101,11 +101,44 @@ target_include_directories(sabrina_planner PUBLIC
 
 target_link_libraries(sabrina_planner PUBLIC clothoids)
 
+add_library(thesis_world STATIC
+  src/sim_world.cpp
+)
+
+target_include_directories(thesis_world PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_library(thesis_robot_io STATIC
+  src/serial_port.cpp
+  src/rsp_protocol.cpp
+  src/rsp_serial_bridge.cpp
+  src/rplidar_a1.cpp
+  src/real_robot_bridge.cpp
+)
+
+target_include_directories(thesis_robot_io PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_library(thesis_hardware_planner STATIC
+  src/hardware_planner_runner.cpp
+)
+
+target_include_directories(thesis_hardware_planner PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(thesis_hardware_planner PUBLIC
+  sabrina_planner
+  thesis_robot_io
+  thesis_world
+)
+
 add_executable(thesis_planner_sim
   src/main.cpp
   src/planner_sim.cpp
   src/vehicle_dynamics.cpp
-  src/sim_world.cpp
 )
 
 target_include_directories(thesis_planner_sim PRIVATE
@@ -114,7 +147,22 @@ target_include_directories(thesis_planner_sim PRIVATE
 
 target_link_libraries(thesis_planner_sim PRIVATE
   sabrina_planner
+  thesis_robot_io
+  thesis_hardware_planner
+  thesis_world
   imgui
   implot
   simulator_sdl2
+)
+
+add_executable(thesis_robot_runner
+  src/hardware_main.cpp
+)
+
+target_include_directories(thesis_robot_runner PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(thesis_robot_runner PRIVATE
+  thesis_hardware_planner
 )

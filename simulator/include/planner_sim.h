@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <fstream>
 #include <memory>
@@ -29,6 +30,17 @@ struct VehicleSnapshot {
     double steer_angle = 0.0;
     double yaw_rate = 0.0;
     double sideslip = 0.0;
+    double left_wheel_speed = 0.0;
+    double right_wheel_speed = 0.0;
+    double target_speed = 0.0;
+    double target_yaw_rate = 0.0;
+    std::int32_t left_encoder_ticks = 0;
+    std::int32_t right_encoder_ticks = 0;
+    std::int32_t left_encoder_delta = 0;
+    std::int32_t right_encoder_delta = 0;
+    int left_pwm = 0;
+    int right_pwm = 0;
+    double encoder_dt_ms = 0.0;
     std::string model_name;
     std::array<Vec2, 4> body_corners{};
     std::array<WheelPose, 4> wheels{};
@@ -43,18 +55,28 @@ struct TelemetrySample {
     double command_r = 0.0;
     double steer_angle = 0.0;
     double sideslip = 0.0;
+    double left_wheel_speed = 0.0;
+    double right_wheel_speed = 0.0;
+    double target_speed = 0.0;
+    double target_yaw_rate = 0.0;
+    double left_encoder_ticks = 0.0;
+    double right_encoder_ticks = 0.0;
+    double left_encoder_delta = 0.0;
+    double right_encoder_delta = 0.0;
+    double left_pwm = 0.0;
+    double right_pwm = 0.0;
     double distance_to_goal = 0.0;
     double min_lidar = 0.0;
 };
 
 struct SimConfig {
-    double dt = 0.02;
-    int control_interval_steps = 5;
-    int lidar_beams = 121;
-    double lidar_fov_rad = 3.14159265358979323846 * 1.5;
-    double lidar_range = 18.0;
+    double dt = 0.05;
+    int control_interval_steps = 2;
+    int lidar_beams = 181;
+    double lidar_fov_rad = 3.14159265358979323846;
+    double lidar_range = 8.0;
     int max_history = 2400;
-    double cruise_speed_limit = 4.5;
+    double cruise_speed_limit = 0.75;
 };
 
 struct SimulationReport {
