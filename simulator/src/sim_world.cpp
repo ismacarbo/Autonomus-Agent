@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <random>
 
 namespace thesis_sim {
 
@@ -129,7 +130,42 @@ bool segment_intersects_rect(const Vec2& a, const Vec2& b, const Rect& rect) {
     return *hit >= 0.0 && *hit <= 1.0;
 }
 
+double clamp_value(double value, double lo, double hi) {
+    return std::max(lo, std::min(value, hi));
+}
+
+void recompute_gate_headings(std::vector<GateSpec>* gates, const Vec2& goal) {
+    if (gates == nullptr || gates->empty()) {
+        return;
+    }
+    for (size_t i = 0; i < gates->size(); ++i) {
+        GateSpec& current = (*gates)[i];
+        if (current.final) {
+            current.heading_hint = 0.0;
+            continue;
+        }
+        const Vec2 target = (i + 1 < gates->size()) ? (*gates)[i + 1].position : goal;
+        current.heading_hint = angle_to(current.position, target);
+    }
+    if (gates->back().final && gates->size() > 1) {
+        gates->back().heading_hint = angle_to((*gates)[gates->size() - 2].position, goal);
+    }
+}
+
 }  // namespace
+
+const char* gate_behavior_mode_name(GateBehaviorMode mode) {
+    switch (mode) {
+        case GateBehaviorMode::Static:
+            return "Static Gates";
+        case GateBehaviorMode::Randomized:
+            return "Randomized Gates";
+        case GateBehaviorMode::Mobile:
+            return "Mobile Gates";
+        default:
+            return "Unknown";
+    }
+}
 
 double distance(const Vec2& a, const Vec2& b) {
     return std::hypot(b.x - a.x, b.y - a.y);
@@ -163,7 +199,7 @@ std::array<Vec2, 4> make_box_corners(const Vec2& center, double yaw, double leng
     return corners;
 }
 
-WorldMap WorldMap::thesis_demo() {
+WorldMap WorldMap::thesis_demo(GateBehaviorMode gate_behavior, std::uint32_t gate_seed) {
     WorldMap world;
     world.bounds_ = {0.0, 0.0, 40.0, 24.0};
     world.start_ = {4.0, 11.0};
@@ -178,16 +214,86 @@ WorldMap WorldMap::thesis_demo() {
         {29.5, 17.0, 31.5, 24.0},
     };
 
-    world.gates_ = {
-        {"gap_entry", {11.0, 11.0}, angle_to({11.0, 11.0}, {21.0, 18.0}), false},
-        {"upper_bypass", {21.0, 18.2}, angle_to({21.0, 18.2}, {30.5, 14.0}), false},
-        {"exit_gap", {30.5, 14.0}, angle_to({30.5, 14.0}, {34.0, 17.0}), false},
-        {"goal_approach", {34.0, 17.0}, angle_to({34.0, 17.0}, world.goal_), false},
-        {"goal", world.goal_, 0.0, true},
+    world.gate_templates_ = {
+        {"gap_entry", {11.0, 11.0}, {11.0, 11.0}, {0.20, 1.10}, 0.07, 0.20, 0.0, false},
+        {"upper_bypass", {21.0, 18.2}, {21.0, 18.2}, {0.90, 0.45}, 0.05, 1.40, 0.0, false},
+        {"exit_gap", {30.5, 14.0}, {30.5, 14.0}, {0.35, 1.00}, 0.06, 2.20, 0.0, false},
+        {"goal_approach", {34.0, 17.0}, {34.0, 17.0}, {0.70, 0.55}, 0.05, 2.90, 0.0, false},
+        {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
     };
-    world.gates_.back().heading_hint = angle_to(world.gates_[3].position, world.goal_);
+    world.gates_ = world.gate_templates_;
+    recompute_gate_headings(&world.gates_, world.goal_);
+    world.set_gate_behavior(gate_behavior, gate_seed);
 
     return world;
+}
+
+void WorldMap::set_gate_behavior(GateBehaviorMode gate_behavior, std::uint32_t gate_seed) {
+    gate_behavior_ = gate_behavior;
+    gate_seed_ = gate_seed;
+    reset_gate_layout(gate_seed_);
+}
+
+void WorldMap::reset_gate_layout(std::uint32_t gate_seed) {
+    gate_seed_ = gate_seed;
+    gates_ = gate_templates_;
+
+    if (gate_behavior_ == GateBehaviorMode::Static) {
+        for (GateSpec& gate : gates_) {
+            gate.position = gate.anchor_position;
+        }
+        recompute_gate_headings(&gates_, goal_);
+        return;
+    }
+
+    std::mt19937 rng(gate_seed_);
+    for (GateSpec& gate : gates_) {
+        if (gate.final) {
+            gate.anchor_position = goal_;
+            gate.position = goal_;
+            continue;
+        }
+
+        const double dx_limit = gate.motion_amplitude.x;
+        const double dy_limit = gate.motion_amplitude.y;
+        std::uniform_real_distribution<double> dx_dist(-dx_limit, dx_limit);
+        std::uniform_real_distribution<double> dy_dist(-dy_limit, dy_limit);
+
+        Vec2 anchor{
+            gate.anchor_position.x + dx_dist(rng),
+            gate.anchor_position.y + dy_dist(rng),
+        };
+
+        anchor.x = clamp_value(anchor.x, bounds_.min_x + 1.0, bounds_.max_x - 1.0);
+        anchor.y = clamp_value(anchor.y, bounds_.min_y + 1.0, bounds_.max_y - 1.0);
+        gate.anchor_position = anchor;
+        gate.position = anchor;
+    }
+
+    recompute_gate_headings(&gates_, goal_);
+}
+
+void WorldMap::update_gate_layout(double sim_time_s) {
+    if (gate_behavior_ != GateBehaviorMode::Mobile) {
+        recompute_gate_headings(&gates_, goal_);
+        return;
+    }
+
+    for (GateSpec& gate : gates_) {
+        if (gate.final) {
+            gate.position = goal_;
+            continue;
+        }
+
+        const double omega = 2.0 * kPi * gate.motion_frequency_hz;
+        const double phase = omega * sim_time_s + gate.motion_phase_rad;
+        gate.position = {
+            gate.anchor_position.x + gate.motion_amplitude.x * 0.45 * std::sin(phase),
+            gate.anchor_position.y + gate.motion_amplitude.y * 0.45 * std::cos(phase),
+        };
+    }
+
+    recompute_gate_headings(&gates_, goal_);
 }
 
 bool WorldMap::line_of_sight(const Vec2& from, const Vec2& to, double padding) const {

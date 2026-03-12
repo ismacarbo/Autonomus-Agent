@@ -691,15 +691,64 @@ HardwarePlannerReport HardwarePlannerRunner::run(int max_steps) {
         step();
     }
 
+    const RealRobotObservation& observation = bridge_.observation();
+    const bool controller_front_alert =
+        observation.have_controller_telemetry &&
+        ((observation.controller.safety_flags &
+          static_cast<std::uint16_t>(SafetyFlag::FrontAlert)) != 0U);
+    const bool lidar_front_blocked =
+        estimate_.front_lidar_distance > 0.0 &&
+        estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m;
+
+    const std::uint16_t controller_safety_flags = observation.have_controller_telemetry
+                                                      ? observation.controller.safety_flags
+                                                      : static_cast<std::uint16_t>(0);
+    const std::uint16_t controller_motor_flags = observation.have_controller_telemetry
+                                                     ? observation.controller.motor_flags
+                                                     : static_cast<std::uint16_t>(0);
+    const std::uint16_t controller_status_flags = observation.have_controller_telemetry
+                                                      ? observation.controller.status_flags
+                                                      : static_cast<std::uint16_t>(0);
+    const std::uint16_t controller_error_code = observation.have_controller_telemetry
+                                                    ? observation.controller.error_code
+                                                    : static_cast<std::uint16_t>(0);
+    const std::int16_t controller_pwm_left = observation.have_controller_telemetry
+                                                 ? observation.controller.pwm_l
+                                                 : static_cast<std::int16_t>(0);
+    const std::int16_t controller_pwm_right = observation.have_controller_telemetry
+                                                  ? observation.controller.pwm_r
+                                                  : static_cast<std::int16_t>(0);
+    const std::int16_t controller_target_pwm_left = observation.have_controller_telemetry
+                                                        ? observation.controller.target_pwm_l
+                                                        : static_cast<std::int16_t>(0);
+    const std::int16_t controller_target_pwm_right = observation.have_controller_telemetry
+                                                         ? observation.controller.target_pwm_r
+                                                         : static_cast<std::int16_t>(0);
+
     return {
         goal_reached_,
         telemetry_ready_,
         safety_stop_active_,
+        controller_front_alert,
+        lidar_front_blocked,
+        observation.have_lidar_scan,
         step_count_,
         sim_time_,
         estimate_.position,
         distance_to_goal_,
+        estimate_.min_lidar_distance,
+        estimate_.front_lidar_distance,
         count_passed_gates(),
+        controller_safety_flags,
+        controller_motor_flags,
+        controller_status_flags,
+        controller_error_code,
+        controller_pwm_left,
+        controller_pwm_right,
+        controller_target_pwm_left,
+        controller_target_pwm_right,
+        last_command_.pwm_left,
+        last_command_.pwm_right,
     };
 }
 

@@ -9,6 +9,12 @@ namespace thesis_sim {
 
 namespace {
 
+struct RangeSensorSpec {
+    int beams = 0;
+    double fov_rad = 0.0;
+    double range = 0.0;
+};
+
 double clamp_value(double value, double lo, double hi) {
     return std::max(lo, std::min(value, hi));
 }
@@ -28,7 +34,34 @@ double wrap_angle(double angle) {
     return angle;
 }
 
+RangeSensorSpec make_range_sensor_spec(const SimConfig& config) {
+    constexpr double kPi = 3.14159265358979323846;
+    switch (config.range_sensor_profile) {
+        case RangeSensorProfile::IdealLidar2D:
+            return {std::max(config.lidar_beams, 1), config.lidar_fov_rad, config.lidar_range};
+        case RangeSensorProfile::RplidarA1:
+            return {360, 2.0 * kPi, 12.0};
+        case RangeSensorProfile::ShortRangeScanner:
+            return {121, 2.0 * kPi / 3.0, 4.5};
+        default:
+            return {std::max(config.lidar_beams, 1), config.lidar_fov_rad, config.lidar_range};
+    }
+}
+
 }  // namespace
+
+const char* range_sensor_profile_name(RangeSensorProfile profile) {
+    switch (profile) {
+        case RangeSensorProfile::IdealLidar2D:
+            return "Ideal 2D LiDAR";
+        case RangeSensorProfile::RplidarA1:
+            return "RPLidar A1";
+        case RangeSensorProfile::ShortRangeScanner:
+            return "Short Range Scanner";
+        default:
+            return "Unknown";
+    }
+}
 
 PlannerDrivenVehicleSim::PlannerDrivenVehicleSim(WorldMap world, SimConfig config)
     : world_(std::move(world)),
@@ -47,7 +80,7 @@ void PlannerDrivenVehicleSim::reset() {
     goal_reached_ = false;
     collision_ = false;
     distance_to_goal_ = distance(world_.start(), world_.goal());
-    min_lidar_distance_ = config_.lidar_range;
+    min_lidar_distance_ = active_lidar_range();
 
     history_.clear();
     trail_.clear();
@@ -99,20 +132,9 @@ void PlannerDrivenVehicleSim::reset() {
 
     vehicle_model_->reset(world_.start(), world_.start_heading());
     sync_planner_from_vehicle(true);
-
-    gates_.clear();
-    for (const GateSpec& spec : world_.gates()) {
-        gate g{};
-        g.x_pos = spec.position.x;
-        g.y_pos = spec.position.y;
-        g.road = cl_;
-        g.road.PSI_end = spec.heading_hint;
-        g.passed = false;
-        g.choose = false;
-        g.too_far = false;
-        g.final = spec.final;
-        gates_.push_back(g);
-    }
+    world_.set_gate_behavior(config_.gate_behavior, config_.gate_seed);
+    world_.update_gate_layout(0.0);
+    sync_gate_specs_from_world(true);
 
     update_vehicle_snapshot();
     update_lidar();
@@ -133,6 +155,34 @@ void PlannerDrivenVehicleSim::sync_planner_from_vehicle(bool reset_relative_stat
         x0_.a = state.accel;
         x0_.b = 0.0;
         x0_.c = state.curvature;
+    }
+}
+
+void PlannerDrivenVehicleSim::sync_gate_specs_from_world(bool reset_flags) {
+    const std::vector<GateSpec>& specs = world_.gates();
+    if (reset_flags || gates_.size() != specs.size()) {
+        gates_.clear();
+        gates_.reserve(specs.size());
+        for (const GateSpec& spec : specs) {
+            gate g{};
+            g.x_pos = spec.position.x;
+            g.y_pos = spec.position.y;
+            g.road = cl_;
+            g.road.PSI_end = spec.heading_hint;
+            g.passed = false;
+            g.choose = false;
+            g.too_far = false;
+            g.final = spec.final;
+            gates_.push_back(g);
+        }
+        return;
+    }
+
+    for (size_t i = 0; i < specs.size(); ++i) {
+        gates_[i].x_pos = specs[i].position.x;
+        gates_[i].y_pos = specs[i].position.y;
+        gates_[i].road.PSI_end = specs[i].heading_hint;
+        gates_[i].final = specs[i].final;
     }
 }
 
@@ -161,6 +211,7 @@ void PlannerDrivenVehicleSim::update_speed_limit() {
 
 std::vector<int> PlannerDrivenVehicleSim::select_gate_candidates() const {
     std::vector<int> candidates;
+    const double gate_visibility_range = active_lidar_range();
 
     const Vec2 pose{g_x0_.x_fix, g_x0_.y_fix};
     int nearest_idx = -1;
@@ -178,7 +229,7 @@ std::vector<int> PlannerDrivenVehicleSim::select_gate_candidates() const {
             nearest_idx = static_cast<int>(i);
         }
 
-        const bool visible = dist <= config_.lidar_range + 2.0 && world_.line_of_sight(pose, gate_pos);
+        const bool visible = dist <= gate_visibility_range + 2.0 && world_.line_of_sight(pose, gate_pos);
         const bool close_final = gates_[i].final && dist <= 10.0;
         if (visible || close_final) {
             candidates.push_back(static_cast<int>(i));
@@ -269,8 +320,15 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
 }
 
 void PlannerDrivenVehicleSim::update_lidar() {
+    if (!config_.lidar_enabled) {
+        lidar_hits_.clear();
+        min_lidar_distance_ = -1.0;
+        return;
+    }
+
+    const RangeSensorSpec sensor = make_range_sensor_spec(config_);
     const Vec2 origin{g_x0_.x_fix, g_x0_.y_fix};
-    lidar_hits_ = world_.raycast(origin, g_x0_.theta, config_.lidar_beams, config_.lidar_fov_rad, config_.lidar_range);
+    lidar_hits_ = world_.raycast(origin, g_x0_.theta, sensor.beams, sensor.fov_rad, sensor.range);
     min_lidar_distance_ = compute_min_lidar();
 }
 
@@ -315,14 +373,53 @@ void PlannerDrivenVehicleSim::update_vehicle_snapshot() {
 }
 
 double PlannerDrivenVehicleSim::compute_min_lidar() const {
-    if (lidar_hits_.empty()) {
-        return config_.lidar_range;
+    if (!config_.lidar_enabled) {
+        return -1.0;
     }
-    double min_value = config_.lidar_range;
+    if (lidar_hits_.empty()) {
+        return active_lidar_range();
+    }
+    double min_value = active_lidar_range();
     for (const LidarHit& hit : lidar_hits_) {
         min_value = std::min(min_value, hit.distance);
     }
     return min_value;
+}
+
+int PlannerDrivenVehicleSim::active_lidar_beams() const {
+    return make_range_sensor_spec(config_).beams;
+}
+
+double PlannerDrivenVehicleSim::active_lidar_fov_rad() const {
+    return make_range_sensor_spec(config_).fov_rad;
+}
+
+double PlannerDrivenVehicleSim::active_lidar_range() const {
+    return make_range_sensor_spec(config_).range;
+}
+
+void PlannerDrivenVehicleSim::set_sensor_suite(bool imu_enabled,
+                                               bool lidar_enabled,
+                                               RangeSensorProfile profile) {
+    config_.imu_enabled = imu_enabled;
+    config_.lidar_enabled = lidar_enabled;
+    config_.range_sensor_profile = profile;
+    update_lidar();
+}
+
+void PlannerDrivenVehicleSim::set_gate_behavior(GateBehaviorMode mode, std::uint32_t seed) {
+    config_.gate_behavior = mode;
+    config_.gate_seed = seed;
+    world_.set_gate_behavior(mode, seed);
+    world_.update_gate_layout(sim_time_);
+    sync_gate_specs_from_world(false);
+}
+
+void PlannerDrivenVehicleSim::regenerate_gate_layout(std::uint32_t seed) {
+    config_.gate_seed = seed;
+    world_.reset_gate_layout(seed);
+    world_.update_gate_layout(sim_time_);
+    sync_gate_specs_from_world(false);
 }
 
 void PlannerDrivenVehicleSim::update_telemetry() {
@@ -363,6 +460,8 @@ void PlannerDrivenVehicleSim::step() {
         return;
     }
 
+    world_.update_gate_layout(sim_time_);
+    sync_gate_specs_from_world(false);
     update_speed_limit();
     plan_if_needed();
 

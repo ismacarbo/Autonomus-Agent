@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -18,8 +19,10 @@
 namespace {
 
 using thesis_sim::GateSpec;
+using thesis_sim::GateBehaviorMode;
 using thesis_sim::LidarHit;
 using thesis_sim::PlannerDrivenVehicleSim;
+using thesis_sim::RangeSensorProfile;
 using thesis_sim::Rect;
 using thesis_sim::SimulationReport;
 using thesis_sim::TelemetrySample;
@@ -36,6 +39,13 @@ struct AppOptions {
 struct CanvasTransform {
     ImVec2 origin;
     float scale = 1.0f;
+};
+
+struct UiState {
+    bool paused = true;
+    bool single_step = false;
+    int steps_per_frame = 1;
+    int gate_seed_input = 7;
 };
 
 constexpr ImU32 kColorCanvas = IM_COL32(19, 24, 28, 255);
@@ -158,9 +168,9 @@ void draw_vehicle(ImDrawList* draw_list, const CanvasTransform& tx, const Vehicl
     draw_list->AddLine(world_to_screen(tx, vehicle.position), world_to_screen(tx, nose), kColorHeading, 3.0f);
 }
 
-void render_world_window(PlannerDrivenVehicleSim& sim) {
-    if (!ImGui::Begin("World")) {
-        ImGui::End();
+void render_world_tab(PlannerDrivenVehicleSim& sim) {
+    if (!ImGui::BeginChild("SimulationViewport", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_NoScrollbar)) {
+        ImGui::EndChild();
         return;
     }
 
@@ -170,8 +180,8 @@ void render_world_window(PlannerDrivenVehicleSim& sim) {
     canvas_size.y = std::max(canvas_size.y, 320.0f);
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), kColorCanvas, 12.0f);
-    draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), IM_COL32(71, 81, 88, 255), 12.0f, 0, 1.5f);
+    draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), kColorCanvas, 14.0f);
+    draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), IM_COL32(71, 81, 88, 255), 14.0f, 0, 1.5f);
 
     const CanvasTransform tx = make_transform(sim.world(), canvas_pos, canvas_size);
     const Rect bounds = sim.world().bounds();
@@ -194,19 +204,23 @@ void render_world_window(PlannerDrivenVehicleSim& sim) {
 
     draw_polyline(draw_list, tx, sim.trail(), kColorTrail, 2.5f);
 
-    const Vec2 car_pos = sim.vehicle().position;
-    for (const LidarHit& hit : sim.lidar_hits()) {
-        draw_list->AddLine(world_to_screen(tx, car_pos), world_to_screen(tx, hit.point), kColorLidar, 1.0f);
-    }
+    if (sim.lidar_enabled()) {
+        const Vec2 car_pos = sim.vehicle().position;
+        for (const LidarHit& hit : sim.lidar_hits()) {
+            draw_list->AddLine(world_to_screen(tx, car_pos), world_to_screen(tx, hit.point), kColorLidar, 1.0f);
+        }
 
-    for (const LidarHit& hit : sim.lidar_hits()) {
-        draw_list->AddCircleFilled(world_to_screen(tx, hit.point), 2.0f, kColorLidarHit);
+        for (const LidarHit& hit : sim.lidar_hits()) {
+            draw_list->AddCircleFilled(world_to_screen(tx, hit.point), 2.0f, kColorLidarHit);
+        }
     }
 
     for (size_t i = 0; i < sim.gates().size(); ++i) {
         const GateSpec& spec = sim.world().gates()[i];
         const auto screen_pos = world_to_screen(tx, spec.position);
-        const bool visible = std::find(sim.visible_gate_indices().begin(), sim.visible_gate_indices().end(), static_cast<int>(i)) != sim.visible_gate_indices().end();
+        const bool visible =
+            std::find(sim.visible_gate_indices().begin(), sim.visible_gate_indices().end(), static_cast<int>(i)) !=
+            sim.visible_gate_indices().end();
 
         ImU32 color = spec.final ? kColorGoal : kColorGate;
         if (sim.gates()[i].passed) {
@@ -225,63 +239,19 @@ void render_world_window(PlannerDrivenVehicleSim& sim) {
     }
 
     draw_vehicle(draw_list, tx, sim.vehicle(), sim.geometry());
+
+    draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 14.0f),
+                       IM_COL32(233, 236, 229, 255),
+                       "Simulation viewport");
+    draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 34.0f),
+                       IM_COL32(170, 179, 185, 255),
+                       thesis_sim::range_sensor_profile_name(sim.range_sensor_profile()));
+    draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 54.0f),
+                       IM_COL32(170, 179, 185, 255),
+                       thesis_sim::gate_behavior_mode_name(sim.gate_behavior()));
+
     ImGui::Dummy(canvas_size);
-    ImGui::End();
-}
-
-void render_status_window(PlannerDrivenVehicleSim& sim, bool* paused, int* steps_per_frame, bool* single_step) {
-    ImGui::Begin("Scenario");
-    const char* status = sim.goal_reached() ? "Goal reached" : (sim.collision() ? "Collision" : "Running");
-    const ImVec4 status_color = sim.goal_reached() ? ImVec4(0.45f, 0.86f, 0.53f, 1.0f)
-                                                   : (sim.collision() ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
-                                                                      : ImVec4(0.87f, 0.79f, 0.39f, 1.0f));
-
-    const auto& vehicle = sim.vehicle();
-
-    ImGui::Text("Thesis planner simulator");
-    ImGui::Text("model = %s", vehicle.model_name.c_str());
-    ImGui::TextColored(status_color, "%s", status);
-    ImGui::Separator();
-
-    if (ImGui::Button(*paused ? "Resume" : "Pause")) {
-        *paused = !*paused;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Step")) {
-        *single_step = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Reset")) {
-        sim.reset();
-        *paused = true;
-    }
-
-    ImGui::SliderInt("Steps / frame", steps_per_frame, 1, 8);
-    ImGui::Separator();
-
-    const char* chosen_name = sim.chosen_gate_index() >= 0 ? sim.world().gates()[sim.chosen_gate_index()].name.c_str() : "none";
-
-    ImGui::Text("t = %.2f s   step = %d", sim.sim_time(), sim.step_count());
-    ImGui::Text("pos = (%.2f, %.2f) m", vehicle.position.x, vehicle.position.y);
-    ImGui::Text("yaw = %.1f deg", vehicle.yaw * 180.0 / 3.14159265358979323846);
-    ImGui::Text("v = %.2f m/s   a = %.2f m/s^2", vehicle.speed, vehicle.accel);
-    ImGui::Text("j = %.2f m/s^3   r = %.2f 1/(m*s)", sim.last_j(), sim.last_r());
-    ImGui::Text("kappa = %.3f 1/m   yaw rate = %.2f deg/s", vehicle.curvature, vehicle.yaw_rate * 180.0 / 3.14159265358979323846);
-    ImGui::Text("target v = %.2f m/s   target wz = %.2f deg/s",
-                vehicle.target_speed,
-                vehicle.target_yaw_rate * 180.0 / 3.14159265358979323846);
-    ImGui::Text("wheel v = (%.2f, %.2f) m/s", vehicle.left_wheel_speed, vehicle.right_wheel_speed);
-    ImGui::Text("PWM = (%d, %d)", vehicle.left_pwm, vehicle.right_pwm);
-    ImGui::Text("enc ticks = (%d, %d)   dTicks = (%d, %d)",
-                vehicle.left_encoder_ticks,
-                vehicle.right_encoder_ticks,
-                vehicle.left_encoder_delta,
-                vehicle.right_encoder_delta);
-    ImGui::Text("goal distance = %.2f m", sim.distance_to_goal());
-    ImGui::Text("min lidar = %.2f m", sim.min_lidar_distance());
-    ImGui::Text("chosen gate = %s", chosen_name);
-    ImGui::Text("visible gates = %d", static_cast<int>(sim.visible_gate_indices().size()));
-    ImGui::End();
+    ImGui::EndChild();
 }
 
 void render_plot_window(const char* title,
@@ -302,12 +272,16 @@ void render_plot_window(const char* title,
     ImPlot::EndPlot();
 }
 
-void render_telemetry_window(PlannerDrivenVehicleSim& sim) {
-    ImGui::Begin("Telemetry");
+void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
+    if (!ImGui::BeginChild("TelemetryViewport", ImVec2(0.0f, 0.0f), true)) {
+        ImGui::EndChild();
+        return;
+    }
+
     const std::vector<TelemetrySample>& history = sim.history();
     if (history.empty()) {
         ImGui::TextUnformatted("No data yet.");
-        ImGui::End();
+        ImGui::EndChild();
         return;
     }
 
@@ -367,6 +341,173 @@ void render_telemetry_window(PlannerDrivenVehicleSim& sim) {
     render_plot_window("Motor PWM", time, left_pwm, "PWM left", &right_pwm, "PWM right");
     render_plot_window("Encoder Delta", time, left_encoder_delta, "dTicks left", &right_encoder_delta, "dTicks right");
     render_plot_window("Distance Metrics", time, dist_goal, "goal [m]", &min_lidar, "lidar [m]");
+    ImGui::EndChild();
+}
+
+void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
+    if (!ImGui::BeginChild("ConfigPanel", ImVec2(0.0f, 0.0f), true)) {
+        ImGui::EndChild();
+        return;
+    }
+
+    const char* status = sim.goal_reached() ? "Goal reached" : (sim.collision() ? "Collision" : (ui_state->paused ? "Paused" : "Running"));
+    const ImVec4 status_color = sim.goal_reached() ? ImVec4(0.45f, 0.86f, 0.53f, 1.0f)
+                                                   : (sim.collision() ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
+                                                                      : (ui_state->paused ? ImVec4(0.74f, 0.79f, 0.84f, 1.0f)
+                                                                                          : ImVec4(0.87f, 0.79f, 0.39f, 1.0f)));
+    const auto& vehicle = sim.vehicle();
+    const char* chosen_name = sim.chosen_gate_index() >= 0 ? sim.world().gates()[sim.chosen_gate_index()].name.c_str() : "none";
+
+    ImGui::TextUnformatted("Simulation Control");
+    ImGui::TextColored(status_color, "%s", status);
+    ImGui::SeparatorText("Run");
+
+    if (ImGui::Button(ui_state->paused ? "Resume" : "Pause", ImVec2(-1.0f, 0.0f))) {
+        ui_state->paused = !ui_state->paused;
+    }
+    if (ImGui::Button("Step", ImVec2(-1.0f, 0.0f))) {
+        ui_state->single_step = true;
+    }
+    if (ImGui::Button("Reset", ImVec2(-1.0f, 0.0f))) {
+        sim.reset();
+        ui_state->paused = true;
+    }
+    ImGui::SliderInt("Steps / frame", &ui_state->steps_per_frame, 1, 8);
+
+    ImGui::SeparatorText("Scenario");
+    ImGui::TextWrapped("Named gates are passage hypotheses through the free openings of the unstructured map. They guide the planner toward feasible corridors.");
+
+    int gate_behavior = static_cast<int>(sim.gate_behavior());
+    bool gate_changed = false;
+    const char* gate_items[] = {
+        thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Static),
+        thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Randomized),
+        thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Mobile),
+    };
+    if (ImGui::Combo("Gate Layout", &gate_behavior, gate_items, IM_ARRAYSIZE(gate_items))) {
+        gate_changed = true;
+    }
+    if (ImGui::InputInt("Gate Seed", &ui_state->gate_seed_input)) {
+        ui_state->gate_seed_input = std::max(ui_state->gate_seed_input, 0);
+        gate_changed = true;
+    }
+    if (gate_changed) {
+        sim.set_gate_behavior(
+            static_cast<GateBehaviorMode>(std::clamp(gate_behavior, 0, static_cast<int>(IM_ARRAYSIZE(gate_items)) - 1)),
+            static_cast<std::uint32_t>(ui_state->gate_seed_input));
+    }
+    if (ImGui::Button("Regenerate Gates", ImVec2(-1.0f, 0.0f))) {
+        ui_state->gate_seed_input = std::max(ui_state->gate_seed_input + 1, 0);
+        sim.regenerate_gate_layout(static_cast<std::uint32_t>(ui_state->gate_seed_input));
+    }
+    ImGui::Text("Gate mode = %s", thesis_sim::gate_behavior_mode_name(sim.gate_behavior()));
+    ImGui::Text("Gate seed = %u", sim.gate_seed());
+
+    ImGui::SeparatorText("Sensors");
+    bool imu_enabled = sim.imu_enabled();
+    bool lidar_enabled = sim.lidar_enabled();
+    int sensor_profile = static_cast<int>(sim.range_sensor_profile());
+    bool sensor_changed = false;
+
+    if (ImGui::Checkbox("Enable IMU", &imu_enabled)) {
+        sensor_changed = true;
+    }
+    if (ImGui::Checkbox("Enable LiDAR", &lidar_enabled)) {
+        sensor_changed = true;
+    }
+
+    const char* sensor_items[] = {
+        thesis_sim::range_sensor_profile_name(RangeSensorProfile::IdealLidar2D),
+        thesis_sim::range_sensor_profile_name(RangeSensorProfile::RplidarA1),
+        thesis_sim::range_sensor_profile_name(RangeSensorProfile::ShortRangeScanner),
+    };
+    if (ImGui::Combo("Range Sensor", &sensor_profile, sensor_items, IM_ARRAYSIZE(sensor_items))) {
+        sensor_changed = true;
+    }
+
+    if (sensor_changed) {
+        sim.set_sensor_suite(
+            imu_enabled,
+            lidar_enabled,
+            static_cast<RangeSensorProfile>(std::clamp(sensor_profile, 0, static_cast<int>(IM_ARRAYSIZE(sensor_items)) - 1)));
+    }
+
+    ImGui::Text("Profile = %s", thesis_sim::range_sensor_profile_name(sim.range_sensor_profile()));
+    ImGui::Text("Beams = %d", sim.active_lidar_beams());
+    ImGui::Text("FOV = %.0f deg", sim.active_lidar_fov_rad() * 180.0 / 3.14159265358979323846);
+    ImGui::Text("Range = %.1f m", sim.active_lidar_range());
+    if (sim.imu_enabled()) {
+        ImGui::Text("IMU yaw rate = %.2f deg/s", vehicle.yaw_rate * 180.0 / 3.14159265358979323846);
+    } else {
+        ImGui::TextDisabled("IMU disabled");
+    }
+    if (sim.lidar_enabled()) {
+        ImGui::Text("LiDAR min range = %.2f m", sim.min_lidar_distance());
+    } else {
+        ImGui::TextDisabled("LiDAR disabled");
+    }
+
+    ImGui::SeparatorText("State");
+    ImGui::Text("model = %s", vehicle.model_name.c_str());
+    ImGui::Text("t = %.2f s", sim.sim_time());
+    ImGui::Text("step = %d", sim.step_count());
+    ImGui::Text("pos = (%.2f, %.2f) m", vehicle.position.x, vehicle.position.y);
+    ImGui::Text("yaw = %.1f deg", vehicle.yaw * 180.0 / 3.14159265358979323846);
+    ImGui::Text("v = %.2f m/s", vehicle.speed);
+    ImGui::Text("a = %.2f m/s^2", vehicle.accel);
+    ImGui::Text("j = %.2f m/s^3", sim.last_j());
+    ImGui::Text("r = %.2f 1/(m*s)", sim.last_r());
+    ImGui::Text("kappa = %.3f 1/m", vehicle.curvature);
+    ImGui::Text("target v = %.2f m/s", vehicle.target_speed);
+    ImGui::Text("target wz = %.2f deg/s", vehicle.target_yaw_rate * 180.0 / 3.14159265358979323846);
+    ImGui::Text("wheel v = (%.2f, %.2f) m/s", vehicle.left_wheel_speed, vehicle.right_wheel_speed);
+    ImGui::Text("PWM = (%d, %d)", vehicle.left_pwm, vehicle.right_pwm);
+    ImGui::Text("enc ticks = (%d, %d)", vehicle.left_encoder_ticks, vehicle.right_encoder_ticks);
+    ImGui::Text("dTicks = (%d, %d)", vehicle.left_encoder_delta, vehicle.right_encoder_delta);
+    ImGui::Text("goal distance = %.2f m", sim.distance_to_goal());
+    ImGui::Text("chosen gate = %s", chosen_name);
+    ImGui::Text("visible gates = %d", static_cast<int>(sim.visible_gate_indices().size()));
+
+    ImGui::EndChild();
+}
+
+void render_workspace(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoSavedSettings;
+
+    if (!ImGui::Begin("Thesis Planner Workspace", nullptr, flags)) {
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::BeginTable("WorkspaceLayout", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn("MainArea", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("ConfigArea", ImGuiTableColumnFlags_WidthFixed, 350.0f);
+
+        ImGui::TableNextColumn();
+        if (ImGui::BeginTabBar("WorkspaceTabs")) {
+            if (ImGui::BeginTabItem("Simulation")) {
+                render_world_tab(sim);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Graphs")) {
+                render_graphs_tab(sim);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+
+        ImGui::TableNextColumn();
+        render_control_panel(sim, ui_state);
+        ImGui::EndTable();
+    }
+
     ImGui::End();
 }
 
@@ -429,9 +570,8 @@ int run_gui() {
 
     PlannerDrivenVehicleSim sim(WorldMap::thesis_demo());
     bool running = true;
-    bool paused = true;
-    bool single_step = false;
-    int steps_per_frame = 1;
+    UiState ui_state;
+    ui_state.gate_seed_input = static_cast<int>(sim.gate_seed());
 
     while (running) {
         SDL_Event event;
@@ -442,25 +582,23 @@ int run_gui() {
             }
         }
 
-        if (!paused && !sim.goal_reached() && !sim.collision()) {
-            for (int i = 0; i < steps_per_frame; ++i) {
+        if (!ui_state.paused && !sim.goal_reached() && !sim.collision()) {
+            for (int i = 0; i < ui_state.steps_per_frame; ++i) {
                 sim.step();
                 if (sim.goal_reached() || sim.collision()) {
                     break;
                 }
             }
-        } else if (single_step) {
+        } else if (ui_state.single_step) {
             sim.step();
-            single_step = false;
+            ui_state.single_step = false;
         }
 
         ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        render_status_window(sim, &paused, &steps_per_frame, &single_step);
-        render_world_window(sim);
-        render_telemetry_window(sim);
+        render_workspace(sim, &ui_state);
 
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 9, 12, 15, 255);

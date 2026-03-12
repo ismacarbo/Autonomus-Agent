@@ -101,12 +101,27 @@ int main(int argc, char** argv) {
         std::cout << "status=" << (report.goal_reached ? "goal_reached" : "stopped") << '\n';
         std::cout << "telemetry_ready=" << (report.telemetry_ready ? 1 : 0) << '\n';
         std::cout << "safety_stop_active=" << (report.safety_stop_active ? 1 : 0) << '\n';
+        std::cout << "controller_front_alert=" << (report.controller_front_alert ? 1 : 0) << '\n';
+        std::cout << "lidar_front_blocked=" << (report.lidar_front_blocked ? 1 : 0) << '\n';
+        std::cout << "have_lidar_scan=" << (report.have_lidar_scan ? 1 : 0) << '\n';
         std::cout << "steps=" << report.steps << '\n';
         std::cout << "time=" << report.runtime_s << '\n';
         std::cout << "final_x=" << report.final_position.x << '\n';
         std::cout << "final_y=" << report.final_position.y << '\n';
         std::cout << "distance_to_goal=" << report.distance_to_goal << '\n';
+        std::cout << "min_lidar_distance=" << report.min_lidar_distance << '\n';
+        std::cout << "front_lidar_distance=" << report.front_lidar_distance << '\n';
         std::cout << "passed_gates=" << report.passed_gates << '\n';
+        std::cout << "controller_safety_flags=0x" << std::hex << report.controller_safety_flags << std::dec << '\n';
+        std::cout << "controller_motor_flags=0x" << std::hex << report.controller_motor_flags << std::dec << '\n';
+        std::cout << "controller_status_flags=0x" << std::hex << report.controller_status_flags << std::dec << '\n';
+        std::cout << "controller_error_code=0x" << std::hex << report.controller_error_code << std::dec << '\n';
+        std::cout << "controller_pwm_left=" << report.controller_pwm_left << '\n';
+        std::cout << "controller_pwm_right=" << report.controller_pwm_right << '\n';
+        std::cout << "controller_target_pwm_left=" << report.controller_target_pwm_left << '\n';
+        std::cout << "controller_target_pwm_right=" << report.controller_target_pwm_right << '\n';
+        std::cout << "planned_pwm_left=" << report.planned_pwm_left << '\n';
+        std::cout << "planned_pwm_right=" << report.planned_pwm_right << '\n';
         return report.goal_reached ? 0 : 1;
     } catch (const std::exception& e) {
         try {

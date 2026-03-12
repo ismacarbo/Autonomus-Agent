@@ -11,15 +11,15 @@
 namespace thesis_sim {
 
 struct VehicleGeometry {
-    double wheelbase = 0.22;
-    double cg_to_front = 0.11;
-    double cg_to_rear = 0.11;
-    double track = 0.28;
-    double body_length = 0.34;
-    double body_width = 0.24;
-    double wheel_length = 0.07;
-    double wheel_width = 0.02;
-    double wheel_radius = 0.035;
+    double wheelbase = 0.30;
+    double cg_to_front = 0.15;
+    double cg_to_rear = 0.15;
+    double track = 0.36;
+    double body_length = 0.46;
+    double body_width = 0.32;
+    double wheel_length = 0.09;
+    double wheel_width = 0.03;
+    double wheel_radius = 0.04;
     double max_steer_angle = 0.0;
     double max_curvature = 3.2;
     double max_linear_speed = 0.90;

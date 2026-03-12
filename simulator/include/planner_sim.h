@@ -14,6 +14,14 @@
 
 namespace thesis_sim {
 
+enum class RangeSensorProfile {
+    IdealLidar2D = 0,
+    RplidarA1 = 1,
+    ShortRangeScanner = 2,
+};
+
+const char* range_sensor_profile_name(RangeSensorProfile profile);
+
 struct WheelPose {
     Vec2 center;
     double yaw = 0.0;
@@ -77,6 +85,11 @@ struct SimConfig {
     double lidar_range = 8.0;
     int max_history = 2400;
     double cruise_speed_limit = 0.75;
+    bool imu_enabled = true;
+    bool lidar_enabled = true;
+    RangeSensorProfile range_sensor_profile = RangeSensorProfile::RplidarA1;
+    GateBehaviorMode gate_behavior = GateBehaviorMode::Static;
+    std::uint32_t gate_seed = 7;
 };
 
 struct SimulationReport {
@@ -106,6 +119,7 @@ class PlannerDrivenVehicleSim {
     const std::vector<int>& visible_gate_indices() const { return visible_gate_indices_; }
     const std::vector<Vec2>& trail() const { return trail_; }
     const VehicleDynamicsModel& dynamics_model() const { return *vehicle_model_; }
+    const SimConfig& config() const { return config_; }
 
     bool goal_reached() const { return goal_reached_; }
     bool collision() const { return collision_; }
@@ -116,9 +130,21 @@ class PlannerDrivenVehicleSim {
     double distance_to_goal() const { return distance_to_goal_; }
     double min_lidar_distance() const { return min_lidar_distance_; }
     int chosen_gate_index() const { return chosen_gate_index_; }
+    bool imu_enabled() const { return config_.imu_enabled; }
+    bool lidar_enabled() const { return config_.lidar_enabled; }
+    RangeSensorProfile range_sensor_profile() const { return config_.range_sensor_profile; }
+    GateBehaviorMode gate_behavior() const { return config_.gate_behavior; }
+    std::uint32_t gate_seed() const { return config_.gate_seed; }
+    int active_lidar_beams() const;
+    double active_lidar_fov_rad() const;
+    double active_lidar_range() const;
+    void set_sensor_suite(bool imu_enabled, bool lidar_enabled, RangeSensorProfile profile);
+    void set_gate_behavior(GateBehaviorMode mode, std::uint32_t seed);
+    void regenerate_gate_layout(std::uint32_t seed);
 
   private:
     void sync_planner_from_vehicle(bool reset_relative_state);
+    void sync_gate_specs_from_world(bool reset_flags);
     void update_speed_limit();
     void update_lidar();
     void update_vehicle_snapshot();

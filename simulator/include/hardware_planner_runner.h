@@ -103,11 +103,26 @@ struct HardwarePlannerReport {
     bool goal_reached = false;
     bool telemetry_ready = false;
     bool safety_stop_active = false;
+    bool controller_front_alert = false;
+    bool lidar_front_blocked = false;
+    bool have_lidar_scan = false;
     int steps = 0;
     double runtime_s = 0.0;
     Vec2 final_position;
     double distance_to_goal = 0.0;
+    double min_lidar_distance = 0.0;
+    double front_lidar_distance = 0.0;
     int passed_gates = 0;
+    std::uint16_t controller_safety_flags = 0;
+    std::uint16_t controller_motor_flags = 0;
+    std::uint16_t controller_status_flags = 0;
+    std::uint16_t controller_error_code = 0;
+    std::int16_t controller_pwm_left = 0;
+    std::int16_t controller_pwm_right = 0;
+    std::int16_t controller_target_pwm_left = 0;
+    std::int16_t controller_target_pwm_right = 0;
+    int planned_pwm_left = 0;
+    int planned_pwm_right = 0;
 };
 
 class HardwarePlannerRunner {
