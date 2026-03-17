@@ -3,9 +3,16 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -20,13 +27,18 @@ namespace {
 
 using thesis_sim::GateSpec;
 using thesis_sim::GateBehaviorMode;
+using thesis_sim::EnvironmentMode;
 using thesis_sim::LidarHit;
 using thesis_sim::PlannerDrivenVehicleSim;
 using thesis_sim::RangeSensorProfile;
 using thesis_sim::Rect;
 using thesis_sim::SimulationReport;
+using thesis_sim::StructuredMapPreset;
 using thesis_sim::TelemetrySample;
+using thesis_sim::TrackingControllerMode;
+using thesis_sim::UnstructuredMapPreset;
 using thesis_sim::Vec2;
+using thesis_sim::VehicleModelKind;
 using thesis_sim::VehicleSnapshot;
 using thesis_sim::WheelPose;
 using thesis_sim::WorldMap;
@@ -34,6 +46,9 @@ using thesis_sim::WorldMap;
 struct AppOptions {
     bool headless = false;
     int max_steps = 6000;
+    EnvironmentMode environment_mode = EnvironmentMode::UnstructuredGates;
+    UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
+    StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
 };
 
 struct CanvasTransform {
@@ -41,11 +56,36 @@ struct CanvasTransform {
     float scale = 1.0f;
 };
 
+enum class MapEditorHandleType {
+    None = 0,
+    Start,
+    Goal,
+    Obstacle,
+    Gate,
+    RoadPoint,
+};
+
+struct MapEditorHandle {
+    MapEditorHandleType type = MapEditorHandleType::None;
+    int index = -1;
+};
+
 struct UiState {
     bool paused = true;
     bool single_step = false;
     int steps_per_frame = 1;
     int gate_seed_input = 7;
+    int environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
+    int unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
+    int structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
+    WorldMap scenario_editor_world;
+    bool scenario_editor_dirty = false;
+    bool map_editor_enabled = false;
+    MapEditorHandle selected_editor_handle;
+    MapEditorHandle active_drag_handle;
+    Vec2 drag_offset;
+    bool report_written = false;
+    std::string last_report_path;
 };
 
 constexpr ImU32 kColorCanvas = IM_COL32(19, 24, 28, 255);
@@ -53,6 +93,8 @@ constexpr ImU32 kColorGrid = IM_COL32(39, 49, 57, 255);
 constexpr ImU32 kColorBounds = IM_COL32(148, 162, 170, 255);
 constexpr ImU32 kColorObstacle = IM_COL32(86, 95, 105, 255);
 constexpr ImU32 kColorTrail = IM_COL32(95, 186, 255, 255);
+constexpr ImU32 kColorEstimateTrail = IM_COL32(255, 183, 77, 255);
+constexpr ImU32 kColorTrajectory = IM_COL32(255, 233, 118, 255);
 constexpr ImU32 kColorLidar = IM_COL32(132, 232, 147, 70);
 constexpr ImU32 kColorLidarHit = IM_COL32(198, 255, 172, 255);
 constexpr ImU32 kColorGate = IM_COL32(73, 198, 236, 255);
@@ -62,6 +104,345 @@ constexpr ImU32 kColorGoal = IM_COL32(248, 109, 76, 255);
 constexpr ImU32 kColorBody = IM_COL32(241, 239, 228, 255);
 constexpr ImU32 kColorWheel = IM_COL32(52, 55, 61, 255);
 constexpr ImU32 kColorHeading = IM_COL32(255, 142, 79, 255);
+constexpr ImU32 kColorEditorOverlay = IM_COL32(156, 196, 255, 210);
+constexpr ImU32 kColorEditorHandle = IM_COL32(255, 120, 120, 255);
+constexpr ImU32 kColorEditorSelected = IM_COL32(255, 234, 120, 255);
+
+void help_marker(const char* description) {
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && description != nullptr) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+        ImGui::TextUnformatted(description);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
+void metric_chip(const char* label, const char* value) {
+    ImGui::BeginGroup();
+    ImGui::TextDisabled("%s", label);
+    ImGui::TextUnformatted(value);
+    ImGui::EndGroup();
+}
+
+size_t plot_sample_stride(size_t point_count) {
+    constexpr size_t kMaxPlotPoints = 600;
+    if (point_count <= kMaxPlotPoints) {
+        return 1;
+    }
+    return std::max<size_t>(1, point_count / kMaxPlotPoints);
+}
+
+WorldMap make_world_from_mode(EnvironmentMode mode,
+                              UnstructuredMapPreset preset,
+                              StructuredMapPreset structured_preset,
+                              GateBehaviorMode gate_behavior,
+                              std::uint32_t gate_seed);
+
+std::string json_escape(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size() + 8);
+    for (const char ch : value) {
+        switch (ch) {
+            case '\\':
+                escaped += "\\\\";
+                break;
+            case '"':
+                escaped += "\\\"";
+                break;
+            case '\n':
+                escaped += "\\n";
+                break;
+            case '\r':
+                escaped += "\\r";
+                break;
+            case '\t':
+                escaped += "\\t";
+                break;
+            default:
+                escaped.push_back(ch);
+                break;
+        }
+    }
+    return escaped;
+}
+
+std::string slugify(std::string value) {
+    for (char& ch : value) {
+        if ((ch >= 'A' && ch <= 'Z')) {
+            ch = static_cast<char>(ch - 'A' + 'a');
+        } else if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) {
+            ch = '_';
+        }
+    }
+    return value;
+}
+
+void sync_ui_state_from_sim(UiState* ui_state, const PlannerDrivenVehicleSim& sim) {
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->environment_mode = static_cast<int>(sim.environment_mode());
+    ui_state->unstructured_preset = static_cast<int>(sim.world().unstructured_preset());
+    ui_state->structured_preset = static_cast<int>(sim.world().structured_preset());
+    ui_state->gate_seed_input = static_cast<int>(sim.gate_seed());
+    ui_state->scenario_editor_world = sim.world();
+    ui_state->scenario_editor_dirty = false;
+    ui_state->selected_editor_handle = {};
+    ui_state->active_drag_handle = {};
+    ui_state->drag_offset = {};
+    ui_state->report_written = false;
+    ui_state->last_report_path.clear();
+}
+
+WorldMap world_from_ui_selection(const PlannerDrivenVehicleSim& sim, const UiState& ui_state) {
+    const EnvironmentMode selected_mode = static_cast<EnvironmentMode>(ui_state.environment_mode);
+    const UnstructuredMapPreset selected_preset = static_cast<UnstructuredMapPreset>(ui_state.unstructured_preset);
+    const StructuredMapPreset selected_structured_preset = static_cast<StructuredMapPreset>(ui_state.structured_preset);
+    if (selected_mode == EnvironmentMode::UnstructuredGates &&
+        selected_preset == UnstructuredMapPreset::Custom &&
+        ui_state.scenario_editor_world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        WorldMap custom = ui_state.scenario_editor_world;
+        custom.finalize_editor_changes();
+        custom.set_gate_behavior(sim.gate_behavior(), sim.gate_seed());
+        return custom;
+    }
+    if (selected_mode == EnvironmentMode::StructuredRoad &&
+        selected_structured_preset == StructuredMapPreset::Custom &&
+        ui_state.scenario_editor_world.environment_mode() == EnvironmentMode::StructuredRoad) {
+        WorldMap custom = ui_state.scenario_editor_world;
+        custom.finalize_editor_changes();
+        return custom;
+    }
+    return make_world_from_mode(selected_mode, selected_preset, selected_structured_preset, sim.gate_behavior(), sim.gate_seed());
+}
+
+struct MetricSummary {
+    double avg = 0.0;
+    double max = 0.0;
+};
+
+MetricSummary summarize_metric(const std::vector<TelemetrySample>& history, double TelemetrySample::*member) {
+    MetricSummary summary;
+    if (history.empty()) {
+        return summary;
+    }
+    double total = 0.0;
+    for (const TelemetrySample& sample : history) {
+        const double value = sample.*member;
+        total += value;
+        summary.max = std::max(summary.max, value);
+    }
+    summary.avg = total / static_cast<double>(history.size());
+    return summary;
+}
+
+std::string report_status_string(const PlannerDrivenVehicleSim& sim) {
+    if (sim.goal_reached()) {
+        return "goal_reached";
+    }
+    if (sim.collision()) {
+        return "collision";
+    }
+    return "stopped";
+}
+
+std::string default_report_path(const PlannerDrivenVehicleSim& sim, const char* source_tag) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path report_dir = fs::current_path(ec) / "reports";
+    if (!ec) {
+        fs::create_directories(report_dir, ec);
+    }
+
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_tm{};
+    if (const std::tm* tm_ptr = std::localtime(&now_time)) {
+        local_tm = *tm_ptr;
+    }
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
+
+    std::ostringstream name;
+    name << "thesis_planner_"
+         << (sim.environment_mode() == EnvironmentMode::StructuredRoad ? "structured" : "unstructured");
+    const std::string preset_name = sim.environment_mode() == EnvironmentMode::StructuredRoad
+                                        ? thesis_sim::structured_map_preset_name(sim.world().structured_preset())
+                                        : thesis_sim::unstructured_map_preset_name(sim.world().unstructured_preset());
+    name << "_" << slugify(preset_name);
+    name << "_" << source_tag << "_"
+         << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
+         << "_" << std::setw(3) << std::setfill('0') << millis
+         << ".json";
+    return (report_dir / name.str()).string();
+}
+
+void write_vec2_json(std::ostream& out, const Vec2& value) {
+    out << "{\"x\":" << value.x << ",\"y\":" << value.y << "}";
+}
+
+void write_rect_json(std::ostream& out, const Rect& rect) {
+    out << "{\"min_x\":" << rect.min_x
+        << ",\"min_y\":" << rect.min_y
+        << ",\"max_x\":" << rect.max_x
+        << ",\"max_y\":" << rect.max_y
+        << "}";
+}
+
+bool write_json_report(const PlannerDrivenVehicleSim& sim,
+                       const std::string& status,
+                       const std::string& report_path) {
+    std::ofstream out(report_path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    int passed_gates = 0;
+    for (const auto& gate : sim.gates()) {
+        if (gate.passed) {
+            ++passed_gates;
+        }
+    }
+
+    const SimulationReport report{
+        sim.goal_reached(),
+        sim.collision(),
+        sim.step_count(),
+        sim.sim_time(),
+        sim.vehicle().position,
+        sim.distance_to_goal(),
+        passed_gates,
+    };
+    const auto& world = sim.world();
+    const auto& config = sim.config();
+    const auto& history = sim.history();
+    const size_t stride = plot_sample_stride(history.size());
+
+    const MetricSummary planning_summary = summarize_metric(history, &TelemetrySample::planning_ms);
+    const MetricSummary tracking_summary = summarize_metric(history, &TelemetrySample::tracking_ms);
+    const MetricSummary lidar_summary = summarize_metric(history, &TelemetrySample::lidar_ms);
+    const MetricSummary estimator_summary = summarize_metric(history, &TelemetrySample::estimator_ms);
+    const MetricSummary step_summary = summarize_metric(history, &TelemetrySample::step_ms);
+
+    out << std::fixed << std::setprecision(6);
+    out << "{\n";
+    out << "  \"schema\": \"thesis_planner_report_v1\",\n";
+    out << "  \"status\": \"" << json_escape(status) << "\",\n";
+    out << "  \"environment\": \"" << json_escape(thesis_sim::environment_mode_name(sim.environment_mode())) << "\",\n";
+    out << "  \"unstructured_preset\": \"" << json_escape(thesis_sim::unstructured_map_preset_name(world.unstructured_preset())) << "\",\n";
+    out << "  \"structured_preset\": \"" << json_escape(thesis_sim::structured_map_preset_name(world.structured_preset())) << "\",\n";
+    out << "  \"gate_behavior\": \"" << json_escape(thesis_sim::gate_behavior_mode_name(sim.gate_behavior())) << "\",\n";
+    out << "  \"gate_seed\": " << sim.gate_seed() << ",\n";
+    out << "  \"config\": {\n";
+    out << "    \"dt\": " << config.dt << ",\n";
+    out << "    \"control_interval_steps\": " << config.control_interval_steps << ",\n";
+    out << "    \"imu_enabled\": " << (config.imu_enabled ? "true" : "false") << ",\n";
+    out << "    \"lidar_enabled\": " << (config.lidar_enabled ? "true" : "false") << ",\n";
+    out << "    \"range_sensor_profile\": \"" << json_escape(thesis_sim::range_sensor_profile_name(config.range_sensor_profile)) << "\",\n";
+    out << "    \"lidar_beams\": " << sim.active_lidar_beams() << ",\n";
+    out << "    \"lidar_fov_rad\": " << sim.active_lidar_fov_rad() << ",\n";
+    out << "    \"lidar_range\": " << sim.active_lidar_range() << ",\n";
+    out << "    \"vehicle_model\": \"" << json_escape(thesis_sim::vehicle_model_kind_name(sim.vehicle_model_kind())) << "\",\n";
+    out << "    \"tracking_layer\": \"" << json_escape(thesis_sim::tracking_controller_mode_name(sim.tracking_controller_mode())) << "\"\n";
+    out << "  },\n";
+    out << "  \"scenario\": {\n";
+    out << "    \"bounds\": ";
+    write_rect_json(out, world.bounds());
+    out << ",\n";
+    out << "    \"start\": ";
+    write_vec2_json(out, world.start());
+    out << ",\n";
+    out << "    \"goal\": ";
+    write_vec2_json(out, world.goal());
+    out << ",\n";
+    out << "    \"start_heading_rad\": " << world.start_heading() << ",\n";
+    out << "    \"obstacles\": [\n";
+    for (size_t i = 0; i < world.obstacles().size(); ++i) {
+        out << "      ";
+        write_rect_json(out, world.obstacles()[i]);
+        out << (i + 1 < world.obstacles().size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"gates\": [\n";
+    for (size_t i = 0; i < world.gates().size(); ++i) {
+        const GateSpec& gate = world.gates()[i];
+        out << "      {\"name\":\"" << json_escape(gate.name) << "\",\"position\":";
+        write_vec2_json(out, gate.position);
+        out << ",\"anchor_position\":";
+        write_vec2_json(out, gate.anchor_position);
+        out << ",\"motion_amplitude\":";
+        write_vec2_json(out, gate.motion_amplitude);
+        out << ",\"motion_frequency_hz\":" << gate.motion_frequency_hz
+            << ",\"motion_phase_rad\":" << gate.motion_phase_rad
+            << ",\"heading_hint\":" << gate.heading_hint
+            << ",\"final\":" << (gate.final ? "true" : "false") << "}";
+        out << (i + 1 < world.gates().size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"road_centerline\": [\n";
+    for (size_t i = 0; i < world.road_centerline().size(); ++i) {
+        out << "      ";
+        write_vec2_json(out, world.road_centerline()[i]);
+        out << (i + 1 < world.road_centerline().size() ? ",\n" : "\n");
+    }
+    out << "    ]\n";
+    out << "  },\n";
+    out << "  \"summary\": {\n";
+    out << "    \"steps\": " << report.steps << ",\n";
+    out << "    \"sim_time\": " << report.sim_time << ",\n";
+    out << "    \"distance_to_goal\": " << report.distance_to_goal << ",\n";
+    out << "    \"passed_gates\": " << report.passed_gates << ",\n";
+    out << "    \"final_position\": ";
+    write_vec2_json(out, report.final_position);
+    out << ",\n";
+    out << "    \"final_yaw_rad\": " << sim.vehicle().yaw << ",\n";
+    out << "    \"final_speed\": " << sim.vehicle().speed << "\n";
+    out << "  },\n";
+    out << "  \"performance\": {\n";
+    out << "    \"planning_ms\": {\"avg\": " << planning_summary.avg << ",\"max\": " << planning_summary.max << "},\n";
+    out << "    \"tracking_ms\": {\"avg\": " << tracking_summary.avg << ",\"max\": " << tracking_summary.max << "},\n";
+    out << "    \"lidar_ms\": {\"avg\": " << lidar_summary.avg << ",\"max\": " << lidar_summary.max << "},\n";
+    out << "    \"estimator_ms\": {\"avg\": " << estimator_summary.avg << ",\"max\": " << estimator_summary.max << "},\n";
+    out << "    \"step_ms\": {\"avg\": " << step_summary.avg << ",\"max\": " << step_summary.max << "}\n";
+    out << "  },\n";
+    out << "  \"telemetry\": [\n";
+    bool first = true;
+    for (size_t i = 0; i < history.size(); i += stride) {
+        const TelemetrySample& sample = history[i];
+        if (!first) {
+            out << ",\n";
+        }
+        first = false;
+        out << "    {"
+            << "\"time\":" << sample.time
+            << ",\"speed\":" << sample.speed
+            << ",\"accel\":" << sample.accel
+            << ",\"curvature\":" << sample.curvature
+            << ",\"steer_angle\":" << sample.steer_angle
+            << ",\"target_steer_angle\":" << sample.target_steer_angle
+            << ",\"left_wheel_speed\":" << sample.left_wheel_speed
+            << ",\"right_wheel_speed\":" << sample.right_wheel_speed
+            << ",\"left_pwm\":" << sample.left_pwm
+            << ",\"right_pwm\":" << sample.right_pwm
+            << ",\"distance_to_goal\":" << sample.distance_to_goal
+            << ",\"nav_xy_error\":" << sample.nav_xy_error
+            << ",\"nav_yaw_error_deg\":" << sample.nav_yaw_error_deg
+            << ",\"tracker_cross_track\":" << sample.tracker_cross_track
+            << ",\"tracker_heading_error_deg\":" << sample.tracker_heading_error_deg
+            << ",\"planning_ms\":" << sample.planning_ms
+            << ",\"tracking_ms\":" << sample.tracking_ms
+            << ",\"lidar_ms\":" << sample.lidar_ms
+            << ",\"estimator_ms\":" << sample.estimator_ms
+            << ",\"step_ms\":" << sample.step_ms
+            << ",\"visible_gates\":" << sample.visible_gates
+            << ",\"lidar_samples\":" << sample.lidar_samples
+            << "}";
+    }
+    out << "\n  ]\n";
+    out << "}\n";
+    return true;
+}
 
 AppOptions parse_args(int argc, char** argv) {
     AppOptions options;
@@ -69,6 +450,54 @@ AppOptions parse_args(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "--headless") {
             options.headless = true;
+        } else if (arg == "--scenario" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            options.environment_mode = (value == "structured") ? EnvironmentMode::StructuredRoad
+                                                               : EnvironmentMode::UnstructuredGates;
+        } else if (arg == "--scenario=structured") {
+            options.environment_mode = EnvironmentMode::StructuredRoad;
+        } else if (arg == "--scenario=unstructured") {
+            options.environment_mode = EnvironmentMode::UnstructuredGates;
+        } else if (arg == "--unstructured-map" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            if (value == "tight") {
+                options.unstructured_preset = UnstructuredMapPreset::TightCorridor;
+            } else if (value == "slalom") {
+                options.unstructured_preset = UnstructuredMapPreset::WideSlalom;
+            } else if (value == "lower") {
+                options.unstructured_preset = UnstructuredMapPreset::LowerBypass;
+            } else {
+                options.unstructured_preset = UnstructuredMapPreset::RobotValidation;
+            }
+        } else if (arg == "--structured-map" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            if (value == "circle") {
+                options.structured_preset = StructuredMapPreset::CircleLoop;
+            } else if (value == "zigzag") {
+                options.structured_preset = StructuredMapPreset::ZigZag;
+            } else {
+                options.structured_preset = StructuredMapPreset::ValidationRoad;
+            }
+        } else if (arg.rfind("--unstructured-map=", 0) == 0) {
+            const std::string value = arg.substr(std::strlen("--unstructured-map="));
+            if (value == "tight") {
+                options.unstructured_preset = UnstructuredMapPreset::TightCorridor;
+            } else if (value == "slalom") {
+                options.unstructured_preset = UnstructuredMapPreset::WideSlalom;
+            } else if (value == "lower") {
+                options.unstructured_preset = UnstructuredMapPreset::LowerBypass;
+            } else {
+                options.unstructured_preset = UnstructuredMapPreset::RobotValidation;
+            }
+        } else if (arg.rfind("--structured-map=", 0) == 0) {
+            const std::string value = arg.substr(std::strlen("--structured-map="));
+            if (value == "circle") {
+                options.structured_preset = StructuredMapPreset::CircleLoop;
+            } else if (value == "zigzag") {
+                options.structured_preset = StructuredMapPreset::ZigZag;
+            } else {
+                options.structured_preset = StructuredMapPreset::ValidationRoad;
+            }
         } else if (arg == "--max-steps" && i + 1 < argc) {
             options.max_steps = std::atoi(argv[++i]);
         } else if (arg.rfind("--max-steps=", 0) == 0) {
@@ -77,6 +506,17 @@ AppOptions parse_args(int argc, char** argv) {
     }
     options.max_steps = std::max(options.max_steps, 1);
     return options;
+}
+
+WorldMap make_world_from_mode(EnvironmentMode mode,
+                              UnstructuredMapPreset preset,
+                              StructuredMapPreset structured_preset,
+                              GateBehaviorMode gate_behavior,
+                              std::uint32_t gate_seed) {
+    if (mode == EnvironmentMode::StructuredRoad) {
+        return WorldMap::structured_demo(structured_preset);
+    }
+    return WorldMap::unstructured_demo(preset, gate_behavior, gate_seed);
 }
 
 void apply_style() {
@@ -134,13 +574,54 @@ ImVec2 world_to_screen(const CanvasTransform& tx, const Vec2& p) {
         tx.origin.y - static_cast<float>(p.y) * tx.scale);
 }
 
+Vec2 screen_to_world(const CanvasTransform& tx, const ImVec2& p) {
+    return {
+        static_cast<double>((p.x - tx.origin.x) / tx.scale),
+        static_cast<double>((tx.origin.y - p.y) / tx.scale),
+    };
+}
+
+float distance_sq(const ImVec2& a, const ImVec2& b) {
+    const float dx = a.x - b.x;
+    const float dy = a.y - b.y;
+    return dx * dx + dy * dy;
+}
+
+const char* map_editor_handle_type_name(MapEditorHandleType type) {
+    switch (type) {
+        case MapEditorHandleType::Start:
+            return "Start";
+        case MapEditorHandleType::Goal:
+            return "Goal";
+        case MapEditorHandleType::Obstacle:
+            return "Obstacle";
+        case MapEditorHandleType::Gate:
+            return "Gate";
+        case MapEditorHandleType::RoadPoint:
+            return "Road Point";
+        default:
+            return "None";
+    }
+}
+
 void draw_polyline(ImDrawList* draw_list, const CanvasTransform& tx, const std::vector<Vec2>& points, ImU32 color, float thickness) {
     if (points.size() < 2) {
         return;
     }
-    for (size_t i = 1; i < points.size(); ++i) {
-        draw_list->AddLine(world_to_screen(tx, points[i - 1]), world_to_screen(tx, points[i]), color, thickness);
+
+    std::vector<ImVec2> screen_points;
+    screen_points.reserve(points.size());
+    for (const Vec2& point : points) {
+        screen_points.push_back(world_to_screen(tx, point));
     }
+
+    const bool closed_loop = points.size() >= 3 && thesis_sim::distance(points.front(), points.back()) <= 0.45;
+    draw_list->AddPolyline(
+        screen_points.data(),
+        static_cast<int>(screen_points.size()),
+        color,
+        closed_loop ? ImDrawFlags_Closed : 0,
+        thickness);
 }
 
 void draw_vehicle(ImDrawList* draw_list, const CanvasTransform& tx, const VehicleSnapshot& vehicle, const thesis_sim::VehicleGeometry& geometry) {
@@ -168,7 +649,218 @@ void draw_vehicle(ImDrawList* draw_list, const CanvasTransform& tx, const Vehicl
     draw_list->AddLine(world_to_screen(tx, vehicle.position), world_to_screen(tx, nose), kColorHeading, 3.0f);
 }
 
-void render_world_tab(PlannerDrivenVehicleSim& sim) {
+MapEditorHandle pick_editor_handle(const WorldMap& world, const CanvasTransform& tx, const ImVec2& mouse_pos) {
+    constexpr float kHandleRadius = 12.0f;
+    const float radius_sq = kHandleRadius * kHandleRadius;
+
+    MapEditorHandle best;
+    float best_dist_sq = radius_sq;
+
+    const auto test_handle = [&](MapEditorHandleType type, int index, const Vec2& world_pos) {
+        const float d_sq = distance_sq(world_to_screen(tx, world_pos), mouse_pos);
+        if (d_sq <= best_dist_sq) {
+            best = {type, index};
+            best_dist_sq = d_sq;
+        }
+    };
+
+    test_handle(MapEditorHandleType::Start, -1, world.start());
+    test_handle(MapEditorHandleType::Goal, -1, world.goal());
+
+    for (size_t i = 0; i < world.obstacles().size(); ++i) {
+        const Rect& obstacle = world.obstacles()[i];
+        const Vec2 center{
+            0.5 * (obstacle.min_x + obstacle.max_x),
+            0.5 * (obstacle.min_y + obstacle.max_y),
+        };
+        test_handle(MapEditorHandleType::Obstacle, static_cast<int>(i), center);
+    }
+
+    if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        for (size_t i = 0; i < world.gates().size(); ++i) {
+            const GateSpec& gate = world.gates()[i];
+            if (gate.final) {
+                continue;
+            }
+            test_handle(MapEditorHandleType::Gate, static_cast<int>(i), gate.anchor_position);
+        }
+    } else {
+        for (size_t i = 1; i + 1 < world.road_centerline().size(); ++i) {
+            test_handle(MapEditorHandleType::RoadPoint, static_cast<int>(i), world.road_centerline()[i]);
+        }
+    }
+
+    return best;
+}
+
+void draw_editor_overlay(ImDrawList* draw_list, const CanvasTransform& tx, const WorldMap& world, const UiState& ui_state) {
+    if (!ui_state.map_editor_enabled) {
+        return;
+    }
+
+    for (const Rect& obstacle : world.obstacles()) {
+        draw_list->AddRect(
+            world_to_screen(tx, {obstacle.min_x, obstacle.max_y}),
+            world_to_screen(tx, {obstacle.max_x, obstacle.min_y}),
+            kColorEditorOverlay,
+            4.0f,
+            0,
+            2.0f);
+
+        const Vec2 center{
+            0.5 * (obstacle.min_x + obstacle.max_x),
+            0.5 * (obstacle.min_y + obstacle.max_y),
+        };
+        const ImVec2 screen_center = world_to_screen(tx, center);
+        draw_list->AddCircleFilled(screen_center, 6.0f, kColorEditorHandle);
+    }
+
+    draw_list->AddCircleFilled(
+        world_to_screen(tx, world.start()),
+        7.0f,
+        ui_state.selected_editor_handle.type == MapEditorHandleType::Start ? kColorEditorSelected : IM_COL32(120, 220, 150, 255));
+    draw_list->AddCircleFilled(
+        world_to_screen(tx, world.goal()),
+        7.0f,
+        ui_state.selected_editor_handle.type == MapEditorHandleType::Goal ? kColorEditorSelected : kColorGoal);
+
+    if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        for (size_t i = 0; i < world.gates().size(); ++i) {
+            const GateSpec& gate = world.gates()[i];
+            if (gate.final) {
+                continue;
+            }
+            const bool selected =
+                ui_state.selected_editor_handle.type == MapEditorHandleType::Gate &&
+                ui_state.selected_editor_handle.index == static_cast<int>(i);
+            draw_list->AddCircleFilled(
+                world_to_screen(tx, gate.anchor_position),
+                6.0f,
+                selected ? kColorEditorSelected : kColorEditorHandle);
+        }
+    } else {
+        draw_polyline(draw_list, tx, world.road_centerline(), kColorEditorOverlay, 2.0f);
+        for (size_t i = 1; i + 1 < world.road_centerline().size(); ++i) {
+            const bool selected =
+                ui_state.selected_editor_handle.type == MapEditorHandleType::RoadPoint &&
+                ui_state.selected_editor_handle.index == static_cast<int>(i);
+            draw_list->AddCircleFilled(
+                world_to_screen(tx, world.road_centerline()[i]),
+                5.0f,
+                selected ? kColorEditorSelected : kColorEditorHandle);
+        }
+    }
+}
+
+void update_editor_drag(UiState* ui_state, const CanvasTransform& tx, const ImVec2& mouse_pos) {
+    if (ui_state == nullptr || !ui_state->map_editor_enabled) {
+        return;
+    }
+
+    WorldMap& world = ui_state->scenario_editor_world;
+    const bool mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        ui_state->selected_editor_handle = pick_editor_handle(world, tx, mouse_pos);
+        ui_state->active_drag_handle = ui_state->selected_editor_handle;
+
+        const Vec2 world_mouse = screen_to_world(tx, mouse_pos);
+        switch (ui_state->active_drag_handle.type) {
+            case MapEditorHandleType::Start:
+                ui_state->drag_offset = {world.start().x - world_mouse.x, world.start().y - world_mouse.y};
+                break;
+            case MapEditorHandleType::Goal:
+                ui_state->drag_offset = {world.goal().x - world_mouse.x, world.goal().y - world_mouse.y};
+                break;
+            case MapEditorHandleType::Obstacle:
+                if (ui_state->active_drag_handle.index >= 0 &&
+                    ui_state->active_drag_handle.index < static_cast<int>(world.editable_obstacles().size())) {
+                    const Rect& obstacle = world.editable_obstacles()[ui_state->active_drag_handle.index];
+                    const Vec2 center{
+                        0.5 * (obstacle.min_x + obstacle.max_x),
+                        0.5 * (obstacle.min_y + obstacle.max_y),
+                    };
+                    ui_state->drag_offset = {center.x - world_mouse.x, center.y - world_mouse.y};
+                }
+                break;
+            case MapEditorHandleType::Gate:
+                if (ui_state->active_drag_handle.index >= 0 &&
+                    ui_state->active_drag_handle.index < static_cast<int>(world.editable_gates().size())) {
+                    const GateSpec& gate = world.editable_gates()[ui_state->active_drag_handle.index];
+                    ui_state->drag_offset = {gate.anchor_position.x - world_mouse.x, gate.anchor_position.y - world_mouse.y};
+                }
+                break;
+            case MapEditorHandleType::RoadPoint:
+                if (ui_state->active_drag_handle.index >= 0 &&
+                    ui_state->active_drag_handle.index < static_cast<int>(world.editable_road_centerline().size())) {
+                    const Vec2& point = world.editable_road_centerline()[ui_state->active_drag_handle.index];
+                    ui_state->drag_offset = {point.x - world_mouse.x, point.y - world_mouse.y};
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (!mouse_down) {
+        ui_state->active_drag_handle = {};
+        return;
+    }
+
+    if (ui_state->active_drag_handle.type == MapEditorHandleType::None) {
+        return;
+    }
+
+    const Vec2 world_mouse = screen_to_world(tx, mouse_pos);
+    const Vec2 new_pos{
+        world_mouse.x + ui_state->drag_offset.x,
+        world_mouse.y + ui_state->drag_offset.y,
+    };
+
+    switch (ui_state->active_drag_handle.type) {
+        case MapEditorHandleType::Start:
+            world.set_start(new_pos);
+            ui_state->scenario_editor_dirty = true;
+            break;
+        case MapEditorHandleType::Goal:
+            world.set_goal(new_pos);
+            ui_state->scenario_editor_dirty = true;
+            break;
+        case MapEditorHandleType::Obstacle:
+            if (ui_state->active_drag_handle.index >= 0 &&
+                ui_state->active_drag_handle.index < static_cast<int>(world.editable_obstacles().size())) {
+                Rect& obstacle = world.editable_obstacles()[ui_state->active_drag_handle.index];
+                const double half_w = 0.5 * (obstacle.max_x - obstacle.min_x);
+                const double half_h = 0.5 * (obstacle.max_y - obstacle.min_y);
+                obstacle.min_x = new_pos.x - half_w;
+                obstacle.max_x = new_pos.x + half_w;
+                obstacle.min_y = new_pos.y - half_h;
+                obstacle.max_y = new_pos.y + half_h;
+                ui_state->scenario_editor_dirty = true;
+            }
+            break;
+        case MapEditorHandleType::Gate:
+            if (ui_state->active_drag_handle.index >= 0 &&
+                ui_state->active_drag_handle.index < static_cast<int>(world.editable_gates().size())) {
+                GateSpec& gate = world.editable_gates()[ui_state->active_drag_handle.index];
+                gate.anchor_position = new_pos;
+                gate.position = new_pos;
+                ui_state->scenario_editor_dirty = true;
+            }
+            break;
+        case MapEditorHandleType::RoadPoint:
+            if (ui_state->active_drag_handle.index >= 0 &&
+                ui_state->active_drag_handle.index < static_cast<int>(world.editable_road_centerline().size())) {
+                world.editable_road_centerline()[ui_state->active_drag_handle.index] = new_pos;
+                ui_state->scenario_editor_dirty = true;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
     if (!ImGui::BeginChild("SimulationViewport", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_NoScrollbar)) {
         ImGui::EndChild();
         return;
@@ -202,15 +894,24 @@ void render_world_tab(PlannerDrivenVehicleSim& sim) {
                                  kColorObstacle, 4.0f);
     }
 
+    if (!sim.world().road_centerline().empty()) {
+        draw_polyline(draw_list, tx, sim.world().road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+    }
+
     draw_polyline(draw_list, tx, sim.trail(), kColorTrail, 2.5f);
+    draw_polyline(draw_list, tx, sim.estimated_trail(), kColorEstimateTrail, 1.8f);
+    draw_polyline(draw_list, tx, sim.planned_trajectory(), kColorTrajectory, 3.0f);
 
     if (sim.lidar_enabled()) {
         const Vec2 car_pos = sim.vehicle().position;
-        for (const LidarHit& hit : sim.lidar_hits()) {
+        const size_t lidar_stride = sim.lidar_hits().size() > 240 ? 2 : 1;
+        for (size_t i = 0; i < sim.lidar_hits().size(); i += lidar_stride) {
+            const LidarHit& hit = sim.lidar_hits()[i];
             draw_list->AddLine(world_to_screen(tx, car_pos), world_to_screen(tx, hit.point), kColorLidar, 1.0f);
         }
 
-        for (const LidarHit& hit : sim.lidar_hits()) {
+        for (size_t i = 0; i < sim.lidar_hits().size(); i += lidar_stride) {
+            const LidarHit& hit = sim.lidar_hits()[i];
             draw_list->AddCircleFilled(world_to_screen(tx, hit.point), 2.0f, kColorLidarHit);
         }
     }
@@ -239,6 +940,13 @@ void render_world_tab(PlannerDrivenVehicleSim& sim) {
     }
 
     draw_vehicle(draw_list, tx, sim.vehicle(), sim.geometry());
+    const Vec2 nav_pos = sim.navigation_position();
+    const Vec2 nav_nose{
+        nav_pos.x + std::cos(sim.navigation_yaw()) * sim.geometry().body_length * 0.45,
+        nav_pos.y + std::sin(sim.navigation_yaw()) * sim.geometry().body_length * 0.45,
+    };
+    draw_list->AddCircle(world_to_screen(tx, nav_pos), 7.0f, kColorEstimateTrail, 0, 2.0f);
+    draw_list->AddLine(world_to_screen(tx, nav_pos), world_to_screen(tx, nav_nose), kColorEstimateTrail, 2.0f);
 
     draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 14.0f),
                        IM_COL32(233, 236, 229, 255),
@@ -248,28 +956,131 @@ void render_world_tab(PlannerDrivenVehicleSim& sim) {
                        thesis_sim::range_sensor_profile_name(sim.range_sensor_profile()));
     draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 54.0f),
                        IM_COL32(170, 179, 185, 255),
-                       thesis_sim::gate_behavior_mode_name(sim.gate_behavior()));
+                       thesis_sim::environment_mode_name(sim.environment_mode()));
+    if (sim.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 74.0f),
+                           IM_COL32(170, 179, 185, 255),
+                           thesis_sim::unstructured_map_preset_name(sim.world().unstructured_preset()));
+    } else {
+        draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 74.0f),
+                           IM_COL32(170, 179, 185, 255),
+                           thesis_sim::structured_map_preset_name(sim.world().structured_preset()));
+    }
+    draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 94.0f),
+                       kColorTrail,
+                       "blue: ground truth trail");
+    draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 114.0f),
+                       kColorEstimateTrail,
+                       "orange: fused state / estimated trail");
+    draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 134.0f),
+                       kColorTrajectory,
+                       "yellow: selected planner trajectory");
+    if (ui_state != nullptr && ui_state->map_editor_enabled) {
+        draw_list->AddText(ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 154.0f),
+                           kColorEditorOverlay,
+                           "map editor: drag handles in the viewport, then apply");
+        draw_editor_overlay(draw_list, tx, ui_state->scenario_editor_world, *ui_state);
+
+        const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+        const bool inside_canvas =
+            mouse_pos.x >= canvas_pos.x && mouse_pos.x <= canvas_pos.x + canvas_size.x &&
+            mouse_pos.y >= canvas_pos.y && mouse_pos.y <= canvas_pos.y + canvas_size.y;
+        if (inside_canvas && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+            update_editor_drag(ui_state, tx, mouse_pos);
+        } else if (ui_state->active_drag_handle.type != MapEditorHandleType::None &&
+                   !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            ui_state->active_drag_handle = {};
+        }
+    }
 
     ImGui::Dummy(canvas_size);
     ImGui::EndChild();
 }
 
 void render_plot_window(const char* title,
+                        const char* y_axis_label,
+                        const char* description,
                         const std::vector<double>& x,
                         const std::vector<double>& y0,
                         const char* label0,
                         const std::vector<double>* y1 = nullptr,
-                        const char* label1 = nullptr) {
-    if (!ImPlot::BeginPlot(title, ImVec2(-1, 190.0f))) {
+                        const char* label1 = nullptr,
+                        const std::vector<double>* y2 = nullptr,
+                        const char* label2 = nullptr) {
+    ImGui::PushID(title);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(title);
+    if (description != nullptr) {
+        ImGui::SameLine();
+        help_marker(description);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("latest %.2fs", x.empty() ? 0.0 : x.back());
+
+    if (!ImPlot::BeginPlot("##plot", ImVec2(-1, 220.0f), ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
+        ImGui::PopID();
         return;
     }
-    ImPlot::SetupAxes("t [s]", nullptr, ImPlotAxisFlags_NoTickLabels, 0);
-    ImPlot::SetupAxisLimits(ImAxis_X1, x.front(), x.back(), ImGuiCond_Always);
+
+    const double x_min = x.empty() ? 0.0 : x.front();
+    const double x_max = x.size() > 1 ? x.back() : (x_min + 1.0);
+    ImPlot::SetupAxes("t [s]", y_axis_label, ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImGuiCond_Always);
+
+    ImPlot::SetNextLineStyle(ImVec4(0.36f, 0.73f, 0.98f, 1.0f), 2.0f);
     ImPlot::PlotLine(label0, x.data(), y0.data(), static_cast<int>(x.size()));
     if (y1 != nullptr && label1 != nullptr) {
+        ImPlot::SetNextLineStyle(ImVec4(0.96f, 0.66f, 0.28f, 1.0f), 2.0f);
         ImPlot::PlotLine(label1, x.data(), y1->data(), static_cast<int>(x.size()));
     }
+    if (y2 != nullptr && label2 != nullptr) {
+        ImPlot::SetNextLineStyle(ImVec4(0.48f, 0.87f, 0.60f, 1.0f), 2.0f);
+        ImPlot::PlotLine(label2, x.data(), y2->data(), static_cast<int>(x.size()));
+    }
+
+    if (!x.empty() && ImPlot::IsPlotHovered()) {
+        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+        const auto it = std::lower_bound(x.begin(), x.end(), mouse.x);
+        const size_t idx = static_cast<size_t>(std::clamp<long>(
+            static_cast<long>(it == x.end() ? static_cast<long>(x.size()) - 1 : std::distance(x.begin(), it)),
+            0L,
+            static_cast<long>(x.size()) - 1));
+
+        ImGui::BeginTooltip();
+        ImGui::Text("%s", title);
+        ImGui::Separator();
+        ImGui::Text("t = %.2f s", x[idx]);
+        ImGui::Text("%s = %.3f", label0, y0[idx]);
+        if (y1 != nullptr && label1 != nullptr) {
+            ImGui::Text("%s = %.3f", label1, (*y1)[idx]);
+        }
+        if (y2 != nullptr && label2 != nullptr) {
+            ImGui::Text("%s = %.3f", label2, (*y2)[idx]);
+        }
+        ImGui::EndTooltip();
+    }
     ImPlot::EndPlot();
+    ImGui::PopID();
+}
+
+void plot_series(const std::vector<double>& time,
+                 const std::vector<double>& series,
+                 const char* label,
+                 const ImVec4& color) {
+    if (time.empty() || series.empty()) {
+        return;
+    }
+    ImPlot::SetNextLineStyle(color, 2.0f);
+    ImPlot::PlotLine(label, time.data(), series.data(), static_cast<int>(time.size()));
+}
+
+void setup_time_plot_axes(const std::vector<double>& time, const char* y_axis_label) {
+    const double x_min = time.empty() ? 0.0 : time.front();
+    const double x_max = time.size() > 1 ? time.back() : (x_min + 1.0);
+    ImPlot::SetupAxes("t [s]", y_axis_label, ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImGuiCond_Always);
 }
 
 void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
@@ -284,6 +1095,30 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
         ImGui::EndChild();
         return;
     }
+
+    const TelemetrySample& latest = history.back();
+    char speed_buf[32];
+    char goal_buf[32];
+    char lidar_buf[32];
+    char err_buf[32];
+    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", latest.speed);
+    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", latest.distance_to_goal);
+    std::snprintf(lidar_buf, sizeof(lidar_buf), "%.2f m", latest.min_lidar);
+    std::snprintf(err_buf, sizeof(err_buf), "%.2f / %.2f", latest.nav_xy_error, latest.nav_yaw_error_deg);
+
+    ImGui::SeparatorText("Telemetry Overview");
+    if (ImGui::BeginTable("GraphSummary", 4, ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextColumn();
+        metric_chip("Speed", speed_buf);
+        ImGui::TableNextColumn();
+        metric_chip("Goal", goal_buf);
+        ImGui::TableNextColumn();
+        metric_chip("LiDAR Min", lidar_buf);
+        ImGui::TableNextColumn();
+        metric_chip("EKF err xy/deg", err_buf);
+        ImGui::EndTable();
+    }
+    ImGui::SeparatorText("Plots");
 
     std::vector<double> time;
     std::vector<double> speed;
@@ -300,6 +1135,22 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
     std::vector<double> right_encoder_delta;
     std::vector<double> dist_goal;
     std::vector<double> min_lidar;
+    std::vector<double> nav_xy_error;
+    std::vector<double> nav_yaw_error_deg;
+    std::vector<double> steer_angle;
+    std::vector<double> target_steer_angle;
+    std::vector<double> planner_speed_ref;
+    std::vector<double> tracker_accel_cmd;
+    std::vector<double> tracker_steer_rate_cmd;
+    std::vector<double> tracker_cross_track;
+    std::vector<double> tracker_heading_error_deg;
+    std::vector<double> planning_ms;
+    std::vector<double> tracking_ms;
+    std::vector<double> lidar_ms;
+    std::vector<double> estimator_ms;
+    std::vector<double> step_ms;
+    std::vector<double> visible_gates;
+    std::vector<double> lidar_samples;
     time.reserve(history.size());
     speed.reserve(history.size());
     accel.reserve(history.size());
@@ -315,8 +1166,26 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
     right_encoder_delta.reserve(history.size());
     dist_goal.reserve(history.size());
     min_lidar.reserve(history.size());
+    nav_xy_error.reserve(history.size());
+    nav_yaw_error_deg.reserve(history.size());
+    steer_angle.reserve(history.size());
+    target_steer_angle.reserve(history.size());
+    planner_speed_ref.reserve(history.size());
+    tracker_accel_cmd.reserve(history.size());
+    tracker_steer_rate_cmd.reserve(history.size());
+    tracker_cross_track.reserve(history.size());
+    tracker_heading_error_deg.reserve(history.size());
+    planning_ms.reserve(history.size());
+    tracking_ms.reserve(history.size());
+    lidar_ms.reserve(history.size());
+    estimator_ms.reserve(history.size());
+    step_ms.reserve(history.size());
+    visible_gates.reserve(history.size());
+    lidar_samples.reserve(history.size());
 
-    for (const TelemetrySample& sample : history) {
+    const size_t stride = plot_sample_stride(history.size());
+    for (size_t i = 0; i < history.size(); i += stride) {
+        const TelemetrySample& sample = history[i];
         time.push_back(sample.time);
         speed.push_back(sample.speed);
         accel.push_back(sample.accel);
@@ -332,15 +1201,226 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
         right_encoder_delta.push_back(sample.right_encoder_delta);
         dist_goal.push_back(sample.distance_to_goal);
         min_lidar.push_back(sample.min_lidar);
+        nav_xy_error.push_back(sample.nav_xy_error);
+        nav_yaw_error_deg.push_back(sample.nav_yaw_error_deg);
+        steer_angle.push_back(sample.steer_angle * 180.0 / 3.14159265358979323846);
+        target_steer_angle.push_back(sample.target_steer_angle * 180.0 / 3.14159265358979323846);
+        planner_speed_ref.push_back(sample.planner_speed_ref);
+        tracker_accel_cmd.push_back(sample.tracker_accel_cmd);
+        tracker_steer_rate_cmd.push_back(sample.tracker_steer_rate_cmd * 180.0 / 3.14159265358979323846);
+        tracker_cross_track.push_back(sample.tracker_cross_track);
+        tracker_heading_error_deg.push_back(sample.tracker_heading_error_deg);
+        planning_ms.push_back(sample.planning_ms);
+        tracking_ms.push_back(sample.tracking_ms);
+        lidar_ms.push_back(sample.lidar_ms);
+        estimator_ms.push_back(sample.estimator_ms);
+        step_ms.push_back(sample.step_ms);
+        visible_gates.push_back(sample.visible_gates);
+        lidar_samples.push_back(sample.lidar_samples);
+    }
+    if ((history.size() - 1) % stride != 0) {
+        const TelemetrySample& sample = history.back();
+        time.push_back(sample.time);
+        speed.push_back(sample.speed);
+        accel.push_back(sample.accel);
+        jerk.push_back(sample.jerk);
+        command_r.push_back(sample.command_r);
+        left_wheel_speed.push_back(sample.left_wheel_speed);
+        right_wheel_speed.push_back(sample.right_wheel_speed);
+        target_speed.push_back(sample.target_speed);
+        target_yaw_rate.push_back(sample.target_yaw_rate * 180.0 / 3.14159265358979323846);
+        left_pwm.push_back(sample.left_pwm);
+        right_pwm.push_back(sample.right_pwm);
+        left_encoder_delta.push_back(sample.left_encoder_delta);
+        right_encoder_delta.push_back(sample.right_encoder_delta);
+        dist_goal.push_back(sample.distance_to_goal);
+        min_lidar.push_back(sample.min_lidar);
+        nav_xy_error.push_back(sample.nav_xy_error);
+        nav_yaw_error_deg.push_back(sample.nav_yaw_error_deg);
+        steer_angle.push_back(sample.steer_angle * 180.0 / 3.14159265358979323846);
+        target_steer_angle.push_back(sample.target_steer_angle * 180.0 / 3.14159265358979323846);
+        planner_speed_ref.push_back(sample.planner_speed_ref);
+        tracker_accel_cmd.push_back(sample.tracker_accel_cmd);
+        tracker_steer_rate_cmd.push_back(sample.tracker_steer_rate_cmd * 180.0 / 3.14159265358979323846);
+        tracker_cross_track.push_back(sample.tracker_cross_track);
+        tracker_heading_error_deg.push_back(sample.tracker_heading_error_deg);
+        planning_ms.push_back(sample.planning_ms);
+        tracking_ms.push_back(sample.tracking_ms);
+        lidar_ms.push_back(sample.lidar_ms);
+        estimator_ms.push_back(sample.estimator_ms);
+        step_ms.push_back(sample.step_ms);
+        visible_gates.push_back(sample.visible_gates);
+        lidar_samples.push_back(sample.lidar_samples);
     }
 
-    render_plot_window("Velocity / Acceleration", time, speed, "v [m/s]", &accel, "a [m/s^2]");
-    render_plot_window("Planner Commands", time, jerk, "j [m/s^3]", &command_r, "r [1/(m*s)]");
-    render_plot_window("Target / Wheel Speed", time, target_speed, "v target [m/s]", &left_wheel_speed, "v left [m/s]");
-    render_plot_window("Right Wheel / Target Yaw", time, right_wheel_speed, "v right [m/s]", &target_yaw_rate, "wz target [deg/s]");
-    render_plot_window("Motor PWM", time, left_pwm, "PWM left", &right_pwm, "PWM right");
-    render_plot_window("Encoder Delta", time, left_encoder_delta, "dTicks left", &right_encoder_delta, "dTicks right");
-    render_plot_window("Distance Metrics", time, dist_goal, "goal [m]", &min_lidar, "lidar [m]");
+    if (ImGui::BeginTabBar("GraphTabs", ImGuiTabBarFlags_Reorderable)) {
+        if (ImGui::BeginTabItem("Overview")) {
+            ImGui::TextWrapped("Overview of vehicle evolution, planner output, distance trends and total compute cost.");
+            if (ImPlot::BeginSubplots("OverviewSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Velocity / Acceleration")) {
+                    setup_time_plot_axes(time, "vehicle state");
+                    plot_series(time, speed, "speed [m/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, accel, "accel [m/s^2]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Planner Commands")) {
+                    setup_time_plot_axes(time, "planner command");
+                    plot_series(time, jerk, "j [m/s^3]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, command_r, "r [1/(m*s)]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Distance / LiDAR")) {
+                    setup_time_plot_axes(time, "distance");
+                    plot_series(time, dist_goal, "goal distance [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, min_lidar, "LiDAR min [m]", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Step Timing")) {
+                    setup_time_plot_axes(time, "ms");
+                    plot_series(time, step_ms, "step total", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, planning_ms, "planning", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, tracking_ms, "tracking", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Drivetrain")) {
+            ImGui::TextWrapped("Actuation and wheel-side telemetry. This tab is useful to compare what the controller wants against what the vehicle model actually does.");
+            if (ImPlot::BeginSubplots("DrivetrainSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Target / Wheel Speed")) {
+                    setup_time_plot_axes(time, "speed [m/s]");
+                    plot_series(time, target_speed, "target v", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, left_wheel_speed, "left wheel v", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, right_wheel_speed, "right wheel v", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Target Yaw / PWM")) {
+                    setup_time_plot_axes(time, "command / actuation");
+                    plot_series(time, target_yaw_rate, "target wz [deg/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, left_pwm, "PWM left", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, right_pwm, "PWM right", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Encoder Delta")) {
+                    setup_time_plot_axes(time, "ticks / step");
+                    plot_series(time, left_encoder_delta, "dTicks left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, right_encoder_delta, "dTicks right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Wheel Speed Balance")) {
+                    setup_time_plot_axes(time, "wheel speed [m/s]");
+                    plot_series(time, left_wheel_speed, "left wheel v", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, right_wheel_speed, "right wheel v", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Localization")) {
+            ImGui::TextWrapped("State-estimation quality and sensor-side load. Useful to see whether the lag comes from scan handling or from EKF correction.");
+            if (ImPlot::BeginSubplots("LocalizationSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Estimator Error")) {
+                    setup_time_plot_axes(time, "EKF error");
+                    plot_series(time, nav_xy_error, "xy err [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, nav_yaw_error_deg, "yaw err [deg]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("LiDAR Compute / Samples")) {
+                    setup_time_plot_axes(time, "sensor load");
+                    plot_series(time, lidar_ms, "LiDAR ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, lidar_samples, "LiDAR samples", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Estimator Compute")) {
+                    setup_time_plot_axes(time, "ms");
+                    plot_series(time, estimator_ms, "EKF + fusion ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Goal / Visibility")) {
+                    setup_time_plot_axes(time, "map context");
+                    plot_series(time, dist_goal, "goal distance [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, visible_gates, "visible gates", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Tracking")) {
+            ImGui::TextWrapped("Low-level execution of Sabrina's selected trajectory. Compare steering, follower commands and path errors on the same time base.");
+            if (ImPlot::BeginSubplots("TrackingSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Steering Tracking")) {
+                    setup_time_plot_axes(time, "steer [deg]");
+                    plot_series(time, steer_angle, "steer actual", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, target_steer_angle, "steer target", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Follower Commands")) {
+                    setup_time_plot_axes(time, "tracking command");
+                    plot_series(time, tracker_accel_cmd, "accel cmd [m/s^2]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, tracker_steer_rate_cmd, "steer rate [deg/s]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, planner_speed_ref, "planner v ref", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Path Tracking Error")) {
+                    setup_time_plot_axes(time, "tracking error");
+                    plot_series(time, tracker_cross_track, "cross-track [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, tracker_heading_error_deg, "heading err [deg]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Planner Ref vs Target Speed")) {
+                    setup_time_plot_axes(time, "speed [m/s]");
+                    plot_series(time, planner_speed_ref, "planner v ref", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, target_speed, "target v", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, speed, "actual v", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Performance")) {
+            ImGui::TextWrapped("This tab is for lag diagnosis. In unstructured mode, spikes here usually come from repeated gate clothoid evaluation, LiDAR raycasting or state-estimation corrections.");
+            if (ImPlot::BeginSubplots("PerformanceSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Planner / Tracking Compute")) {
+                    setup_time_plot_axes(time, "ms");
+                    plot_series(time, planning_ms, "planning ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, tracking_ms, "tracking ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Sensor / Estimator Compute")) {
+                    setup_time_plot_axes(time, "ms");
+                    plot_series(time, lidar_ms, "LiDAR ms", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    plot_series(time, estimator_ms, "EKF ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, step_ms, "step total ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Visible Gates / LiDAR Samples")) {
+                    setup_time_plot_axes(time, "load");
+                    plot_series(time, visible_gates, "visible gates", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, lidar_samples, "LiDAR samples", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Step Total / Goal Distance")) {
+                    setup_time_plot_axes(time, "mixed");
+                    plot_series(time, step_ms, "step total ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, dist_goal, "goal distance [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
+    }
     ImGui::EndChild();
 }
 
@@ -371,39 +1451,219 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
     if (ImGui::Button("Reset", ImVec2(-1.0f, 0.0f))) {
         sim.reset();
         ui_state->paused = true;
+        ui_state->report_written = false;
+        ui_state->last_report_path.clear();
     }
     ImGui::SliderInt("Steps / frame", &ui_state->steps_per_frame, 1, 8);
 
     ImGui::SeparatorText("Scenario");
-    ImGui::TextWrapped("Named gates are passage hypotheses through the free openings of the unstructured map. They guide the planner toward feasible corridors.");
-
-    int gate_behavior = static_cast<int>(sim.gate_behavior());
-    bool gate_changed = false;
-    const char* gate_items[] = {
-        thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Static),
-        thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Randomized),
-        thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Mobile),
+    ImGui::SameLine();
+    help_marker("Switches between Sabrina's gate-based unstructured behaviour and road-based structured behaviour without changing the planner internals.");
+    const char* environment_items[] = {
+        thesis_sim::environment_mode_name(EnvironmentMode::UnstructuredGates),
+        thesis_sim::environment_mode_name(EnvironmentMode::StructuredRoad),
     };
-    if (ImGui::Combo("Gate Layout", &gate_behavior, gate_items, IM_ARRAYSIZE(gate_items))) {
-        gate_changed = true;
+    if (ImGui::Combo("Environment", &ui_state->environment_mode, environment_items, IM_ARRAYSIZE(environment_items))) {
+        sim.load_world(world_from_ui_selection(sim, *ui_state));
+        sync_ui_state_from_sim(ui_state, sim);
+        ui_state->paused = true;
     }
-    if (ImGui::InputInt("Gate Seed", &ui_state->gate_seed_input)) {
-        ui_state->gate_seed_input = std::max(ui_state->gate_seed_input, 0);
-        gate_changed = true;
+
+    if (sim.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        ImGui::TextWrapped("Named gates are passage hypotheses through the free openings of the unstructured map. They guide the planner toward feasible corridors.");
+
+        const char* preset_items[] = {
+            thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::RobotValidation),
+            thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::TightCorridor),
+            thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::WideSlalom),
+            thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::LowerBypass),
+            thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::Custom),
+        };
+        if (ImGui::Combo("Unstructured Map", &ui_state->unstructured_preset, preset_items, IM_ARRAYSIZE(preset_items))) {
+            sim.load_world(world_from_ui_selection(sim, *ui_state));
+            sync_ui_state_from_sim(ui_state, sim);
+            ui_state->paused = true;
+        }
+        ImGui::Text("Preset = %s", thesis_sim::unstructured_map_preset_name(sim.world().unstructured_preset()));
+
+        int gate_behavior = static_cast<int>(sim.gate_behavior());
+        bool gate_changed = false;
+        const char* gate_items[] = {
+            thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Static),
+            thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Randomized),
+            thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Mobile),
+        };
+        if (ImGui::Combo("Gate Layout", &gate_behavior, gate_items, IM_ARRAYSIZE(gate_items))) {
+            gate_changed = true;
+        }
+        if (ImGui::InputInt("Gate Seed", &ui_state->gate_seed_input)) {
+            ui_state->gate_seed_input = std::max(ui_state->gate_seed_input, 0);
+            gate_changed = true;
+        }
+        if (gate_changed) {
+            sim.set_gate_behavior(
+                static_cast<GateBehaviorMode>(std::clamp(gate_behavior, 0, static_cast<int>(IM_ARRAYSIZE(gate_items)) - 1)),
+                static_cast<std::uint32_t>(ui_state->gate_seed_input));
+            ui_state->report_written = false;
+            ui_state->last_report_path.clear();
+        }
+        if (ImGui::Button("Regenerate Gates", ImVec2(-1.0f, 0.0f))) {
+            ui_state->gate_seed_input = std::max(ui_state->gate_seed_input + 1, 0);
+            sim.regenerate_gate_layout(static_cast<std::uint32_t>(ui_state->gate_seed_input));
+            ui_state->report_written = false;
+            ui_state->last_report_path.clear();
+        }
+        ImGui::Text("Gate mode = %s", thesis_sim::gate_behavior_mode_name(sim.gate_behavior()));
+        ImGui::Text("Gate seed = %u", sim.gate_seed());
+    } else {
+        ImGui::TextWrapped("Structured mode uses Sabrina's road behaviour on a fixed road polyline while the EKF estimates the robot state from encoder, IMU and LiDAR.");
+        const char* structured_items[] = {
+            thesis_sim::structured_map_preset_name(StructuredMapPreset::ValidationRoad),
+            thesis_sim::structured_map_preset_name(StructuredMapPreset::CircleLoop),
+            thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
+        };
+        int structured_selection = ui_state->structured_preset;
+        if (structured_selection == static_cast<int>(StructuredMapPreset::Custom)) {
+            structured_selection = static_cast<int>(StructuredMapPreset::ValidationRoad);
+        }
+        if (ImGui::Combo("Structured Map", &structured_selection, structured_items, IM_ARRAYSIZE(structured_items))) {
+            ui_state->structured_preset = structured_selection;
+            sim.load_world(world_from_ui_selection(sim, *ui_state));
+            sync_ui_state_from_sim(ui_state, sim);
+            ui_state->paused = true;
+        }
+        ImGui::Text("Preset = %s", thesis_sim::structured_map_preset_name(sim.world().structured_preset()));
+        ImGui::Text("Road points = %d", static_cast<int>(sim.world().road_centerline().size()));
+        if (sim.world().structured_preset() == StructuredMapPreset::Custom) {
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.42f, 1.0f), "Current road = Custom edited scenario");
+            ImGui::TextWrapped("The last edited structured road is active. Built-in presets in the combo restore known-good road layouts.");
+            if (ImGui::Button("Restore Validation Road", ImVec2(-1.0f, 0.0f))) {
+                ui_state->structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
+                sim.load_world(make_world_from_mode(
+                    EnvironmentMode::StructuredRoad,
+                    static_cast<UnstructuredMapPreset>(ui_state->unstructured_preset),
+                    StructuredMapPreset::ValidationRoad,
+                    sim.gate_behavior(),
+                    sim.gate_seed()));
+                sync_ui_state_from_sim(ui_state, sim);
+                ui_state->paused = true;
+            }
+        }
+        ImGui::TextDisabled("Gate layout controls are disabled in structured mode.");
     }
-    if (gate_changed) {
-        sim.set_gate_behavior(
-            static_cast<GateBehaviorMode>(std::clamp(gate_behavior, 0, static_cast<int>(IM_ARRAYSIZE(gate_items)) - 1)),
-            static_cast<std::uint32_t>(ui_state->gate_seed_input));
+
+    ImGui::SeparatorText("Map Editor");
+    ImGui::SameLine();
+    help_marker("Manual map editing now happens directly in the viewport. Enable drag mode, move handles with the mouse, then apply the edited scenario.");
+    WorldMap& editor_world = ui_state->scenario_editor_world;
+    ImGui::Checkbox("Enable drag editing", &ui_state->map_editor_enabled);
+    if (ImGui::Button("Load Current Scenario", ImVec2(-1.0f, 0.0f))) {
+        ui_state->scenario_editor_world = sim.world();
+        ui_state->scenario_editor_dirty = false;
+        ui_state->selected_editor_handle = {};
+        ui_state->active_drag_handle = {};
     }
-    if (ImGui::Button("Regenerate Gates", ImVec2(-1.0f, 0.0f))) {
-        ui_state->gate_seed_input = std::max(ui_state->gate_seed_input + 1, 0);
-        sim.regenerate_gate_layout(static_cast<std::uint32_t>(ui_state->gate_seed_input));
+    if (ImGui::Button("Apply Edited Map", ImVec2(-1.0f, 0.0f))) {
+        ui_state->scenario_editor_world.finalize_editor_changes();
+        sim.load_world(ui_state->scenario_editor_world);
+        sync_ui_state_from_sim(ui_state, sim);
+        ui_state->paused = true;
     }
-    ImGui::Text("Gate mode = %s", thesis_sim::gate_behavior_mode_name(sim.gate_behavior()));
-    ImGui::Text("Gate seed = %u", sim.gate_seed());
+
+    if (ImGui::CollapsingHeader("Manual Map Tools")) {
+        if (ImGui::Button("Add Obstacle", ImVec2(-1.0f, 0.0f))) {
+            const Vec2 center{
+                0.5 * (editor_world.start().x + editor_world.goal().x),
+                0.5 * (editor_world.start().y + editor_world.goal().y),
+            };
+            editor_world.editable_obstacles().push_back({center.x - 1.0, center.y - 1.0, center.x + 1.0, center.y + 1.0});
+            ui_state->scenario_editor_dirty = true;
+            ui_state->selected_editor_handle = {MapEditorHandleType::Obstacle, static_cast<int>(editor_world.editable_obstacles().size()) - 1};
+        }
+
+        if (editor_world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+            if (ImGui::Button("Add Gate", ImVec2(-1.0f, 0.0f))) {
+                const Vec2 midpoint{
+                    0.5 * (editor_world.start().x + editor_world.goal().x),
+                    0.5 * (editor_world.start().y + editor_world.goal().y),
+                };
+                GateSpec gate;
+                gate.name = "gate_" + std::to_string(editor_world.editable_gates().size() + 1);
+                gate.position = midpoint;
+                gate.anchor_position = midpoint;
+                editor_world.editable_gates().push_back(gate);
+                ui_state->scenario_editor_dirty = true;
+                ui_state->selected_editor_handle = {MapEditorHandleType::Gate, static_cast<int>(editor_world.editable_gates().size()) - 1};
+            }
+        } else {
+            if (ImGui::Button("Add Road Point", ImVec2(-1.0f, 0.0f))) {
+                std::vector<Vec2>& road = editor_world.editable_road_centerline();
+                const bool closed_loop =
+                    road.size() >= 3 && thesis_sim::distance(road.front(), road.back()) < 0.5;
+                if (closed_loop) {
+                    road.insert(road.end() - 1, editor_world.goal());
+                    ui_state->selected_editor_handle = {
+                        MapEditorHandleType::RoadPoint,
+                        static_cast<int>(road.size()) - 2,
+                    };
+                } else {
+                    road.push_back(editor_world.goal());
+                    ui_state->selected_editor_handle = {
+                        MapEditorHandleType::RoadPoint,
+                        static_cast<int>(road.size()) - 1,
+                    };
+                }
+                ui_state->scenario_editor_dirty = true;
+            }
+        }
+
+        if (ui_state->selected_editor_handle.type != MapEditorHandleType::None) {
+            ImGui::Text("Selected = %s", map_editor_handle_type_name(ui_state->selected_editor_handle.type));
+            if (ImGui::Button("Remove Selected", ImVec2(-1.0f, 0.0f))) {
+                switch (ui_state->selected_editor_handle.type) {
+                    case MapEditorHandleType::Obstacle:
+                        if (ui_state->selected_editor_handle.index >= 0 &&
+                            ui_state->selected_editor_handle.index < static_cast<int>(editor_world.editable_obstacles().size())) {
+                            editor_world.editable_obstacles().erase(
+                                editor_world.editable_obstacles().begin() + ui_state->selected_editor_handle.index);
+                            ui_state->scenario_editor_dirty = true;
+                        }
+                        break;
+                    case MapEditorHandleType::Gate:
+                        if (ui_state->selected_editor_handle.index >= 0 &&
+                            ui_state->selected_editor_handle.index < static_cast<int>(editor_world.editable_gates().size())) {
+                            editor_world.editable_gates().erase(
+                                editor_world.editable_gates().begin() + ui_state->selected_editor_handle.index);
+                            ui_state->scenario_editor_dirty = true;
+                        }
+                        break;
+                    case MapEditorHandleType::RoadPoint:
+                        if (ui_state->selected_editor_handle.index > 0 &&
+                            ui_state->selected_editor_handle.index + 1 < static_cast<int>(editor_world.editable_road_centerline().size())) {
+                            editor_world.editable_road_centerline().erase(
+                                editor_world.editable_road_centerline().begin() + ui_state->selected_editor_handle.index);
+                            ui_state->scenario_editor_dirty = true;
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                ui_state->selected_editor_handle = {};
+                ui_state->active_drag_handle = {};
+            }
+        } else {
+            ImGui::TextDisabled("No editor handle selected.");
+        }
+
+        ImGui::TextDisabled("%s", ui_state->scenario_editor_dirty ? "Edited scenario has unapplied changes." : "Edited scenario is synchronized.");
+        if (ui_state->map_editor_enabled) {
+            ImGui::TextWrapped("Drag start, goal, obstacle centers, gate anchors or interior road points directly in the viewport.");
+        }
+    }
 
     ImGui::SeparatorText("Sensors");
+    ImGui::SameLine();
+    help_marker("These toggles affect the simulated measurements that feed the EKF. The planner still works on the fused state estimate.");
     bool imu_enabled = sim.imu_enabled();
     bool lidar_enabled = sim.lidar_enabled();
     int sensor_profile = static_cast<int>(sim.range_sensor_profile());
@@ -424,49 +1684,59 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
     if (ImGui::Combo("Range Sensor", &sensor_profile, sensor_items, IM_ARRAYSIZE(sensor_items))) {
         sensor_changed = true;
     }
-
     if (sensor_changed) {
         sim.set_sensor_suite(
             imu_enabled,
             lidar_enabled,
             static_cast<RangeSensorProfile>(std::clamp(sensor_profile, 0, static_cast<int>(IM_ARRAYSIZE(sensor_items)) - 1)));
+        ui_state->report_written = false;
+        ui_state->last_report_path.clear();
     }
-
-    ImGui::Text("Profile = %s", thesis_sim::range_sensor_profile_name(sim.range_sensor_profile()));
-    ImGui::Text("Beams = %d", sim.active_lidar_beams());
-    ImGui::Text("FOV = %.0f deg", sim.active_lidar_fov_rad() * 180.0 / 3.14159265358979323846);
-    ImGui::Text("Range = %.1f m", sim.active_lidar_range());
-    if (sim.imu_enabled()) {
-        ImGui::Text("IMU yaw rate = %.2f deg/s", vehicle.yaw_rate * 180.0 / 3.14159265358979323846);
-    } else {
-        ImGui::TextDisabled("IMU disabled");
-    }
+    ImGui::Text("Localization = %s", sim.localization_mode_name());
+    ImGui::Text("Heading source = %s", sim.heading_source_name());
+    ImGui::Text("Stack = %s + %s",
+                thesis_sim::vehicle_model_kind_name(sim.vehicle_model_kind()),
+                thesis_sim::tracking_controller_mode_name(sim.tracking_controller_mode()));
     if (sim.lidar_enabled()) {
-        ImGui::Text("LiDAR min range = %.2f m", sim.min_lidar_distance());
+        ImGui::Text("LiDAR = %s, min %.2f m",
+                    thesis_sim::range_sensor_profile_name(sim.range_sensor_profile()),
+                    sim.min_lidar_distance());
     } else {
-        ImGui::TextDisabled("LiDAR disabled");
+        ImGui::Text("LiDAR = disabled");
     }
 
-    ImGui::SeparatorText("State");
-    ImGui::Text("model = %s", vehicle.model_name.c_str());
-    ImGui::Text("t = %.2f s", sim.sim_time());
-    ImGui::Text("step = %d", sim.step_count());
+    ImGui::SeparatorText("Summary");
+    ImGui::SameLine();
+    help_marker("Compact runtime summary. The detailed actuator and estimator traces stay in the graph tabs.");
+    ImGui::Text("t = %.2f s   step = %d", sim.sim_time(), sim.step_count());
     ImGui::Text("pos = (%.2f, %.2f) m", vehicle.position.x, vehicle.position.y);
-    ImGui::Text("yaw = %.1f deg", vehicle.yaw * 180.0 / 3.14159265358979323846);
-    ImGui::Text("v = %.2f m/s", vehicle.speed);
-    ImGui::Text("a = %.2f m/s^2", vehicle.accel);
-    ImGui::Text("j = %.2f m/s^3", sim.last_j());
-    ImGui::Text("r = %.2f 1/(m*s)", sim.last_r());
-    ImGui::Text("kappa = %.3f 1/m", vehicle.curvature);
-    ImGui::Text("target v = %.2f m/s", vehicle.target_speed);
-    ImGui::Text("target wz = %.2f deg/s", vehicle.target_yaw_rate * 180.0 / 3.14159265358979323846);
-    ImGui::Text("wheel v = (%.2f, %.2f) m/s", vehicle.left_wheel_speed, vehicle.right_wheel_speed);
-    ImGui::Text("PWM = (%d, %d)", vehicle.left_pwm, vehicle.right_pwm);
-    ImGui::Text("enc ticks = (%d, %d)", vehicle.left_encoder_ticks, vehicle.right_encoder_ticks);
-    ImGui::Text("dTicks = (%d, %d)", vehicle.left_encoder_delta, vehicle.right_encoder_delta);
+    ImGui::Text("yaw = %.1f deg   v = %.2f m/s", vehicle.yaw * 180.0 / 3.14159265358979323846, vehicle.speed);
     ImGui::Text("goal distance = %.2f m", sim.distance_to_goal());
-    ImGui::Text("chosen gate = %s", chosen_name);
-    ImGui::Text("visible gates = %d", static_cast<int>(sim.visible_gate_indices().size()));
+    ImGui::Text("tracking: cte %.2f m   hdg %.2f deg", sim.tracker_cross_track_error(), sim.tracker_heading_error_deg());
+    if (sim.last_mpc_command().has_value()) {
+        ImGui::Text("MPC: accel %.2f   steer rate %.2f deg/s",
+                    sim.last_mpc_command()->accel_cmd,
+                    sim.last_mpc_command()->steer_rate_cmd * 180.0 / 3.14159265358979323846);
+    }
+    if (sim.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        ImGui::Text("chosen gate = %s   visible = %d", chosen_name, static_cast<int>(sim.visible_gate_indices().size()));
+    } else {
+        ImGui::Text("road points = %d", static_cast<int>(sim.world().road_centerline().size()));
+    }
+
+    ImGui::SeparatorText("Reports");
+    ImGui::SameLine();
+    help_marker("Writes a JSON report with scenario, configuration, summary metrics and decimated telemetry so multiple tests can be compared offline.");
+    if (ImGui::Button("Write JSON Report", ImVec2(-1.0f, 0.0f))) {
+        const std::string report_path = default_report_path(sim, "gui");
+        if (write_json_report(sim, report_status_string(sim), report_path)) {
+            ui_state->report_written = true;
+            ui_state->last_report_path = report_path;
+        }
+    }
+    if (!ui_state->last_report_path.empty()) {
+        ImGui::TextWrapped("Last report: %s", ui_state->last_report_path.c_str());
+    }
 
     ImGui::EndChild();
 }
@@ -493,7 +1763,7 @@ void render_workspace(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
         ImGui::TableNextColumn();
         if (ImGui::BeginTabBar("WorkspaceTabs")) {
             if (ImGui::BeginTabItem("Simulation")) {
-                render_world_tab(sim);
+                render_world_tab(sim, ui_state);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Graphs")) {
@@ -512,21 +1782,32 @@ void render_workspace(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
 }
 
 int run_headless(const AppOptions& options) {
-    PlannerDrivenVehicleSim sim(WorldMap::thesis_demo());
+    PlannerDrivenVehicleSim sim(make_world_from_mode(
+        options.environment_mode,
+        options.unstructured_preset,
+        options.structured_preset,
+        GateBehaviorMode::Static,
+        7));
     const SimulationReport report = sim.run_headless(options.max_steps);
+    const std::string status = report.goal_reached ? "goal_reached" : (report.collision ? "collision" : "timeout");
+    const std::string report_path = default_report_path(sim, "headless");
+    const bool report_written = write_json_report(sim, status, report_path);
 
-    std::cout << "status=" << (report.goal_reached ? "goal_reached" : (report.collision ? "collision" : "timeout")) << '\n';
+    std::cout << "status=" << status << '\n';
     std::cout << "steps=" << report.steps << '\n';
     std::cout << "time=" << report.sim_time << '\n';
     std::cout << "final_x=" << report.final_position.x << '\n';
     std::cout << "final_y=" << report.final_position.y << '\n';
     std::cout << "distance_to_goal=" << report.distance_to_goal << '\n';
     std::cout << "passed_gates=" << report.passed_gates << '\n';
+    if (report_written) {
+        std::cout << "report_json=" << report_path << '\n';
+    }
 
     return report.goal_reached ? 0 : 1;
 }
 
-int run_gui() {
+int run_gui(const AppOptions& options) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << '\n';
         return 1;
@@ -568,10 +1849,15 @@ int run_gui() {
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
 
-    PlannerDrivenVehicleSim sim(WorldMap::thesis_demo());
+    PlannerDrivenVehicleSim sim(make_world_from_mode(
+        options.environment_mode,
+        options.unstructured_preset,
+        options.structured_preset,
+        GateBehaviorMode::Static,
+        7));
     bool running = true;
     UiState ui_state;
-    ui_state.gate_seed_input = static_cast<int>(sim.gate_seed());
+    sync_ui_state_from_sim(&ui_state, sim);
 
     while (running) {
         SDL_Event event;
@@ -592,6 +1878,14 @@ int run_gui() {
         } else if (ui_state.single_step) {
             sim.step();
             ui_state.single_step = false;
+        }
+
+        if ((sim.goal_reached() || sim.collision()) && !ui_state.report_written) {
+            const std::string report_path = default_report_path(sim, "gui_auto");
+            if (write_json_report(sim, report_status_string(sim), report_path)) {
+                ui_state.report_written = true;
+                ui_state.last_report_path = report_path;
+            }
         }
 
         ImGui_ImplSDLRenderer2_NewFrame();
@@ -624,5 +1918,5 @@ int main(int argc, char** argv) {
     if (options.headless) {
         return run_headless(options);
     }
-    return run_gui();
+    return run_gui(options);
 }

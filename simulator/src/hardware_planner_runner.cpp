@@ -147,6 +147,7 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     distance_to_goal_ = distance(position, world_.goal());
     sync_planner_from_estimate(true);
     initialize_gates();
+    refresh_gate_diagnostics();
 }
 
 void HardwarePlannerRunner::initialize_planner_state() {
@@ -229,61 +230,15 @@ void HardwarePlannerRunner::update_speed_limit() {
     sim_.V_max = clamp_value(curvature_limit, kMinCruise, config_.cruise_speed_limit);
 }
 
-std::vector<int> HardwarePlannerRunner::select_gate_candidates() const {
-    std::vector<int> candidates;
-
-    int nearest_idx = -1;
-    double nearest_dist = std::numeric_limits<double>::infinity();
-
-    for (size_t i = 0; i < gates_.size(); ++i) {
-        if (gates_[i].passed) {
-            continue;
-        }
-
-        const Vec2 gate_pos{gates_[i].x_pos, gates_[i].y_pos};
-        const double dist = distance(estimate_.position, gate_pos);
-        if (dist < nearest_dist) {
-            nearest_dist = dist;
-            nearest_idx = static_cast<int>(i);
-        }
-
-        const bool visible = dist <= config_.localization.max_range_m + 2.0 &&
-                             world_.line_of_sight(estimate_.position, gate_pos);
-        const bool close_final = gates_[i].final && dist <= 10.0;
-        if (visible || close_final) {
-            candidates.push_back(static_cast<int>(i));
-        }
-    }
-
-    if (candidates.empty() && nearest_idx >= 0) {
-        candidates.push_back(nearest_idx);
-    }
-
-    if (distance_to_goal_ < 7.0) {
-        const int final_idx = static_cast<int>(gates_.size()) - 1;
-        if (std::find(candidates.begin(), candidates.end(), final_idx) == candidates.end()) {
-            candidates.push_back(final_idx);
-        }
-    }
-
-    return candidates;
-}
-
-void HardwarePlannerRunner::sync_gate_selection(const std::vector<int>& candidate_indices,
-                                                const std::vector<gate>& local_gates,
-                                                int chosen_local_index) {
+void HardwarePlannerRunner::refresh_gate_diagnostics() {
+    visible_gate_indices_.clear();
     chosen_gate_index_ = -1;
-    for (size_t i = 0; i < candidate_indices.size(); ++i) {
-        gate& target = gates_[candidate_indices[i]];
-        target = local_gates[i];
-        if (static_cast<int>(i) == chosen_local_index) {
-            chosen_gate_index_ = candidate_indices[i];
-        }
-    }
-
     for (size_t i = 0; i < gates_.size(); ++i) {
-        if (std::find(candidate_indices.begin(), candidate_indices.end(), static_cast<int>(i)) == candidate_indices.end()) {
-            gates_[i].choose = false;
+        if (!gates_[i].passed && !gates_[i].too_far) {
+            visible_gate_indices_.push_back(static_cast<int>(i));
+        }
+        if (gates_[i].choose) {
+            chosen_gate_index_ = static_cast<int>(i);
         }
     }
 }
@@ -293,18 +248,11 @@ void HardwarePlannerRunner::plan_if_needed() {
         return;
     }
 
-    visible_gate_indices_ = select_gate_candidates();
-    if (visible_gate_indices_.empty()) {
+    if (gates_.empty()) {
         last_j_ = 0.0;
         last_r_ = 0.0;
         chosen_gate_index_ = -1;
         return;
-    }
-
-    std::vector<gate> local_gates;
-    local_gates.reserve(visible_gate_indices_.size());
-    for (int idx : visible_gate_indices_) {
-        local_gates.push_back(gates_[static_cast<size_t>(idx)]);
     }
 
     std::vector<double> commands = sel_jr(
@@ -313,7 +261,7 @@ void HardwarePlannerRunner::plan_if_needed() {
         false,
         nullptr,
         true,
-        &local_gates,
+        &gates_,
         sim_,
         x0_,
         g_x0_,
@@ -324,17 +272,20 @@ void HardwarePlannerRunner::plan_if_needed() {
 
     double next_j = commands.size() > 0 ? commands[0] : 0.0;
     double next_r = commands.size() > 1 ? commands[1] : 0.0;
-    int chosen_local = commands.size() > 2 ? static_cast<int>(commands[2]) : -1;
+    int chosen_gate = commands.size() > 2 ? static_cast<int>(commands[2]) : -1;
 
     if (!std::isfinite(next_j) || !std::isfinite(next_r)) {
         next_j = 0.0;
         next_r = 0.0;
-        chosen_local = -1;
+        chosen_gate = -1;
     }
 
     last_j_ = clamp_value(next_j, -3.5, 2.5);
     last_r_ = clamp_value(next_r, -1.2, 1.2);
-    sync_gate_selection(visible_gate_indices_, local_gates, chosen_local);
+    refresh_gate_diagnostics();
+    if (chosen_gate >= 0 && chosen_gate < static_cast<int>(gates_.size())) {
+        chosen_gate_index_ = chosen_gate;
+    }
 }
 
 void HardwarePlannerRunner::update_estimate_from_observation(double dt) {
@@ -499,26 +450,7 @@ void HardwarePlannerRunner::update_virtual_reference(double dt) {
 
 void HardwarePlannerRunner::compute_control_command() {
     last_command_ = {};
-
-    const bool controller_front_alert =
-        bridge_.observation().have_controller_telemetry &&
-        ((bridge_.observation().controller.safety_flags &
-          static_cast<std::uint16_t>(SafetyFlag::FrontAlert)) != 0U);
-
-    safety_stop_active_ =
-        controller_front_alert ||
-        (estimate_.front_lidar_distance > 0.0 &&
-         estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m);
-
-    if (goal_reached_ && config_.stop_on_goal) {
-        last_command_.safety_stop = true;
-        return;
-    }
-
-    if (safety_stop_active_) {
-        last_command_.safety_stop = true;
-        return;
-    }
+    safety_stop_active_ = false;
 
     last_command_.target_speed = clamp_value(
         virtual_speed_ref_,
@@ -662,6 +594,7 @@ void HardwarePlannerRunner::step() {
 
     sync_planner_from_estimate(false);
     update_speed_limit();
+    refresh_gate_diagnostics();
     plan_if_needed();
     update_virtual_reference(dt);
 
@@ -672,17 +605,11 @@ void HardwarePlannerRunner::step() {
     compute_control_command();
     push_history();
 
-    if (goal_reached_ && config_.stop_on_goal) {
-        bridge_.send_pwm(0, 0, true);
-        bridge_.stop(StopReason::UserRequest, false);
-    } else if (last_command_.safety_stop) {
-        bridge_.send_pwm(0, 0, true);
-        bridge_.stop(StopReason::SafetyOverride, false);
-    } else {
-        bridge_.send_pwm(
-            static_cast<std::int16_t>(last_command_.pwm_left),
-            static_cast<std::int16_t>(last_command_.pwm_right));
-    }
+    bridge_.send_pwm(
+        static_cast<std::int16_t>(last_command_.pwm_left),
+        static_cast<std::int16_t>(last_command_.pwm_right),
+        false,
+        MotorControlMode::DirectPwm);
 }
 
 HardwarePlannerReport HardwarePlannerRunner::run(int max_steps) {

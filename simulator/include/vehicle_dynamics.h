@@ -10,6 +10,12 @@
 
 namespace thesis_sim {
 
+enum class VehicleModelKind {
+    CarLikeBicycle = 0,
+};
+
+const char* vehicle_model_kind_name(VehicleModelKind kind);
+
 struct VehicleGeometry {
     double wheelbase = 0.30;
     double cg_to_front = 0.15;
@@ -20,10 +26,13 @@ struct VehicleGeometry {
     double wheel_length = 0.09;
     double wheel_width = 0.03;
     double wheel_radius = 0.04;
-    double max_steer_angle = 0.0;
-    double max_curvature = 3.2;
+    double max_steer_angle = 0.52;
+    double max_steer_rate = 1.8;
+    double max_curvature = 2.1;
     double max_linear_speed = 0.90;
     double max_yaw_rate = 4.00;
+    double max_accel = 1.4;
+    double max_decel = 1.8;
     int max_pwm = 255;
     int min_effective_pwm = 45;
     double wheel_speed_to_pwm_gain = 190.0;
@@ -51,6 +60,7 @@ struct VehicleModelState {
     double right_wheel_speed = 0.0;
     double target_speed = 0.0;
     double target_yaw_rate = 0.0;
+    double target_steer_angle = 0.0;
     std::int32_t left_encoder_ticks = 0;
     std::int32_t right_encoder_ticks = 0;
     std::int32_t left_encoder_delta = 0;
@@ -61,12 +71,22 @@ struct VehicleModelState {
     Eigen::VectorXd internal_state;
 };
 
+struct VehicleControlInput {
+    double jerk_cmd = 0.0;
+    double planner_r_cmd = 0.0;
+    double accel_cmd = 0.0;
+    double steer_rate_cmd = 0.0;
+    double target_speed = 0.0;
+    double target_curvature = 0.0;
+    double target_steer_angle = 0.0;
+};
+
 class VehicleDynamicsModel {
   public:
     virtual ~VehicleDynamicsModel() = default;
 
     virtual void reset(const Vec2& position, double yaw) = 0;
-    virtual void step(double dt, double jerk_cmd, double planner_r_cmd) = 0;
+    virtual void step(double dt, const VehicleControlInput& input) = 0;
 
     virtual const VehicleGeometry& geometry() const = 0;
     virtual const VehicleModelState& state() const = 0;
@@ -76,6 +96,5 @@ class VehicleDynamicsModel {
 };
 
 std::unique_ptr<VehicleDynamicsModel> make_four_wheel_car_model(const VehicleGeometry& geometry = {});
-std::unique_ptr<VehicleDynamicsModel> make_differential_drive_robot_model(const VehicleGeometry& geometry = {});
 
 }  // namespace thesis_sim

@@ -15,6 +15,32 @@ enum class GateBehaviorMode {
 
 const char* gate_behavior_mode_name(GateBehaviorMode mode);
 
+enum class EnvironmentMode {
+    UnstructuredGates = 0,
+    StructuredRoad = 1,
+};
+
+const char* environment_mode_name(EnvironmentMode mode);
+
+enum class UnstructuredMapPreset {
+    RobotValidation = 0,
+    TightCorridor = 1,
+    WideSlalom = 2,
+    LowerBypass = 3,
+    Custom = 4,
+};
+
+const char* unstructured_map_preset_name(UnstructuredMapPreset preset);
+
+enum class StructuredMapPreset {
+    ValidationRoad = 0,
+    CircleLoop = 1,
+    ZigZag = 2,
+    Custom = 3,
+};
+
+const char* structured_map_preset_name(StructuredMapPreset preset);
+
 struct Vec2 {
     double x = 0.0;
     double y = 0.0;
@@ -47,17 +73,26 @@ struct LidarHit {
 
 class WorldMap {
   public:
-    static WorldMap thesis_demo(GateBehaviorMode gate_behavior = GateBehaviorMode::Static,
+    static WorldMap unstructured_demo(UnstructuredMapPreset preset = UnstructuredMapPreset::RobotValidation,
+                                      GateBehaviorMode gate_behavior = GateBehaviorMode::Static,
+                                      std::uint32_t gate_seed = 0);
+    static WorldMap structured_demo(StructuredMapPreset preset = StructuredMapPreset::ValidationRoad);
+    static WorldMap thesis_demo(UnstructuredMapPreset preset = UnstructuredMapPreset::RobotValidation,
+                                GateBehaviorMode gate_behavior = GateBehaviorMode::Static,
                                 std::uint32_t gate_seed = 0);
 
     const Rect& bounds() const { return bounds_; }
     const std::vector<Rect>& obstacles() const { return obstacles_; }
     const std::vector<GateSpec>& gates() const { return gates_; }
+    const std::vector<Vec2>& road_centerline() const { return road_centerline_; }
     const Vec2& start() const { return start_; }
     const Vec2& goal() const { return goal_; }
     double start_heading() const { return start_heading_; }
     GateBehaviorMode gate_behavior() const { return gate_behavior_; }
     std::uint32_t gate_seed() const { return gate_seed_; }
+    EnvironmentMode environment_mode() const { return environment_mode_; }
+    UnstructuredMapPreset unstructured_preset() const { return unstructured_preset_; }
+    StructuredMapPreset structured_preset() const { return structured_preset_; }
 
     bool line_of_sight(const Vec2& from, const Vec2& to, double padding = 0.15) const;
     std::vector<LidarHit> raycast(const Vec2& origin, double heading, int beams, double fov_rad, double max_range) const;
@@ -65,6 +100,13 @@ class WorldMap {
     void set_gate_behavior(GateBehaviorMode gate_behavior, std::uint32_t gate_seed);
     void reset_gate_layout(std::uint32_t gate_seed);
     void update_gate_layout(double sim_time_s);
+    void set_start(const Vec2& start) { start_ = start; }
+    void set_goal(const Vec2& goal) { goal_ = goal; }
+    void set_start_heading(double start_heading) { start_heading_ = start_heading; }
+    std::vector<Rect>& editable_obstacles() { return obstacles_; }
+    std::vector<GateSpec>& editable_gates() { return gates_; }
+    std::vector<Vec2>& editable_road_centerline() { return road_centerline_; }
+    void finalize_editor_changes();
 
   private:
     Rect bounds_;
@@ -74,6 +116,10 @@ class WorldMap {
     std::vector<Rect> obstacles_;
     std::vector<GateSpec> gates_;
     std::vector<GateSpec> gate_templates_;
+    std::vector<Vec2> road_centerline_;
+    EnvironmentMode environment_mode_ = EnvironmentMode::UnstructuredGates;
+    UnstructuredMapPreset unstructured_preset_ = UnstructuredMapPreset::RobotValidation;
+    StructuredMapPreset structured_preset_ = StructuredMapPreset::ValidationRoad;
     GateBehaviorMode gate_behavior_ = GateBehaviorMode::Static;
     std::uint32_t gate_seed_ = 0;
 };

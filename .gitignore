@@ -12,6 +12,8 @@ Makefile
 compile_commands.json
 generalEnv/
 build_ninja/
+build-ninja/
+reports/
 
 # Python cache / bytecode
 __pycache__/
@@ -30,6 +32,7 @@ env/
 .micromamba/
 .mamba/
 pygame
+.vscode/
 
 # Logs / temp
 *.log

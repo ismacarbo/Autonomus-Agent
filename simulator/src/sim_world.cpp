@@ -134,6 +134,395 @@ double clamp_value(double value, double lo, double hi) {
     return std::max(lo, std::min(value, hi));
 }
 
+Vec2 clamp_to_bounds(const Rect& bounds, const Vec2& value, double margin = 0.0) {
+    return {
+        clamp_value(value.x, bounds.min_x + margin, bounds.max_x - margin),
+        clamp_value(value.y, bounds.min_y + margin, bounds.max_y - margin),
+    };
+}
+
+Vec2 interpolate(const Vec2& a, const Vec2& b, double alpha) {
+    return {
+        a.x + (b.x - a.x) * alpha,
+        a.y + (b.y - a.y) * alpha,
+    };
+}
+
+Vec2 perpendicular_unit(const Vec2& vector) {
+    const double norm = std::hypot(vector.x, vector.y);
+    if (norm < kEps) {
+        return {0.0, 1.0};
+    }
+    return {-vector.y / norm, vector.x / norm};
+}
+
+void normalize_rect(Rect* rect) {
+    if (rect == nullptr) {
+        return;
+    }
+    if (rect->min_x > rect->max_x) {
+        std::swap(rect->min_x, rect->max_x);
+    }
+    if (rect->min_y > rect->max_y) {
+        std::swap(rect->min_y, rect->max_y);
+    }
+}
+
+std::vector<Vec2> make_circle_road(const Vec2& center,
+                                   double radius,
+                                   double start_angle,
+                                   double end_angle,
+                                   int samples) {
+    std::vector<Vec2> road;
+    const int point_count = std::max(samples, 2);
+    road.reserve(static_cast<size_t>(point_count));
+    for (int i = 0; i < point_count; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(point_count - 1);
+        const double angle = start_angle + (end_angle - start_angle) * t;
+        road.push_back({
+            center.x + radius * std::cos(angle),
+            center.y + radius * std::sin(angle),
+        });
+    }
+    return road;
+}
+
+std::vector<Vec2> make_circle_loop(const Vec2& center, double radius, int samples) {
+    std::vector<Vec2> road;
+    const int point_count = std::max(samples, 8);
+    road.reserve(static_cast<size_t>(point_count));
+    for (int i = 0; i < point_count; ++i) {
+        const double angle = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(point_count);
+        road.push_back({
+            center.x + radius * std::cos(angle),
+            center.y + radius * std::sin(angle),
+        });
+    }
+    return road;
+}
+
+std::vector<Vec2> make_zigzag_road() {
+    return {
+        {4.0, 9.0},
+        {8.0, 12.0},
+        {12.0, 16.5},
+        {16.0, 13.5},
+        {20.0, 17.5},
+        {24.0, 14.0},
+        {28.0, 18.0},
+        {32.0, 15.0},
+        {36.0, 18.0},
+        {35.0, 12.0},
+        {31.0, 8.5},
+        {27.0, 11.0},
+        {23.0, 7.5},
+        {19.0, 10.0},
+        {15.0, 7.0},
+        {11.0, 9.5},
+        {7.0, 6.5},
+    };
+}
+
+std::vector<Vec2> make_validation_loop() {
+    return {
+        {4.0, 11.0},
+        {6.5, 14.0},
+        {10.5, 16.8},
+        {15.5, 18.8},
+        {21.0, 19.6},
+        {26.5, 19.0},
+        {31.5, 17.2},
+        {35.0, 14.2},
+        {36.0, 10.2},
+        {34.5, 6.8},
+        {31.0, 4.5},
+        {26.0, 3.2},
+        {20.0, 3.0},
+        {14.0, 4.0},
+        {9.0, 6.0},
+        {5.5, 8.4},
+    };
+}
+
+bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
+    return points.size() >= 3 && distance(points.front(), points.back()) <= threshold;
+}
+
+std::vector<Vec2> close_polyline_loop(std::vector<Vec2> points, double threshold) {
+    if (points.empty()) {
+        return points;
+    }
+    if (points.size() == 1) {
+        points.push_back(points.front());
+        return points;
+    }
+    if (points_form_closed_loop(points, threshold)) {
+        points.back() = points.front();
+        return points;
+    }
+    points.push_back(points.front());
+    return points;
+}
+
+std::vector<Vec2> open_points_to_closed_seed(const Vec2& start, const Vec2& goal) {
+    const Vec2 midpoint{
+        0.5 * (start.x + goal.x),
+        0.5 * (start.y + goal.y),
+    };
+    const Vec2 chord{
+        goal.x - start.x,
+        goal.y - start.y,
+    };
+    const double chord_length = std::max(std::hypot(chord.x, chord.y), 2.0);
+    const Vec2 normal = perpendicular_unit(chord);
+    const double offset = std::max(0.35 * chord_length, 2.5);
+    return {
+        start,
+        {midpoint.x + normal.x * offset, midpoint.y + normal.y * offset},
+        goal,
+        {midpoint.x - normal.x * offset, midpoint.y - normal.y * offset},
+    };
+}
+
+std::vector<Vec2> deduplicate_polyline(const std::vector<Vec2>& points, double min_spacing) {
+    std::vector<Vec2> filtered;
+    filtered.reserve(points.size());
+    for (const Vec2& point : points) {
+        if (filtered.empty() || distance(filtered.back(), point) >= min_spacing) {
+            filtered.push_back(point);
+        }
+    }
+    return filtered;
+}
+
+std::vector<Vec2> chaikin_open_polyline(const std::vector<Vec2>& points, int passes) {
+    if (points.size() < 3 || passes <= 0) {
+        return points;
+    }
+
+    std::vector<Vec2> current = points;
+    for (int pass = 0; pass < passes; ++pass) {
+        if (current.size() < 3) {
+            break;
+        }
+
+        std::vector<Vec2> next;
+        next.reserve(current.size() * 2);
+        next.push_back(current.front());
+        for (size_t i = 0; i + 1 < current.size(); ++i) {
+            const Vec2& a = current[i];
+            const Vec2& b = current[i + 1];
+            next.push_back(interpolate(a, b, 0.25));
+            next.push_back(interpolate(a, b, 0.75));
+        }
+        next.push_back(current.back());
+        current = std::move(next);
+    }
+
+    return current;
+}
+
+std::vector<Vec2> chaikin_closed_polyline(const std::vector<Vec2>& points, int passes) {
+    if (points.size() < 3 || passes <= 0) {
+        return points;
+    }
+
+    std::vector<Vec2> current = points;
+    if (points_form_closed_loop(current, 0.45) && current.size() > 2) {
+        current.pop_back();
+    }
+
+    for (int pass = 0; pass < passes; ++pass) {
+        if (current.size() < 3) {
+            break;
+        }
+
+        std::vector<Vec2> next;
+        next.reserve(current.size() * 2);
+        for (size_t i = 0; i < current.size(); ++i) {
+            const Vec2& a = current[i];
+            const Vec2& b = current[(i + 1) % current.size()];
+            next.push_back(interpolate(a, b, 0.25));
+            next.push_back(interpolate(a, b, 0.75));
+        }
+        current = std::move(next);
+    }
+
+    return current;
+}
+
+std::vector<Vec2> resample_polyline(const std::vector<Vec2>& points, double spacing) {
+    if (points.size() < 2) {
+        return points;
+    }
+
+    spacing = std::max(spacing, 0.25);
+    std::vector<double> cumulative(points.size(), 0.0);
+    for (size_t i = 1; i < points.size(); ++i) {
+        cumulative[i] = cumulative[i - 1] + distance(points[i - 1], points[i]);
+    }
+
+    const double total_length = cumulative.back();
+    if (total_length < spacing) {
+        return {points.front(), points.back()};
+    }
+
+    const int sample_count = std::clamp(
+        static_cast<int>(std::ceil(total_length / spacing)) + 1,
+        2,
+        96);
+    std::vector<Vec2> resampled;
+    resampled.reserve(static_cast<size_t>(sample_count));
+
+    size_t segment_index = 0;
+    for (int i = 0; i < sample_count; ++i) {
+        const double target_s =
+            (i + 1 == sample_count) ? total_length : std::min(total_length, spacing * static_cast<double>(i));
+        while (segment_index + 1 < cumulative.size() && cumulative[segment_index + 1] < target_s) {
+            ++segment_index;
+        }
+
+        if (segment_index + 1 >= cumulative.size()) {
+            resampled.push_back(points.back());
+            continue;
+        }
+
+        const double segment_start_s = cumulative[segment_index];
+        const double segment_end_s = cumulative[segment_index + 1];
+        const double segment_length = std::max(segment_end_s - segment_start_s, kEps);
+        const double alpha = clamp_value((target_s - segment_start_s) / segment_length, 0.0, 1.0);
+        resampled.push_back(interpolate(points[segment_index], points[segment_index + 1], alpha));
+    }
+
+    return resampled;
+}
+
+std::vector<Vec2> resample_closed_polyline(const std::vector<Vec2>& points, double spacing) {
+    std::vector<Vec2> base = points;
+    if (points_form_closed_loop(base, 0.45) && base.size() > 2) {
+        base.pop_back();
+    }
+    if (base.size() < 3) {
+        return base;
+    }
+
+    spacing = std::max(spacing, 0.25);
+    std::vector<double> cumulative(base.size() + 1, 0.0);
+    for (size_t i = 0; i < base.size(); ++i) {
+        cumulative[i + 1] = cumulative[i] + distance(base[i], base[(i + 1) % base.size()]);
+    }
+
+    const double total_length = cumulative.back();
+    if (total_length < spacing) {
+        return base;
+    }
+
+    const int sample_count = std::clamp(
+        static_cast<int>(std::ceil(total_length / spacing)),
+        6,
+        128);
+    std::vector<Vec2> resampled;
+    resampled.reserve(static_cast<size_t>(sample_count));
+
+    size_t segment_index = 0;
+    for (int i = 0; i < sample_count; ++i) {
+        const double target_s = total_length * static_cast<double>(i) / static_cast<double>(sample_count);
+        while (segment_index + 1 < cumulative.size() && cumulative[segment_index + 1] < target_s) {
+            ++segment_index;
+        }
+
+        const size_t start_index = segment_index % base.size();
+        const size_t end_index = (start_index + 1) % base.size();
+        const double segment_start_s = cumulative[segment_index];
+        const double segment_end_s = cumulative[segment_index + 1];
+        const double segment_length = std::max(segment_end_s - segment_start_s, kEps);
+        const double alpha = clamp_value((target_s - segment_start_s) / segment_length, 0.0, 1.0);
+        resampled.push_back(interpolate(base[start_index], base[end_index], alpha));
+    }
+
+    return resampled;
+}
+
+size_t find_nearest_point_index(const std::vector<Vec2>& points,
+                                const Vec2& query,
+                                std::optional<size_t> skip_index = std::nullopt) {
+    size_t best_index = 0;
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < points.size(); ++i) {
+        if (skip_index.has_value() && i == *skip_index) {
+            continue;
+        }
+        const double dx = points[i].x - query.x;
+        const double dy = points[i].y - query.y;
+        const double distance_sq = dx * dx + dy * dy;
+        if (distance_sq < best_distance_sq) {
+            best_distance_sq = distance_sq;
+            best_index = i;
+        }
+    }
+    return best_index;
+}
+
+std::vector<Vec2> rotate_closed_polyline(const std::vector<Vec2>& points, size_t start_index) {
+    std::vector<Vec2> base = points;
+    if (points_form_closed_loop(base, 0.45) && base.size() > 2) {
+        base.pop_back();
+    }
+    if (base.empty()) {
+        return base;
+    }
+    start_index %= base.size();
+    std::rotate(base.begin(), base.begin() + static_cast<std::ptrdiff_t>(start_index), base.end());
+    return close_polyline_loop(std::move(base), 0.45);
+}
+
+double heading_from_first_segment(const std::vector<Vec2>& road, double fallback_heading) {
+    for (size_t i = 1; i < road.size(); ++i) {
+        if (distance(road[i - 1], road[i]) >= 0.25) {
+            return angle_to(road[i - 1], road[i]);
+        }
+    }
+    return fallback_heading;
+}
+
+std::vector<Vec2> sanitize_structured_centerline(const Rect& bounds,
+                                                 const Vec2& start,
+                                                 const Vec2& goal,
+                                                 const std::vector<Vec2>& raw_points) {
+    std::vector<Vec2> sanitized = raw_points;
+    if (points_form_closed_loop(sanitized, 0.45) && sanitized.size() > 2) {
+        sanitized.pop_back();
+    }
+    if (sanitized.empty()) {
+        sanitized = open_points_to_closed_seed(start, goal);
+    }
+
+    for (Vec2& point : sanitized) {
+        point = clamp_to_bounds(bounds, point);
+    }
+
+    sanitized = deduplicate_polyline(sanitized, 0.35);
+    if (sanitized.size() < 3) {
+        sanitized = open_points_to_closed_seed(start, goal);
+        for (Vec2& point : sanitized) {
+            point = clamp_to_bounds(bounds, point);
+        }
+    }
+
+    sanitized = chaikin_closed_polyline(sanitized, sanitized.size() > 4 ? 2 : 1);
+    if (sanitized.size() < 3) {
+        sanitized = open_points_to_closed_seed(start, goal);
+    }
+
+    sanitized = resample_closed_polyline(sanitized, 1.0);
+    sanitized = deduplicate_polyline(sanitized, 0.45);
+    if (sanitized.size() < 3) {
+        sanitized = open_points_to_closed_seed(start, goal);
+    }
+
+    return close_polyline_loop(std::move(sanitized), 0.45);
+}
+
 void recompute_gate_headings(std::vector<GateSpec>* gates, const Vec2& goal) {
     if (gates == nullptr || gates->empty()) {
         return;
@@ -162,6 +551,49 @@ const char* gate_behavior_mode_name(GateBehaviorMode mode) {
             return "Randomized Gates";
         case GateBehaviorMode::Mobile:
             return "Mobile Gates";
+        default:
+            return "Unknown";
+    }
+}
+
+const char* environment_mode_name(EnvironmentMode mode) {
+    switch (mode) {
+        case EnvironmentMode::UnstructuredGates:
+            return "Unstructured Gates";
+        case EnvironmentMode::StructuredRoad:
+            return "Structured Road";
+        default:
+            return "Unknown";
+    }
+}
+
+const char* unstructured_map_preset_name(UnstructuredMapPreset preset) {
+    switch (preset) {
+        case UnstructuredMapPreset::RobotValidation:
+            return "Robot Validation";
+        case UnstructuredMapPreset::TightCorridor:
+            return "Tight Corridor";
+        case UnstructuredMapPreset::WideSlalom:
+            return "Wide Slalom";
+        case UnstructuredMapPreset::LowerBypass:
+            return "Lower Bypass";
+        case UnstructuredMapPreset::Custom:
+            return "Custom";
+        default:
+            return "Unknown";
+    }
+}
+
+const char* structured_map_preset_name(StructuredMapPreset preset) {
+    switch (preset) {
+        case StructuredMapPreset::ValidationRoad:
+            return "Validation Road";
+        case StructuredMapPreset::CircleLoop:
+            return "Circle Loop";
+        case StructuredMapPreset::ZigZag:
+            return "Zig-Zag";
+        case StructuredMapPreset::Custom:
+            return "Custom";
         default:
             return "Unknown";
     }
@@ -199,28 +631,86 @@ std::array<Vec2, 4> make_box_corners(const Vec2& center, double yaw, double leng
     return corners;
 }
 
-WorldMap WorldMap::thesis_demo(GateBehaviorMode gate_behavior, std::uint32_t gate_seed) {
+WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
+                                     GateBehaviorMode gate_behavior,
+                                     std::uint32_t gate_seed) {
     WorldMap world;
+    world.environment_mode_ = EnvironmentMode::UnstructuredGates;
+    world.unstructured_preset_ = preset;
     world.bounds_ = {0.0, 0.0, 40.0, 24.0};
     world.start_ = {4.0, 11.0};
     world.goal_ = {36.0, 20.0};
     world.start_heading_ = 0.0;
 
-    world.obstacles_ = {
-        {10.0, 0.0, 12.0, 7.0},
-        {10.0, 15.0, 12.0, 24.0},
-        {18.2, 8.5, 23.0, 14.5},
-        {29.5, 0.0, 31.5, 8.0},
-        {29.5, 17.0, 31.5, 24.0},
-    };
-
-    world.gate_templates_ = {
-        {"gap_entry", {11.0, 11.0}, {11.0, 11.0}, {0.20, 1.10}, 0.07, 0.20, 0.0, false},
-        {"upper_bypass", {21.0, 18.2}, {21.0, 18.2}, {0.90, 0.45}, 0.05, 1.40, 0.0, false},
-        {"exit_gap", {30.5, 14.0}, {30.5, 14.0}, {0.35, 1.00}, 0.06, 2.20, 0.0, false},
-        {"goal_approach", {34.0, 17.0}, {34.0, 17.0}, {0.70, 0.55}, 0.05, 2.90, 0.0, false},
-        {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
-    };
+    switch (preset) {
+        case UnstructuredMapPreset::RobotValidation:
+        case UnstructuredMapPreset::Custom:
+            world.obstacles_ = {
+                {10.0, 0.0, 12.0, 7.0},
+                {10.0, 15.0, 12.0, 24.0},
+                {18.2, 8.5, 23.0, 14.5},
+                {29.5, 0.0, 31.5, 8.0},
+                {30.0, 18.6, 31.5, 24.0},
+            };
+            world.gate_templates_ = {
+                {"gap_entry", {13.4, 12.6}, {13.4, 12.6}, {0.16, 0.45}, 0.07, 0.20, 0.0, false},
+                {"upper_bypass", {17.4, 17.8}, {17.4, 17.8}, {0.32, 0.22}, 0.05, 1.40, 0.0, false},
+                {"exit_gap", {28.4, 16.2}, {28.4, 16.2}, {0.22, 0.40}, 0.06, 2.20, 0.0, false},
+                {"goal_approach", {33.0, 18.5}, {33.0, 18.5}, {0.32, 0.28}, 0.05, 2.90, 0.0, false},
+                {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+            };
+            break;
+        case UnstructuredMapPreset::TightCorridor:
+            world.obstacles_ = {
+                {10.0, 0.0, 12.0, 8.0},
+                {10.0, 14.2, 12.0, 24.0},
+                {18.0, 8.7, 23.4, 14.8},
+                {29.3, 0.0, 31.6, 8.4},
+                {29.7, 18.0, 31.6, 24.0},
+            };
+            world.gate_templates_ = {
+                {"gap_entry", {12.6, 12.0}, {12.6, 12.0}, {0.12, 0.30}, 0.07, 0.20, 0.0, false},
+                {"upper_bypass", {17.3, 17.1}, {17.3, 17.1}, {0.22, 0.16}, 0.05, 1.40, 0.0, false},
+                {"exit_gap", {28.1, 16.1}, {28.1, 16.1}, {0.18, 0.24}, 0.06, 2.20, 0.0, false},
+                {"goal_approach", {33.0, 18.4}, {33.0, 18.4}, {0.20, 0.18}, 0.05, 2.90, 0.0, false},
+                {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+            };
+            break;
+        case UnstructuredMapPreset::WideSlalom:
+            world.obstacles_ = {
+                {9.5, 0.0, 11.8, 6.2},
+                {11.0, 17.8, 13.2, 24.0},
+                {18.4, 6.8, 22.6, 11.2},
+                {21.2, 16.4, 24.2, 21.8},
+                {30.2, 0.0, 32.0, 6.4},
+            };
+            world.gate_templates_ = {
+                {"gate_a", {12.8, 9.8}, {12.8, 9.8}, {0.28, 0.75}, 0.07, 0.10, 0.0, false},
+                {"gate_b", {18.4, 14.4}, {18.4, 14.4}, {0.35, 0.80}, 0.05, 1.20, 0.0, false},
+                {"gate_c", {25.8, 11.8}, {25.8, 11.8}, {0.35, 0.75}, 0.06, 2.00, 0.0, false},
+                {"goal_approach", {32.8, 16.8}, {32.8, 16.8}, {0.40, 0.60}, 0.05, 2.70, 0.0, false},
+                {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+            };
+            break;
+        case UnstructuredMapPreset::LowerBypass:
+            world.obstacles_ = {
+                {10.0, 16.0, 12.2, 24.0},
+                {10.0, 0.0, 12.0, 6.0},
+                {18.0, 10.5, 23.4, 16.2},
+                {29.5, 16.5, 31.5, 24.0},
+                {29.4, 0.0, 31.5, 6.5},
+            };
+            world.gate_templates_ = {
+                {"gap_entry", {13.2, 10.1}, {13.2, 10.1}, {0.18, 0.42}, 0.07, 0.20, 0.0, false},
+                {"lower_bypass", {18.0, 6.8}, {18.0, 6.8}, {0.28, 0.30}, 0.05, 1.40, 0.0, false},
+                {"exit_gap", {28.0, 8.6}, {28.0, 8.6}, {0.22, 0.35}, 0.06, 2.20, 0.0, false},
+                {"goal_approach", {33.0, 13.8}, {33.0, 13.8}, {0.32, 0.34}, 0.05, 2.90, 0.0, false},
+                {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+            };
+            break;
+        default:
+            break;
+    }
     world.gates_ = world.gate_templates_;
     recompute_gate_headings(&world.gates_, world.goal_);
     world.set_gate_behavior(gate_behavior, gate_seed);
@@ -228,13 +718,67 @@ WorldMap WorldMap::thesis_demo(GateBehaviorMode gate_behavior, std::uint32_t gat
     return world;
 }
 
+WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
+    WorldMap world;
+    world.environment_mode_ = EnvironmentMode::StructuredRoad;
+    world.structured_preset_ = preset;
+    world.bounds_ = {0.0, 0.0, 40.0, 24.0};
+    world.obstacles_.clear();
+
+    switch (preset) {
+        case StructuredMapPreset::ValidationRoad:
+        case StructuredMapPreset::Custom:
+            world.road_centerline_ = close_polyline_loop(make_validation_loop(), 0.45);
+            world.start_ = world.road_centerline_.front();
+            world.goal_ = world.start_;
+            world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+            break;
+        case StructuredMapPreset::CircleLoop:
+            world.road_centerline_ = close_polyline_loop(make_circle_loop({20.0, 12.0}, 10.0, 36), 0.45);
+            world.start_ = world.road_centerline_.front();
+            world.goal_ = world.start_;
+            world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+            break;
+        case StructuredMapPreset::ZigZag:
+            world.road_centerline_ = close_polyline_loop(make_zigzag_road(), 0.45);
+            world.start_ = world.road_centerline_.front();
+            world.goal_ = world.start_;
+            world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+            break;
+        default:
+            break;
+    }
+
+    world.gates_.clear();
+    world.gate_templates_.clear();
+    world.gate_behavior_ = GateBehaviorMode::Static;
+    world.gate_seed_ = 0;
+    return world;
+}
+
+WorldMap WorldMap::thesis_demo(UnstructuredMapPreset preset,
+                               GateBehaviorMode gate_behavior,
+                               std::uint32_t gate_seed) {
+    return WorldMap::unstructured_demo(preset, gate_behavior, gate_seed);
+}
+
 void WorldMap::set_gate_behavior(GateBehaviorMode gate_behavior, std::uint32_t gate_seed) {
+    if (environment_mode_ != EnvironmentMode::UnstructuredGates) {
+        gate_behavior_ = GateBehaviorMode::Static;
+        gate_seed_ = 0;
+        gates_.clear();
+        gate_templates_.clear();
+        return;
+    }
     gate_behavior_ = gate_behavior;
     gate_seed_ = gate_seed;
     reset_gate_layout(gate_seed_);
 }
 
 void WorldMap::reset_gate_layout(std::uint32_t gate_seed) {
+    if (environment_mode_ != EnvironmentMode::UnstructuredGates) {
+        return;
+    }
     gate_seed_ = gate_seed;
     gates_ = gate_templates_;
 
@@ -274,6 +818,9 @@ void WorldMap::reset_gate_layout(std::uint32_t gate_seed) {
 }
 
 void WorldMap::update_gate_layout(double sim_time_s) {
+    if (environment_mode_ != EnvironmentMode::UnstructuredGates) {
+        return;
+    }
     if (gate_behavior_ != GateBehaviorMode::Mobile) {
         recompute_gate_headings(&gates_, goal_);
         return;
@@ -294,6 +841,101 @@ void WorldMap::update_gate_layout(double sim_time_s) {
     }
 
     recompute_gate_headings(&gates_, goal_);
+}
+
+void WorldMap::finalize_editor_changes() {
+    start_ = clamp_to_bounds(bounds_, start_);
+    goal_ = clamp_to_bounds(bounds_, goal_);
+
+    for (Rect& obstacle : obstacles_) {
+        normalize_rect(&obstacle);
+        obstacle.min_x = clamp_value(obstacle.min_x, bounds_.min_x, bounds_.max_x);
+        obstacle.max_x = clamp_value(obstacle.max_x, bounds_.min_x, bounds_.max_x);
+        obstacle.min_y = clamp_value(obstacle.min_y, bounds_.min_y, bounds_.max_y);
+        obstacle.max_y = clamp_value(obstacle.max_y, bounds_.min_y, bounds_.max_y);
+        normalize_rect(&obstacle);
+    }
+
+    if (environment_mode_ == EnvironmentMode::StructuredRoad) {
+        structured_preset_ = StructuredMapPreset::Custom;
+        gates_.clear();
+        gate_templates_.clear();
+        gate_behavior_ = GateBehaviorMode::Static;
+        gate_seed_ = 0;
+
+        road_centerline_ = sanitize_structured_centerline(bounds_, start_, goal_, road_centerline_);
+        if (points_form_closed_loop(road_centerline_, 0.45) && road_centerline_.size() > 2) {
+            std::vector<Vec2> base = road_centerline_;
+            base.pop_back();
+            const size_t start_index = find_nearest_point_index(base, start_);
+            road_centerline_ = rotate_closed_polyline(base, start_index);
+
+            base = road_centerline_;
+            base.pop_back();
+            start_ = base.front();
+            goal_ = start_;
+        }
+        start_heading_ = heading_from_first_segment(road_centerline_, start_heading_);
+        return;
+    }
+
+    road_centerline_.clear();
+    unstructured_preset_ = UnstructuredMapPreset::Custom;
+
+    std::vector<GateSpec> sanitized;
+    sanitized.reserve(gates_.size() + 1);
+    GateSpec final_gate{
+        "goal",
+        goal_,
+        goal_,
+        {0.0, 0.0},
+        0.0,
+        0.0,
+        0.0,
+        true,
+    };
+
+    for (size_t i = 0; i < gates_.size(); ++i) {
+        GateSpec gate = gates_[i];
+        gate.position = clamp_to_bounds(bounds_, gate.position);
+        gate.anchor_position = clamp_to_bounds(bounds_, gate.anchor_position);
+        gate.motion_amplitude.x = std::max(0.0, gate.motion_amplitude.x);
+        gate.motion_amplitude.y = std::max(0.0, gate.motion_amplitude.y);
+        gate.motion_frequency_hz = std::max(0.0, gate.motion_frequency_hz);
+        if (gate.name.empty()) {
+            gate.name = gate.final ? "goal" : ("gate_" + std::to_string(i + 1));
+        }
+
+        if (gate.final) {
+            final_gate = gate;
+            final_gate.position = goal_;
+            final_gate.anchor_position = goal_;
+            final_gate.motion_amplitude = {0.0, 0.0};
+            final_gate.motion_frequency_hz = 0.0;
+            final_gate.final = true;
+        } else {
+            sanitized.push_back(gate);
+        }
+    }
+
+    if (final_gate.name.empty()) {
+        final_gate.name = "goal";
+    }
+    sanitized.push_back(final_gate);
+
+    gates_ = sanitized;
+    gate_templates_ = gates_;
+    recompute_gate_headings(&gate_templates_, goal_);
+    gates_ = gate_templates_;
+
+    if (gate_behavior_ == GateBehaviorMode::Static) {
+        for (GateSpec& gate : gates_) {
+            gate.position = gate.anchor_position;
+        }
+        recompute_gate_headings(&gates_, goal_);
+    } else {
+        reset_gate_layout(gate_seed_);
+    }
 }
 
 bool WorldMap::line_of_sight(const Vec2& from, const Vec2& to, double padding) const {
@@ -325,7 +967,7 @@ std::vector<LidarHit> WorldMap::raycast(const Vec2& origin, double heading, int 
         bool hit = false;
 
         if (const auto bounds_hit = ray_rect_distance(origin, dir, bounds_)) {
-            if (*bounds_hit >= 0.0) {
+            if (*bounds_hit >= 0.0 && *bounds_hit <= max_range) {
                 best = std::min(best, *bounds_hit);
                 hit = true;
             }
@@ -333,7 +975,7 @@ std::vector<LidarHit> WorldMap::raycast(const Vec2& origin, double heading, int 
 
         for (const Rect& obstacle : obstacles_) {
             if (const auto obstacle_hit = ray_rect_distance(origin, dir, obstacle)) {
-                if (*obstacle_hit >= 0.0 && *obstacle_hit < best) {
+                if (*obstacle_hit >= 0.0 && *obstacle_hit <= max_range && *obstacle_hit < best) {
                     best = *obstacle_hit;
                     hit = true;
                 }

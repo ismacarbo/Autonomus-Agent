@@ -137,7 +137,9 @@ target_link_libraries(thesis_hardware_planner PUBLIC
 
 add_executable(thesis_planner_sim
   src/main.cpp
+  src/mpc_path_follower.cpp
   src/planner_sim.cpp
+  src/state_estimator_ekf.cpp
   src/vehicle_dynamics.cpp
 )
 

@@ -55,7 +55,6 @@ struct HardwarePlannerConfig {
     double cruise_speed_limit = 0.75;
     bool auto_set_autonomous_mode = true;
     bool auto_gyro_zero = true;
-    bool stop_on_goal = true;
     DifferentialDriveGeometry drive{};
     MotorPwmMapperConfig pwm{};
     LidarLocalizationConfig localization{};
@@ -166,8 +165,7 @@ class HardwarePlannerRunner {
     void sync_planner_from_estimate(bool reset_relative_state);
     void update_speed_limit();
     void plan_if_needed();
-    std::vector<int> select_gate_candidates() const;
-    void sync_gate_selection(const std::vector<int>& candidate_indices, const std::vector<gate>& local_gates, int chosen_local_index);
+    void refresh_gate_diagnostics();
 
     void update_estimate_from_observation(double dt);
     void correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan);
