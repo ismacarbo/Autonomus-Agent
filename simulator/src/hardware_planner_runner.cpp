@@ -264,7 +264,7 @@ VehicleModelState build_tracking_state(const Vec2& position,
     return tracking_state;
 }
 
-double sabrina_speed_limit(double cruise_speed_limit, double curvature) {
+double planner_speed_limit(double cruise_speed_limit, double curvature) {
     constexpr double kStraightCurvature = 0.1;
     if (!std::isfinite(curvature) || std::abs(curvature) < kStraightCurvature) {
         return cruise_speed_limit;
@@ -484,7 +484,7 @@ void HardwarePlannerRunner::sync_planner_from_estimate(bool reset_relative_state
 }
 
 void HardwarePlannerRunner::update_speed_limit() {
-    sim_.V_max = sabrina_speed_limit(config_.cruise_speed_limit, cl_.kappa);
+    sim_.V_max = planner_speed_limit(config_.cruise_speed_limit, cl_.kappa);
 }
 
 void HardwarePlannerRunner::update_gate_activation_window() {

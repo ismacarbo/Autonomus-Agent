@@ -87,6 +87,7 @@ bool polygon_intersects_rect(const std::array<Vec2, 4>& polygon, const Rect& rec
 }
 
 std::optional<double> ray_rect_distance(const Vec2& origin, const Vec2& dir, const Rect& rect) {
+    const bool origin_inside = point_in_rect(origin, rect);
     double tmin = 0.0;
     double tmax = std::numeric_limits<double>::infinity();
 
@@ -113,6 +114,10 @@ std::optional<double> ray_rect_distance(const Vec2& origin, const Vec2& dir, con
 
     if (tmax < 0.0) {
         return std::nullopt;
+    }
+
+    if (origin_inside) {
+        return tmax;
     }
 
     if (tmin >= 0.0) {

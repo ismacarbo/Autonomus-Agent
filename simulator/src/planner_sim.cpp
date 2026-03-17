@@ -266,7 +266,7 @@ VehicleModelState build_tracking_state(const VehicleModelState& vehicle_state,
     return tracking_state;
 }
 
-double sabrina_speed_limit(double cruise_speed_limit, double curvature) {
+double planner_speed_limit(double cruise_speed_limit, double curvature) {
     constexpr double kStraightCurvature = 0.1;
     if (!std::isfinite(curvature) || std::abs(curvature) < kStraightCurvature) {
         return cruise_speed_limit;
@@ -708,7 +708,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
         return;
     }
 
-    sim_.V_max = sabrina_speed_limit(config_.cruise_speed_limit, cl_.kappa);
+    sim_.V_max = planner_speed_limit(config_.cruise_speed_limit, cl_.kappa);
 
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad && road_ != nullptr) {
         std::vector<double> commands = sel_jr(
