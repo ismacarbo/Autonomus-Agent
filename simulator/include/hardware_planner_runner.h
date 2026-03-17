@@ -1,22 +1,36 @@
 #pragma once
 
+#include <cstdint>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "action_selection.h"
+#include "mpc_path_follower.h"
 #include "real_robot_bridge.h"
 #include "sim_world.h"
+#include "state_estimator_ekf.h"
+#include "vehicle_dynamics.h"
 
 namespace thesis_sim {
 
 struct DifferentialDriveGeometry {
+    double wheelbase = 0.30;
+    double cg_to_front = 0.15;
+    double cg_to_rear = 0.15;
     double track_width = 0.28;
     double body_length = 0.34;
     double body_width = 0.24;
+    double wheel_radius = 0.04;
+    std::int32_t encoder_ticks_per_revolution = 360;
+    double max_steer_angle = 0.52;
+    double max_steer_rate = 1.8;
     double max_linear_speed = 0.90;
     double max_yaw_rate = 2.40;
     double max_curvature = 1.80;
+    double max_accel = 1.4;
+    double max_decel = 1.8;
 };
 
 struct MotorPwmMapperConfig {
@@ -28,9 +42,6 @@ struct MotorPwmMapperConfig {
     double right_scale = 1.00;
     double linear_feedback_gain = 75.0;
     double yaw_feedback_gain = 35.0;
-    double speed_estimate_per_pwm = 0.0045;
-    double speed_filter_alpha = 0.20;
-    double accel_filter_alpha = 0.25;
 };
 
 struct LidarLocalizationConfig {
@@ -94,6 +105,15 @@ struct HardwareTelemetrySample {
     double distance_to_goal = 0.0;
     double min_lidar = 0.0;
     double front_lidar = 0.0;
+    double planner_speed_ref = 0.0;
+    double tracker_cross_track = 0.0;
+    double tracker_heading_error_deg = 0.0;
+    double planning_ms = 0.0;
+    double tracking_ms = 0.0;
+    double lidar_ms = 0.0;
+    double estimator_ms = 0.0;
+    double step_ms = 0.0;
+    double visible_gates = 0.0;
     int pwm_left = 0;
     int pwm_right = 0;
 };
@@ -134,15 +154,20 @@ class HardwarePlannerRunner {
     void reset();
     void reset_pose(const Vec2& position, double heading);
     void step();
+    void step_with_observation(const RealRobotObservation& observation, double dt, bool send_pwm = false);
     HardwarePlannerReport run(int max_steps);
 
     const WorldMap& world() const { return world_; }
     const HardwarePlannerConfig& config() const { return config_; }
+    const VehicleGeometry& geometry() const { return geometry_; }
     const HardwarePlannerEstimate& estimate() const { return estimate_; }
     const HardwareControlCommand& last_command() const { return last_command_; }
+    const std::optional<MpcCommand>& last_mpc_command() const { return last_mpc_command_; }
     const std::vector<LidarHit>& lidar_hits() const { return lidar_hits_; }
     const std::vector<HardwareTelemetrySample>& history() const { return history_; }
     const std::vector<Vec2>& trail() const { return trail_; }
+    const std::vector<Vec2>& planned_trajectory() const { return planned_trajectory_; }
+    const std::vector<ReferenceWaypoint>& reference_trajectory() const { return reference_trajectory_; }
     const std::vector<gate>& gates() const { return gates_; }
     const std::vector<int>& visible_gate_indices() const { return visible_gate_indices_; }
     RealRobotBridge& bridge() { return bridge_; }
@@ -158,47 +183,60 @@ class HardwarePlannerRunner {
     double last_r() const { return last_r_; }
     double distance_to_goal() const { return distance_to_goal_; }
     int chosen_gate_index() const { return chosen_gate_index_; }
+    double planner_speed_reference() const { return planner_speed_ref_; }
+    double tracker_cross_track_error() const { return tracker_cross_track_error_; }
+    double tracker_heading_error_deg() const { return tracker_heading_error_deg_; }
 
   private:
     void initialize_planner_state();
     void initialize_gates();
+    void sync_gate_specs_from_world(bool reset_flags);
     void sync_planner_from_estimate(bool reset_relative_state);
     void update_speed_limit();
-    void plan_if_needed();
+    void update_gate_activation_window();
+    std::vector<int> active_gate_indices() const;
     void refresh_gate_diagnostics();
+    void plan_if_needed();
 
-    void update_estimate_from_observation(double dt);
+    void update_estimate_from_observation(const RealRobotObservation& observation, double dt);
     void correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan);
     double score_candidate_pose(const Vec2& position, double yaw, const std::vector<RPLidarA1::ScanPoint>& scan) const;
     void update_lidar_hits_world(const std::vector<RPLidarA1::ScanPoint>& scan);
 
-    void update_virtual_reference(double dt);
-    void compute_control_command();
+    void update_planner_references(double dt);
+    void update_selected_trajectory();
+    void compute_control_command(double dt);
     void push_history();
 
     double compute_min_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const;
     double compute_front_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const;
     int wheel_speed_to_pwm(double wheel_speed_mps, double scale) const;
-    double pwm_to_speed(int pwm) const;
+    int planning_interval_steps() const;
     int count_passed_gates() const;
 
     WorldMap world_;
     HardwarePlannerConfig config_;
+    VehicleGeometry geometry_{};
     RealRobotBridge bridge_;
 
     sim_info sim_{};
     states x0_{};
     global_states g_x0_{};
     clothoid_info cl_{};
+    KinematicBicycleEkf estimator_{};
+    KinematicBicycleMpcFollower mpc_follower_{};
 
     std::vector<gate> gates_;
     std::vector<LidarHit> lidar_hits_;
     std::vector<HardwareTelemetrySample> history_;
     std::vector<Vec2> trail_;
+    std::vector<Vec2> planned_trajectory_;
+    std::vector<ReferenceWaypoint> reference_trajectory_;
     std::vector<int> visible_gate_indices_;
 
     HardwarePlannerEstimate estimate_{};
     HardwareControlCommand last_command_{};
+    std::optional<MpcCommand> last_mpc_command_;
 
     std::ofstream null_stream_;
 
@@ -206,14 +244,25 @@ class HardwarePlannerRunner {
     double sim_time_ = 0.0;
     double last_j_ = 0.0;
     double last_r_ = 0.0;
-    double virtual_speed_ref_ = 0.0;
-    double virtual_accel_ref_ = 0.0;
-    double virtual_curvature_ref_ = 0.0;
+    double planner_speed_ref_ = 0.0;
+    double planner_accel_ref_ = 0.0;
+    double tracker_cross_track_error_ = 0.0;
+    double tracker_heading_error_deg_ = 0.0;
+    double planning_compute_ms_ = 0.0;
+    double tracking_compute_ms_ = 0.0;
+    double lidar_compute_ms_ = 0.0;
+    double estimator_compute_ms_ = 0.0;
+    double step_compute_ms_ = 0.0;
     double yaw_offset_ = 0.0;
+    double last_raw_imu_yaw_ = 0.0;
     double last_observation_time_ = 0.0;
     double distance_to_goal_ = 0.0;
+    std::int32_t last_left_encoder_ticks_ = 0;
+    std::int32_t last_right_encoder_ticks_ = 0;
     int chosen_gate_index_ = -1;
     bool yaw_offset_initialized_ = false;
+    bool have_raw_imu_yaw_ = false;
+    bool encoder_ticks_initialized_ = false;
     bool connected_ = false;
     bool telemetry_ready_ = false;
     bool goal_reached_ = false;

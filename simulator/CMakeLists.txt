@@ -121,6 +121,21 @@ target_include_directories(thesis_robot_io PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+add_library(thesis_planner_stack STATIC
+  src/mpc_path_follower.cpp
+  src/state_estimator_ekf.cpp
+  src/vehicle_dynamics.cpp
+)
+
+target_include_directories(thesis_planner_stack PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(thesis_planner_stack PUBLIC
+  clothoids
+  thesis_world
+)
+
 add_library(thesis_hardware_planner STATIC
   src/hardware_planner_runner.cpp
 )
@@ -131,16 +146,14 @@ target_include_directories(thesis_hardware_planner PUBLIC
 
 target_link_libraries(thesis_hardware_planner PUBLIC
   sabrina_planner
+  thesis_planner_stack
   thesis_robot_io
   thesis_world
 )
 
 add_executable(thesis_planner_sim
   src/main.cpp
-  src/mpc_path_follower.cpp
   src/planner_sim.cpp
-  src/state_estimator_ekf.cpp
-  src/vehicle_dynamics.cpp
 )
 
 target_include_directories(thesis_planner_sim PRIVATE
@@ -149,6 +162,7 @@ target_include_directories(thesis_planner_sim PRIVATE
 
 target_link_libraries(thesis_planner_sim PRIVATE
   sabrina_planner
+  thesis_planner_stack
   thesis_robot_io
   thesis_hardware_planner
   thesis_world
