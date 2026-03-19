@@ -1125,6 +1125,10 @@ HardwarePlannerReport HardwarePlannerRunner::run(int max_steps) {
         step();
     }
 
+    return current_report();
+}
+
+HardwarePlannerReport HardwarePlannerRunner::current_report() const {
     const RealRobotObservation& observation = bridge_.observation();
     const bool controller_front_alert =
         observation.have_controller_telemetry &&

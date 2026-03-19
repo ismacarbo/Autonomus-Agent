@@ -8,6 +8,7 @@
 #include <string>
 
 #include "hardware_planner_runner.h"
+#include "live_view_stream.h"
 
 namespace {
 
@@ -17,6 +18,7 @@ using thesis_sim::HardwarePlannerConfig;
 using thesis_sim::HardwarePlannerReport;
 using thesis_sim::HardwarePlannerRunner;
 using thesis_sim::LidarHit;
+using thesis_sim::LiveViewStreamClient;
 using thesis_sim::MotorControlMode;
 using thesis_sim::RealRobotBridge;
 using thesis_sim::RealRobotObservation;
@@ -40,6 +42,9 @@ struct AppOptions {
     bool gyro_zero = true;
     bool simulate = false;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
+    std::string stream_host;
+    int stream_port = 0;
+    int stream_every_n_steps = 1;
 };
 
 double clamp_value(double value, double lo, double hi) {
@@ -87,6 +92,9 @@ void print_usage(const char* argv0) {
         << "  --dt SEC                  default 0.10\n"
         << "  --simulate                run the hardware planner against synthetic sensors\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower\n"
+        << "  --stream-host HOST        send live view snapshots to HOST\n"
+        << "  --stream-port N           send live view snapshots to TCP port N\n"
+        << "  --stream-every N          send one frame every N planner steps (default 1)\n"
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
         << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n";
 }
@@ -111,6 +119,12 @@ AppOptions parse_args(int argc, char** argv) {
             options.simulate = true;
         } else if (arg == "--unstructured-map" && i + 1 < argc) {
             options.unstructured_preset = parse_unstructured_preset(argv[++i]);
+        } else if (arg == "--stream-host" && i + 1 < argc) {
+            options.stream_host = argv[++i];
+        } else if (arg == "--stream-port" && i + 1 < argc) {
+            options.stream_port = std::atoi(argv[++i]);
+        } else if (arg == "--stream-every" && i + 1 < argc) {
+            options.stream_every_n_steps = std::atoi(argv[++i]);
         } else if (arg == "--no-auto-mode") {
             options.auto_mode = false;
         } else if (arg == "--no-gyro-zero") {
@@ -120,7 +134,49 @@ AppOptions parse_args(int argc, char** argv) {
             std::exit(0);
         }
     }
+    options.stream_every_n_steps = std::max(options.stream_every_n_steps, 1);
     return options;
+}
+
+bool stream_enabled(const AppOptions& options) {
+    return !options.stream_host.empty() && options.stream_port > 0;
+}
+
+bool setup_stream_client(const AppOptions& options,
+                         const HardwarePlannerRunner& runner,
+                         LiveViewStreamClient* streamer) {
+    if (!stream_enabled(options) || streamer == nullptr) {
+        return true;
+    }
+
+    if (!streamer->connect_to(options.stream_host, static_cast<std::uint16_t>(options.stream_port))) {
+        std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+        return false;
+    }
+    if (!streamer->send_scene(make_live_scene_snapshot(runner))) {
+        std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+        return false;
+    }
+    return true;
+}
+
+void stream_frame_if_due(const AppOptions& options,
+                         const HardwarePlannerRunner& runner,
+                         LiveViewStreamClient* streamer,
+                         bool force = false) {
+    if (streamer == nullptr || !streamer->connected() || !stream_enabled(options)) {
+        return;
+    }
+
+    const bool interval_hit = (runner.step_count() % std::max(options.stream_every_n_steps, 1)) == 0;
+    if (!force && !interval_hit) {
+        return;
+    }
+
+    if (!streamer->send_frame(make_live_frame_snapshot(runner))) {
+        std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+        streamer->disconnect();
+    }
 }
 
 ControllerTelemetry make_controller_telemetry(const thesis_sim::VehicleModelState& state,
@@ -212,6 +268,10 @@ int run_simulated(const AppOptions& options,
                   HardwarePlannerConfig planner_config) {
     WorldMap world = WorldMap::thesis_demo(options.unstructured_preset, GateBehaviorMode::Static, 7);
     HardwarePlannerRunner runner(world, std::move(bridge_options), planner_config);
+    LiveViewStreamClient streamer;
+    if (!setup_stream_client(options, runner, &streamer)) {
+        return 2;
+    }
     std::unique_ptr<VehicleDynamicsModel> plant = thesis_sim::make_four_wheel_car_model(runner.geometry());
     plant->reset(world.start(), world.start_heading());
 
@@ -234,6 +294,7 @@ int run_simulated(const AppOptions& options,
         }
 
         runner.step_with_observation(observation, planner_config.nominal_dt, false);
+        stream_frame_if_due(options, runner, &streamer);
 
         const VehicleControlInput control = make_vehicle_control(
             runner.geometry(),
@@ -250,6 +311,8 @@ int run_simulated(const AppOptions& options,
                 runner.geometry().body_length,
                 runner.geometry().body_width));
     }
+
+    stream_frame_if_due(options, runner, &streamer, true);
 
     const std::string status = runner.goal_reached() ? "goal_reached" : (collision ? "collision" : "timeout");
     std::cout << "status=" << status << '\n';
@@ -312,10 +375,23 @@ int main(int argc, char** argv) {
     }
 
     HardwarePlannerRunner runner(WorldMap::thesis_demo(), bridge_options, planner_config);
+    LiveViewStreamClient streamer;
 
     try {
         runner.connect();
-        const HardwarePlannerReport report = runner.run(options.max_steps);
+        if (!setup_stream_client(options, runner, &streamer)) {
+            runner.disconnect();
+            return 2;
+        }
+
+        const int limit = options.max_steps > 0 ? options.max_steps : 1500;
+        while (runner.step_count() < limit && !runner.goal_reached()) {
+            runner.step();
+            stream_frame_if_due(options, runner, &streamer);
+        }
+        stream_frame_if_due(options, runner, &streamer, true);
+
+        const HardwarePlannerReport report = runner.current_report();
         runner.disconnect();
 
         std::cout << "status=" << (report.goal_reached ? "goal_reached" : "stopped") << '\n';

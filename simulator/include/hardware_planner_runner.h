@@ -155,6 +155,7 @@ class HardwarePlannerRunner {
     void reset_pose(const Vec2& position, double heading);
     void step();
     void step_with_observation(const RealRobotObservation& observation, double dt, bool send_pwm = false);
+    HardwarePlannerReport current_report() const;
     HardwarePlannerReport run(int max_steps);
 
     const WorldMap& world() const { return world_; }

@@ -151,6 +151,18 @@ target_link_libraries(thesis_hardware_planner PUBLIC
   thesis_world
 )
 
+add_library(thesis_live_view STATIC
+  src/live_view_stream.cpp
+)
+
+target_include_directories(thesis_live_view PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(thesis_live_view PUBLIC
+  thesis_hardware_planner
+)
+
 add_executable(thesis_planner_sim
   src/main.cpp
   src/planner_sim.cpp
@@ -165,6 +177,7 @@ target_link_libraries(thesis_planner_sim PRIVATE
   thesis_planner_stack
   thesis_robot_io
   thesis_hardware_planner
+  thesis_live_view
   thesis_world
   imgui
   implot
@@ -181,4 +194,5 @@ target_include_directories(thesis_robot_runner PRIVATE
 
 target_link_libraries(thesis_robot_runner PRIVATE
   thesis_hardware_planner
+  thesis_live_view
 )

@@ -21,6 +21,7 @@
 #include "imgui_impl_sdlrenderer2.h"
 #include "implot.h"
 
+#include "live_view_stream.h"
 #include "planner_sim.h"
 
 namespace {
@@ -28,7 +29,13 @@ namespace {
 using thesis_sim::GateSpec;
 using thesis_sim::GateBehaviorMode;
 using thesis_sim::EnvironmentMode;
+using thesis_sim::HardwareTelemetrySample;
 using thesis_sim::LidarHit;
+using thesis_sim::LiveFrameSnapshot;
+using thesis_sim::LiveGateFrame;
+using thesis_sim::LiveSceneSnapshot;
+using thesis_sim::LiveVehicleState;
+using thesis_sim::LiveViewStreamServer;
 using thesis_sim::PlannerDrivenVehicleSim;
 using thesis_sim::RangeSensorProfile;
 using thesis_sim::Rect;
@@ -74,6 +81,8 @@ struct UiState {
     bool paused = true;
     bool single_step = false;
     int steps_per_frame = 1;
+    int workspace_source = 0;
+    int hardware_listen_port = 9559;
     bool show_grid = true;
     bool show_trails = true;
     bool show_lidar_rays = true;
@@ -92,6 +101,13 @@ struct UiState {
     Vec2 drag_offset;
     bool report_written = false;
     std::string last_report_path;
+};
+
+struct HardwareViewerState {
+    bool has_scene = false;
+    LiveSceneSnapshot scene;
+    LiveFrameSnapshot frame;
+    std::vector<thesis_sim::HardwareTelemetrySample> history;
 };
 
 struct OverlayLine {
@@ -757,6 +773,68 @@ void draw_vehicle(ImDrawList* draw_list,
         vehicle.position.y + std::sin(vehicle.yaw) * geometry.body_length * 0.70 * visual_scale,
     };
     draw_list->AddLine(world_to_screen(tx, vehicle.position), world_to_screen(tx, nose), kColorHeading, 3.6f);
+}
+
+VehicleSnapshot build_vehicle_snapshot_from_live(const LiveVehicleState& live,
+                                                 const thesis_sim::VehicleGeometry& geometry) {
+    VehicleSnapshot vehicle;
+    vehicle.position = live.position;
+    vehicle.yaw = live.yaw;
+    vehicle.speed = live.speed;
+    vehicle.accel = live.accel;
+    vehicle.curvature = live.curvature;
+    vehicle.steer_angle = live.steer_angle;
+    vehicle.yaw_rate = live.yaw_rate;
+    vehicle.sideslip = live.sideslip;
+    vehicle.left_wheel_speed = live.left_wheel_speed;
+    vehicle.right_wheel_speed = live.right_wheel_speed;
+    vehicle.target_speed = live.target_speed;
+    vehicle.target_yaw_rate = live.target_yaw_rate;
+    vehicle.target_steer_angle = live.target_steer_angle;
+    vehicle.left_encoder_ticks = live.left_encoder_ticks;
+    vehicle.right_encoder_ticks = live.right_encoder_ticks;
+    vehicle.left_encoder_delta = live.left_encoder_delta;
+    vehicle.right_encoder_delta = live.right_encoder_delta;
+    vehicle.left_pwm = live.left_pwm;
+    vehicle.right_pwm = live.right_pwm;
+    vehicle.encoder_dt_ms = live.encoder_dt_ms;
+    vehicle.model_name = "Hardware estimate";
+    vehicle.body_corners = thesis_sim::make_box_corners(
+        vehicle.position,
+        vehicle.yaw,
+        geometry.body_length,
+        geometry.body_width);
+
+    const auto wheel_center = [&](double local_x, double local_y) {
+        const Vec2 offset = thesis_sim::rotate({local_x, local_y}, vehicle.yaw);
+        return Vec2{vehicle.position.x + offset.x, vehicle.position.y + offset.y};
+    };
+    const double half_track = geometry.track * 0.5;
+    const double front_x = geometry.cg_to_front;
+    const double rear_x = -geometry.cg_to_rear;
+    vehicle.wheels[0] = {wheel_center(front_x, half_track), vehicle.yaw + vehicle.steer_angle, live.left_wheel_speed, true};
+    vehicle.wheels[1] = {wheel_center(front_x, -half_track), vehicle.yaw + vehicle.steer_angle, live.right_wheel_speed, true};
+    vehicle.wheels[2] = {wheel_center(rear_x, half_track), vehicle.yaw, live.left_wheel_speed, false};
+    vehicle.wheels[3] = {wheel_center(rear_x, -half_track), vehicle.yaw, live.right_wheel_speed, false};
+    return vehicle;
+}
+
+void render_source_selector(UiState* ui_state, LiveViewStreamServer* hardware_server) {
+    if (ui_state == nullptr) {
+        return;
+    }
+
+    const char* source_items[] = {"Simulation", "Hardware"};
+    int source = ui_state->workspace_source;
+    if (ImGui::Combo("Workspace Source", &source, source_items, IM_ARRAYSIZE(source_items))) {
+        ui_state->workspace_source = std::clamp(source, 0, 1);
+        if (ui_state->workspace_source == 1 &&
+            hardware_server != nullptr &&
+            !hardware_server->listening() &&
+            ui_state->hardware_listen_port > 0) {
+            hardware_server->start(static_cast<std::uint16_t>(ui_state->hardware_listen_port));
+        }
+    }
 }
 
 MapEditorHandle pick_editor_handle(const WorldMap& world, const CanvasTransform& tx, const ImVec2& mouse_pos) {
@@ -1762,11 +1840,662 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
     ImGui::EndChild();
 }
 
-void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
+void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_state) {
+    if (ui_state == nullptr) {
+        return;
+    }
+
+    if (!ImGui::BeginChild("HardwareWorldTabRoot", ImVec2(0.0f, 0.0f), false)) {
+        ImGui::EndChild();
+        return;
+    }
+
+    if (!hardware.has_scene) {
+        ImGui::TextWrapped("Hardware mode is listening for live data. Start the listener from the side panel, then launch `thesis_robot_runner` on the Raspberry with `--stream-host` and `--stream-port`.");
+        ImGui::EndChild();
+        return;
+    }
+
+    const LiveFrameSnapshot& frame = hardware.frame;
+    const WorldMap& world = hardware.scene.world;
+    const char* active_target = "none";
+    if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        if (frame.chosen_gate_index >= 0 && frame.chosen_gate_index < static_cast<int>(frame.gates.size())) {
+            active_target = frame.gates[static_cast<std::size_t>(frame.chosen_gate_index)].spec.name.c_str();
+        }
+    } else {
+        active_target = thesis_sim::structured_map_preset_name(world.structured_preset());
+    }
+
+    char speed_buf[32];
+    char goal_buf[32];
+    char tracking_buf[32];
+    char target_buf[48];
+    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", frame.vehicle.speed);
+    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", frame.distance_to_goal);
+    std::snprintf(tracking_buf, sizeof(tracking_buf), "%.2f m / %.1f deg", frame.tracker_cross_track_error, frame.tracker_heading_error_deg);
+    std::snprintf(target_buf, sizeof(target_buf), "%s", active_target);
+
+    if (ImGui::BeginChild("HardwareWorldToolbar", ImVec2(0.0f, 102.0f), true)) {
+        if (ImGui::BeginTable("HardwareWorldToolbarLayout", 2, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("WorldMetrics", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("WorldControls", ImGuiTableColumnFlags_WidthFixed, 320.0f);
+
+            ImGui::TableNextColumn();
+            if (ImGui::BeginTable("HardwareMetricCards", 4, ImGuiTableFlags_SizingStretchSame)) {
+                ImGui::TableNextColumn();
+                metric_card("hw_world_speed", "Vehicle", speed_buf, "Estimated chassis speed", ImVec4(0.43f, 0.82f, 0.96f, 1.0f), 64.0f);
+                ImGui::TableNextColumn();
+                metric_card("hw_world_goal", "Goal", goal_buf, "Distance remaining", ImVec4(0.99f, 0.70f, 0.32f, 1.0f), 64.0f);
+                ImGui::TableNextColumn();
+                metric_card("hw_world_tracking", "Tracking", tracking_buf, "cte / heading", ImVec4(0.97f, 0.89f, 0.45f, 1.0f), 64.0f);
+                ImGui::TableNextColumn();
+                metric_card("hw_world_target", "Target", target_buf,
+                            world.environment_mode() == EnvironmentMode::UnstructuredGates ? "Active planner gate" : "Active structured loop",
+                            ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
+                            64.0f);
+                ImGui::EndTable();
+            }
+
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("VIEWPORT LAYERS");
+            ImGui::Checkbox("Grid", &ui_state->show_grid);
+            ImGui::SameLine();
+            ImGui::Checkbox("Trails", &ui_state->show_trails);
+            ImGui::Checkbox("LiDAR Rays", &ui_state->show_lidar_rays);
+            ImGui::SameLine();
+            ImGui::Checkbox("LiDAR Hits", &ui_state->show_lidar_hits);
+            ImGui::Checkbox("Labels", &ui_state->show_gate_labels);
+            ImGui::Checkbox("HUD", &ui_state->show_world_hud);
+            ImGui::TextWrapped("The hardware viewport reuses the same scene diagnostics, but all poses, LiDAR and trajectories now come from the remote robot stream.");
+            ImGui::EndTable();
+        }
+    }
+    ImGui::EndChild();
+
+    if (!ImGui::BeginChild("HardwareViewport", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_NoScrollbar)) {
+        ImGui::EndChild();
+        ImGui::EndChild();
+        return;
+    }
+
+    const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+    ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+    canvas_size.x = std::max(canvas_size.x, 320.0f);
+    canvas_size.y = std::max(canvas_size.y, 320.0f);
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    draw_list->AddRectFilledMultiColor(
+        canvas_pos,
+        ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y),
+        IM_COL32(16, 22, 28, 255),
+        IM_COL32(23, 32, 39, 255),
+        IM_COL32(12, 18, 22, 255),
+        IM_COL32(14, 19, 24, 255));
+    draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), IM_COL32(71, 81, 88, 255), 14.0f, 0, 1.5f);
+
+    const CanvasTransform tx = make_transform(world, canvas_pos, canvas_size);
+    const Rect bounds = world.bounds();
+    if (ui_state->show_grid) {
+        for (int gx = static_cast<int>(bounds.min_x); gx <= static_cast<int>(bounds.max_x); gx += 2) {
+            draw_list->AddLine(world_to_screen(tx, {static_cast<double>(gx), bounds.min_y}),
+                               world_to_screen(tx, {static_cast<double>(gx), bounds.max_y}),
+                               kColorGrid, 1.0f);
+        }
+        for (int gy = static_cast<int>(bounds.min_y); gy <= static_cast<int>(bounds.max_y); gy += 2) {
+            draw_list->AddLine(world_to_screen(tx, {bounds.min_x, static_cast<double>(gy)}),
+                               world_to_screen(tx, {bounds.max_x, static_cast<double>(gy)}),
+                               kColorGrid, 1.0f);
+        }
+    }
+
+    for (const Rect& obstacle : world.obstacles()) {
+        draw_list->AddRectFilled(world_to_screen(tx, {obstacle.min_x, obstacle.max_y}),
+                                 world_to_screen(tx, {obstacle.max_x, obstacle.min_y}),
+                                 kColorObstacle, 4.0f);
+    }
+    if (!world.road_centerline().empty()) {
+        draw_polyline(draw_list, tx, world.road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+    }
+
+    if (ui_state->show_trails) {
+        draw_polyline(draw_list, tx, hardware.frame.trail, kColorEstimateTrail, 2.5f);
+        draw_polyline(draw_list, tx, hardware.frame.planned_trajectory, kColorTrajectory, 3.0f);
+    }
+
+    if (hardware.scene.lidar_enabled && (ui_state->show_lidar_rays || ui_state->show_lidar_hits)) {
+        const Vec2 lidar_origin = frame.navigation_position;
+        const size_t lidar_stride = frame.lidar_hits.size() > 720 ? 2 : 1;
+        if (ui_state->show_lidar_rays) {
+            for (size_t i = 0; i < frame.lidar_hits.size(); i += lidar_stride) {
+                const LidarHit& hit = frame.lidar_hits[i];
+                draw_list->AddLine(world_to_screen(tx, lidar_origin),
+                                   world_to_screen(tx, hit.point),
+                                   hit.hit ? kColorLidar : kColorLidarMiss,
+                                   hit.hit ? 2.3f : 1.5f);
+            }
+        }
+        if (ui_state->show_lidar_hits) {
+            for (size_t i = 0; i < frame.lidar_hits.size(); i += lidar_stride) {
+                const LidarHit& hit = frame.lidar_hits[i];
+                const ImVec2 hit_screen = world_to_screen(tx, hit.point);
+                if (hit.hit) {
+                    draw_list->AddCircleFilled(hit_screen, 3.6f, kColorLidarHit);
+                    draw_list->AddCircle(hit_screen, 6.2f, IM_COL32(231, 255, 212, 220), 0, 1.4f);
+                } else {
+                    draw_list->AddCircleFilled(hit_screen, 2.2f, IM_COL32(150, 207, 255, 165));
+                }
+            }
+        }
+        draw_list->AddCircleFilled(world_to_screen(tx, lidar_origin), 4.5f, IM_COL32(170, 255, 208, 220));
+    }
+
+    for (size_t i = 0; i < frame.gates.size(); ++i) {
+        const LiveGateFrame& gate = frame.gates[i];
+        const ImVec2 screen_pos = world_to_screen(tx, gate.spec.position);
+        const bool visible =
+            std::find(frame.visible_gate_indices.begin(), frame.visible_gate_indices.end(), static_cast<int>(i)) !=
+            frame.visible_gate_indices.end();
+
+        ImU32 color = gate.spec.final ? kColorGoal : kColorGate;
+        if (gate.passed) {
+            color = kColorGatePassed;
+        } else if (visible) {
+            color = kColorGateVisible;
+        }
+        if (static_cast<int>(i) == frame.chosen_gate_index) {
+            color = IM_COL32(255, 233, 118, 255);
+        }
+
+        const float radius = gate.spec.final ? 7.0f : 5.0f;
+        draw_list->AddCircleFilled(screen_pos, radius, color);
+        draw_list->AddCircle(screen_pos, radius + 3.0f, IM_COL32(245, 246, 240, 180), 0, 1.5f);
+        if (ui_state->show_gate_labels) {
+            draw_list->AddText(ImVec2(screen_pos.x + 6.0f, screen_pos.y - 12.0f), IM_COL32(222, 227, 230, 255), gate.spec.name.c_str());
+        }
+    }
+
+    const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
+    draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, 2.60f);
+
+    if (ui_state->show_world_hud) {
+        char hud_line[96];
+        std::vector<OverlayLine> top_left = {
+            {"Hardware viewport", IM_COL32(240, 243, 235, 255)},
+            {thesis_sim::environment_mode_name(world.environment_mode()), IM_COL32(170, 179, 185, 255)},
+            {world.environment_mode() == EnvironmentMode::UnstructuredGates
+                 ? thesis_sim::unstructured_map_preset_name(world.unstructured_preset())
+                 : thesis_sim::structured_map_preset_name(world.structured_preset()),
+             IM_COL32(170, 179, 185, 255)},
+            {hardware.scene.range_sensor_name, IM_COL32(170, 179, 185, 255)},
+        };
+        draw_overlay_panel(draw_list, ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 16.0f), 228.0f, top_left);
+
+        std::snprintf(hud_line, sizeof(hud_line), "speed %.2f m/s", frame.vehicle.speed);
+        std::vector<OverlayLine> top_right = {
+            {frame.goal_reached ? "Mission complete" : (frame.safety_stop_active ? "Safety stop active" : "Hardware stream live"),
+             frame.goal_reached ? IM_COL32(124, 238, 151, 255)
+                                : (frame.safety_stop_active ? IM_COL32(255, 124, 102, 255) : IM_COL32(255, 221, 113, 255))},
+            {hud_line, IM_COL32(240, 243, 235, 255)},
+        };
+        std::snprintf(hud_line, sizeof(hud_line), "goal %.2f m", frame.distance_to_goal);
+        top_right.push_back({hud_line, IM_COL32(170, 179, 185, 255)});
+        if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+            std::snprintf(hud_line, sizeof(hud_line), "gate %s | visible %d", active_target, static_cast<int>(frame.visible_gate_indices.size()));
+        } else {
+            std::snprintf(hud_line, sizeof(hud_line), "road pts %d", static_cast<int>(world.road_centerline().size()));
+        }
+        top_right.push_back({hud_line, IM_COL32(170, 179, 185, 255)});
+        draw_overlay_panel(draw_list, ImVec2(canvas_pos.x + canvas_size.x - 236.0f, canvas_pos.y + 16.0f), 220.0f, top_right);
+
+        std::vector<OverlayLine> legend = {
+            {"orange: estimated hardware trail", kColorEstimateTrail},
+            {"yellow: selected planner trajectory", kColorTrajectory},
+        };
+        if (hardware.scene.lidar_enabled && ui_state->show_lidar_rays) {
+            legend.push_back({"green: LiDAR hit rays", kColorLidar});
+        }
+        if (hardware.scene.lidar_enabled && ui_state->show_lidar_hits) {
+            legend.push_back({"lime/cyan: LiDAR collision points", kColorLidarHit});
+        }
+        const float legend_height = 20.0f + static_cast<float>(legend.size()) * (ImGui::GetFontSize() + 5.0f);
+        draw_overlay_panel(draw_list,
+                           ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + canvas_size.y - legend_height),
+                           304.0f,
+                           legend);
+    }
+
+    ImGui::Dummy(canvas_size);
+    ImGui::EndChild();
+    ImGui::EndChild();
+}
+
+void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
+    if (!ImGui::BeginChild("HardwareTelemetryViewport", ImVec2(0.0f, 0.0f), true)) {
+        ImGui::EndChild();
+        return;
+    }
+
+    if (hardware.history.empty()) {
+        ImGui::TextUnformatted("Waiting for live hardware telemetry samples.");
+        ImGui::EndChild();
+        return;
+    }
+
+    const HardwareTelemetrySample& latest = hardware.history.back();
+    char speed_buf[32];
+    char goal_buf[32];
+    char lidar_buf[32];
+    char err_buf[32];
+    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", latest.speed);
+    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", latest.distance_to_goal);
+    std::snprintf(lidar_buf, sizeof(lidar_buf), "%.2f / %.2f m", latest.min_lidar, latest.front_lidar);
+    std::snprintf(err_buf, sizeof(err_buf), "%.2f / %.2f", latest.tracker_cross_track, latest.tracker_heading_error_deg);
+
+    ImGui::TextWrapped("Hardware telemetry is built live from the incoming robot stream. The history lives on the workstation, so the Raspberry only needs to send the newest sample.");
+    ImGui::SeparatorText("Telemetry Overview");
+    if (ImGui::BeginTable("HardwareGraphSummary", 4, ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextColumn();
+        metric_card("hw_graph_speed", "Speed", speed_buf, "Latest chassis speed", ImVec4(0.43f, 0.82f, 0.96f, 1.0f), 64.0f);
+        ImGui::TableNextColumn();
+        metric_card("hw_graph_goal", "Goal", goal_buf, "Remaining mission distance", ImVec4(0.99f, 0.70f, 0.32f, 1.0f), 64.0f);
+        ImGui::TableNextColumn();
+        metric_card("hw_graph_lidar", "LiDAR", lidar_buf, "min / front range", ImVec4(0.48f, 0.88f, 0.62f, 1.0f), 64.0f);
+        ImGui::TableNextColumn();
+        metric_card("hw_graph_tracking", "Tracking", err_buf, "cross-track / heading", ImVec4(0.97f, 0.89f, 0.45f, 1.0f), 64.0f);
+        ImGui::EndTable();
+    }
+    ImGui::SeparatorText("Plots");
+
+    std::vector<double> time;
+    std::vector<double> speed;
+    std::vector<double> accel;
+    std::vector<double> yaw_rate;
+    std::vector<double> jerk;
+    std::vector<double> command_r;
+    std::vector<double> target_speed;
+    std::vector<double> target_yaw_rate;
+    std::vector<double> left_pwm;
+    std::vector<double> right_pwm;
+    std::vector<double> dist_goal;
+    std::vector<double> min_lidar;
+    std::vector<double> front_lidar;
+    std::vector<double> planner_speed_ref;
+    std::vector<double> tracker_cross_track;
+    std::vector<double> tracker_heading_error_deg;
+    std::vector<double> planning_ms;
+    std::vector<double> tracking_ms;
+    std::vector<double> lidar_ms;
+    std::vector<double> estimator_ms;
+    std::vector<double> step_ms;
+    std::vector<double> visible_gates;
+
+    time.reserve(hardware.history.size());
+    speed.reserve(hardware.history.size());
+    accel.reserve(hardware.history.size());
+    yaw_rate.reserve(hardware.history.size());
+    jerk.reserve(hardware.history.size());
+    command_r.reserve(hardware.history.size());
+    target_speed.reserve(hardware.history.size());
+    target_yaw_rate.reserve(hardware.history.size());
+    left_pwm.reserve(hardware.history.size());
+    right_pwm.reserve(hardware.history.size());
+    dist_goal.reserve(hardware.history.size());
+    min_lidar.reserve(hardware.history.size());
+    front_lidar.reserve(hardware.history.size());
+    planner_speed_ref.reserve(hardware.history.size());
+    tracker_cross_track.reserve(hardware.history.size());
+    tracker_heading_error_deg.reserve(hardware.history.size());
+    planning_ms.reserve(hardware.history.size());
+    tracking_ms.reserve(hardware.history.size());
+    lidar_ms.reserve(hardware.history.size());
+    estimator_ms.reserve(hardware.history.size());
+    step_ms.reserve(hardware.history.size());
+    visible_gates.reserve(hardware.history.size());
+
+    const size_t stride = plot_sample_stride(hardware.history.size());
+    for (size_t i = 0; i < hardware.history.size(); i += stride) {
+        const HardwareTelemetrySample& sample = hardware.history[i];
+        time.push_back(sample.time);
+        speed.push_back(sample.speed);
+        accel.push_back(sample.accel);
+        yaw_rate.push_back(sample.yaw_rate * 180.0 / 3.14159265358979323846);
+        jerk.push_back(sample.jerk);
+        command_r.push_back(sample.command_r);
+        target_speed.push_back(sample.target_speed);
+        target_yaw_rate.push_back(sample.target_yaw_rate * 180.0 / 3.14159265358979323846);
+        left_pwm.push_back(static_cast<double>(sample.pwm_left));
+        right_pwm.push_back(static_cast<double>(sample.pwm_right));
+        dist_goal.push_back(sample.distance_to_goal);
+        min_lidar.push_back(sample.min_lidar);
+        front_lidar.push_back(sample.front_lidar);
+        planner_speed_ref.push_back(sample.planner_speed_ref);
+        tracker_cross_track.push_back(sample.tracker_cross_track);
+        tracker_heading_error_deg.push_back(sample.tracker_heading_error_deg);
+        planning_ms.push_back(sample.planning_ms);
+        tracking_ms.push_back(sample.tracking_ms);
+        lidar_ms.push_back(sample.lidar_ms);
+        estimator_ms.push_back(sample.estimator_ms);
+        step_ms.push_back(sample.step_ms);
+        visible_gates.push_back(sample.visible_gates);
+    }
+    if ((hardware.history.size() - 1) % stride != 0) {
+        const HardwareTelemetrySample& sample = hardware.history.back();
+        time.push_back(sample.time);
+        speed.push_back(sample.speed);
+        accel.push_back(sample.accel);
+        yaw_rate.push_back(sample.yaw_rate * 180.0 / 3.14159265358979323846);
+        jerk.push_back(sample.jerk);
+        command_r.push_back(sample.command_r);
+        target_speed.push_back(sample.target_speed);
+        target_yaw_rate.push_back(sample.target_yaw_rate * 180.0 / 3.14159265358979323846);
+        left_pwm.push_back(static_cast<double>(sample.pwm_left));
+        right_pwm.push_back(static_cast<double>(sample.pwm_right));
+        dist_goal.push_back(sample.distance_to_goal);
+        min_lidar.push_back(sample.min_lidar);
+        front_lidar.push_back(sample.front_lidar);
+        planner_speed_ref.push_back(sample.planner_speed_ref);
+        tracker_cross_track.push_back(sample.tracker_cross_track);
+        tracker_heading_error_deg.push_back(sample.tracker_heading_error_deg);
+        planning_ms.push_back(sample.planning_ms);
+        tracking_ms.push_back(sample.tracking_ms);
+        lidar_ms.push_back(sample.lidar_ms);
+        estimator_ms.push_back(sample.estimator_ms);
+        step_ms.push_back(sample.step_ms);
+        visible_gates.push_back(sample.visible_gates);
+    }
+
+    if (ImGui::BeginTabBar("HardwareGraphTabs", ImGuiTabBarFlags_Reorderable)) {
+        if (ImGui::BeginTabItem("Overview")) {
+            if (ImPlot::BeginSubplots("HardwareOverviewSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Velocity / Acceleration")) {
+                    setup_time_plot_axes(time, "vehicle state");
+                    plot_series(time, speed, "speed [m/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, accel, "accel [m/s^2]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Velocity / Acceleration", time, {
+                                                                               {&speed, "speed [m/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                               {&accel, "accel [m/s^2]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                           });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Planner Commands")) {
+                    setup_time_plot_axes(time, "planner command");
+                    plot_series(time, jerk, "j [m/s^3]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, command_r, "r [1/(m*s)]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Planner Commands", time, {
+                                                                           {&jerk, "j [m/s^3]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                           {&command_r, "r [1/(m*s)]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                       });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Distance / LiDAR")) {
+                    setup_time_plot_axes(time, "distance");
+                    plot_series(time, dist_goal, "goal distance [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, min_lidar, "LiDAR min [m]", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    plot_series(time, front_lidar, "LiDAR front [m]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Distance / LiDAR", time, {
+                                                                         {&dist_goal, "goal distance [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                         {&min_lidar, "LiDAR min [m]", ImVec4(0.48f, 0.87f, 0.60f, 1.0f)},
+                                                                         {&front_lidar, "LiDAR front [m]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                     });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Step Timing")) {
+                    setup_time_plot_axes(time, "ms");
+                    plot_series(time, step_ms, "step total", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, planning_ms, "planning", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, tracking_ms, "tracking", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    render_plot_hover_overlay("Step Timing", time, {
+                                                                      {&step_ms, "step total", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                      {&planning_ms, "planning", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                      {&tracking_ms, "tracking", ImVec4(0.48f, 0.87f, 0.60f, 1.0f)},
+                                                                  });
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Tracking")) {
+            if (ImPlot::BeginSubplots("HardwareTrackingSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Speed Tracking")) {
+                    setup_time_plot_axes(time, "speed [m/s]");
+                    plot_series(time, planner_speed_ref, "planner v ref", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, target_speed, "target v", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, speed, "actual v", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    render_plot_hover_overlay("Speed Tracking", time, {
+                                                                           {&planner_speed_ref, "planner v ref", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                           {&target_speed, "target v", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                           {&speed, "actual v", ImVec4(0.48f, 0.87f, 0.60f, 1.0f)},
+                                                                       });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Path Tracking Error")) {
+                    setup_time_plot_axes(time, "tracking error");
+                    plot_series(time, tracker_cross_track, "cross-track [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, tracker_heading_error_deg, "heading err [deg]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Path Tracking Error", time, {
+                                                                                {&tracker_cross_track, "cross-track [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                                {&tracker_heading_error_deg, "heading err [deg]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                            });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Yaw Target / PWM")) {
+                    setup_time_plot_axes(time, "yaw / actuation");
+                    plot_series(time, target_yaw_rate, "target wz [deg/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, yaw_rate, "measured wz [deg/s]", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    plot_series(time, left_pwm, "PWM left", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Yaw Target / PWM", time, {
+                                                                          {&target_yaw_rate, "target wz [deg/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                          {&yaw_rate, "measured wz [deg/s]", ImVec4(0.48f, 0.87f, 0.60f, 1.0f)},
+                                                                          {&left_pwm, "PWM left", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                      });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Wheel Commands")) {
+                    setup_time_plot_axes(time, "PWM");
+                    plot_series(time, left_pwm, "PWM left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, right_pwm, "PWM right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Wheel Commands", time, {
+                                                                          {&left_pwm, "PWM left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                          {&right_pwm, "PWM right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                      });
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Performance")) {
+            if (ImPlot::BeginSubplots("HardwarePerformanceSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Planner / Tracking Compute")) {
+                    setup_time_plot_axes(time, "ms");
+                    plot_series(time, planning_ms, "planning ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, tracking_ms, "tracking ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Planner / Tracking Compute", time, {
+                                                                                     {&planning_ms, "planning ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                                     {&tracking_ms, "tracking ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                                 });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Sensor / Estimator Compute")) {
+                    setup_time_plot_axes(time, "ms");
+                    plot_series(time, lidar_ms, "LiDAR ms", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    plot_series(time, estimator_ms, "EKF ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, step_ms, "step total ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    render_plot_hover_overlay("Sensor / Estimator Compute", time, {
+                                                                                     {&lidar_ms, "LiDAR ms", ImVec4(0.48f, 0.87f, 0.60f, 1.0f)},
+                                                                                     {&estimator_ms, "EKF ms", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                                     {&step_ms, "step total ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                                 });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Visible Gates / Goal")) {
+                    setup_time_plot_axes(time, "mission context");
+                    plot_series(time, visible_gates, "visible gates", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, dist_goal, "goal distance [m]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Visible Gates / Goal", time, {
+                                                                             {&visible_gates, "visible gates", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                             {&dist_goal, "goal distance [m]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                         });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("LiDAR Clearance")) {
+                    setup_time_plot_axes(time, "distance [m]");
+                    plot_series(time, min_lidar, "LiDAR min [m]", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    plot_series(time, front_lidar, "LiDAR front [m]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("LiDAR Clearance", time, {
+                                                                           {&min_lidar, "LiDAR min [m]", ImVec4(0.48f, 0.87f, 0.60f, 1.0f)},
+                                                                           {&front_lidar, "LiDAR front [m]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                       });
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
+    }
+    ImGui::EndChild();
+}
+
+void render_hardware_control_panel(const HardwareViewerState& hardware,
+                                   UiState* ui_state,
+                                   LiveViewStreamServer* hardware_server) {
+    if (ui_state == nullptr || hardware_server == nullptr) {
+        return;
+    }
+
+    if (!ImGui::BeginChild("HardwareConfigPanel", ImVec2(0.0f, 0.0f), true)) {
+        ImGui::EndChild();
+        return;
+    }
+
+    render_source_selector(ui_state, hardware_server);
+    ImGui::Separator();
+
+    const char* status = hardware_server->connected()
+                             ? (hardware.frame.goal_reached ? "Goal reached" : (hardware.frame.safety_stop_active ? "Safety stop" : "Live"))
+                             : (hardware_server->listening() ? "Listening" : "Idle");
+    const ImVec4 status_color = hardware_server->connected()
+                                    ? (hardware.frame.goal_reached ? ImVec4(0.45f, 0.86f, 0.53f, 1.0f)
+                                                                   : (hardware.frame.safety_stop_active ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
+                                                                                                       : ImVec4(0.87f, 0.79f, 0.39f, 1.0f)))
+                                    : (hardware_server->listening() ? ImVec4(0.43f, 0.82f, 0.96f, 1.0f)
+                                                                    : ImVec4(0.74f, 0.79f, 0.84f, 1.0f));
+    char time_buf[32];
+    char goal_buf[32];
+    char speed_buf[32];
+    char tracking_buf[48];
+    std::snprintf(time_buf, sizeof(time_buf), "%.1f s", hardware.frame.sim_time);
+    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", hardware.frame.distance_to_goal);
+    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", hardware.frame.vehicle.speed);
+    std::snprintf(tracking_buf, sizeof(tracking_buf), "%.2f m", hardware.frame.tracker_cross_track_error);
+
+    ImGui::TextUnformatted("Hardware Desk");
+    ImGui::TextColored(status_color, "%s", status);
+    ImGui::TextWrapped("This mode keeps the simulator UI but replaces the backend with live snapshots coming from the Raspberry.");
+
+    if (ImGui::BeginTable("HardwareHeroMetrics", 2, ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextColumn();
+        metric_card("hw_control_time", "Runtime", time_buf, "Elapsed remote runtime", ImVec4(0.43f, 0.82f, 0.96f, 1.0f), 64.0f);
+        ImGui::TableNextColumn();
+        metric_card("hw_control_goal", "Goal", goal_buf, "Distance remaining", ImVec4(0.99f, 0.70f, 0.32f, 1.0f), 64.0f);
+        ImGui::TableNextColumn();
+        metric_card("hw_control_speed", "Speed", speed_buf, "Estimated forward speed", ImVec4(0.48f, 0.88f, 0.62f, 1.0f), 64.0f);
+        ImGui::TableNextColumn();
+        metric_card("hw_control_tracking", "Tracking", tracking_buf, "Cross-track error", ImVec4(0.97f, 0.89f, 0.45f, 1.0f), 64.0f);
+        ImGui::EndTable();
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
+    if (ImGui::CollapsingHeader("Live Stream", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::InputInt("Listen Port", &ui_state->hardware_listen_port);
+        ui_state->hardware_listen_port = std::max(ui_state->hardware_listen_port, 1);
+
+        if (!hardware_server->listening()) {
+            if (ImGui::Button("Start Listening", ImVec2(-1.0f, 0.0f))) {
+                hardware_server->start(static_cast<std::uint16_t>(ui_state->hardware_listen_port));
+            }
+        } else {
+            if (ImGui::Button("Restart Listener", ImVec2(-1.0f, 0.0f))) {
+                hardware_server->start(static_cast<std::uint16_t>(ui_state->hardware_listen_port));
+            }
+            if (ImGui::Button("Stop Listener", ImVec2(-1.0f, 0.0f))) {
+                hardware_server->stop();
+            }
+        }
+
+        ImGui::Text("Listener = %s", hardware_server->listening() ? "active" : "off");
+        if (hardware_server->listening()) {
+            ImGui::Text("Port = %u", hardware_server->port());
+        }
+        if (hardware_server->connected()) {
+            ImGui::Text("Remote = %s", hardware_server->remote_endpoint().c_str());
+        } else {
+            ImGui::TextDisabled("Remote = waiting for connection");
+        }
+        if (!hardware_server->last_error().empty()) {
+            ImGui::TextWrapped("Last stream error: %s", hardware_server->last_error().c_str());
+        }
+        ImGui::Separator();
+        ImGui::TextWrapped("Run on the Raspberry with `--stream-host <pc-ip> --stream-port %d`. If you want to transport it over SSH, expose this same port with a reverse tunnel.", ui_state->hardware_listen_port);
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
+    if (ImGui::CollapsingHeader("Sensors & Localization", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!hardware.has_scene) {
+            ImGui::TextDisabled("Waiting for scene metadata...");
+        } else {
+            ImGui::Text("Localization = %s", hardware.scene.localization_mode.c_str());
+            ImGui::Text("Heading source = %s", hardware.scene.heading_source.c_str());
+            ImGui::Text("Stack = %s + %s",
+                        hardware.scene.vehicle_model_name.c_str(),
+                        hardware.scene.tracking_controller_name.c_str());
+            ImGui::Text("LiDAR = %s, min %.2f m, front %.2f m",
+                        hardware.scene.range_sensor_name.c_str(),
+                        hardware.frame.min_lidar_distance,
+                        hardware.frame.front_lidar_distance);
+            ImGui::Text("Telemetry ready = %s", hardware.frame.telemetry_ready ? "yes" : "no");
+        }
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
+    if (ImGui::CollapsingHeader("Live Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("t = %.2f s   step = %d", hardware.frame.sim_time, hardware.frame.step_count);
+        ImGui::Text("pos = (%.2f, %.2f) m", hardware.frame.navigation_position.x, hardware.frame.navigation_position.y);
+        ImGui::Text("yaw = %.1f deg   v = %.2f m/s", hardware.frame.navigation_yaw * 180.0 / 3.14159265358979323846, hardware.frame.navigation_speed);
+        ImGui::Text("goal distance = %.2f m", hardware.frame.distance_to_goal);
+        ImGui::Text("tracking: cte %.2f m   hdg %.2f deg", hardware.frame.tracker_cross_track_error, hardware.frame.tracker_heading_error_deg);
+        if (hardware.frame.has_last_mpc_command) {
+            ImGui::Text("MPC: accel %.2f   steer rate %.2f deg/s",
+                        hardware.frame.last_mpc_command.accel_cmd,
+                        hardware.frame.last_mpc_command.steer_rate_cmd * 180.0 / 3.14159265358979323846);
+        }
+        if (hardware.has_scene && hardware.scene.world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+            const char* chosen_name =
+                hardware.frame.chosen_gate_index >= 0 &&
+                        hardware.frame.chosen_gate_index < static_cast<int>(hardware.frame.gates.size())
+                    ? hardware.frame.gates[static_cast<std::size_t>(hardware.frame.chosen_gate_index)].spec.name.c_str()
+                    : "none";
+            ImGui::Text("chosen gate = %s   visible = %d", chosen_name, static_cast<int>(hardware.frame.visible_gate_indices.size()));
+        }
+    }
+
+    ImGui::EndChild();
+}
+
+void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveViewStreamServer* hardware_server) {
     if (!ImGui::BeginChild("ConfigPanel", ImVec2(0.0f, 0.0f), true)) {
         ImGui::EndChild();
         return;
     }
+
+    render_source_selector(ui_state, hardware_server);
+    ImGui::Separator();
 
     const char* status = sim.goal_reached() ? "Goal reached" : (sim.collision() ? "Collision" : (ui_state->paused ? "Paused" : "Running"));
     const ImVec4 status_color = sim.goal_reached() ? ImVec4(0.45f, 0.86f, 0.53f, 1.0f)
@@ -2130,7 +2859,10 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
     ImGui::EndChild();
 }
 
-void render_workspace(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
+void render_workspace(PlannerDrivenVehicleSim& sim,
+                      HardwareViewerState* hardware,
+                      UiState* ui_state,
+                      LiveViewStreamServer* hardware_server) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -2149,21 +2881,34 @@ void render_workspace(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
         ImGui::TableSetupColumn("MainArea", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("ConfigArea", ImGuiTableColumnFlags_WidthFixed, 390.0f);
 
+        const bool hardware_mode = ui_state != nullptr && ui_state->workspace_source == 1;
         ImGui::TableNextColumn();
         if (ImGui::BeginTabBar("WorkspaceTabs")) {
-            if (ImGui::BeginTabItem("Simulation")) {
-                render_world_tab(sim, ui_state);
+            if (ImGui::BeginTabItem(hardware_mode ? "Hardware" : "Simulation")) {
+                if (hardware_mode && hardware != nullptr) {
+                    render_hardware_world_tab(*hardware, ui_state);
+                } else {
+                    render_world_tab(sim, ui_state);
+                }
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Graphs")) {
-                render_graphs_tab(sim);
+                if (hardware_mode && hardware != nullptr) {
+                    render_hardware_graphs_tab(*hardware);
+                } else {
+                    render_graphs_tab(sim);
+                }
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
         }
 
         ImGui::TableNextColumn();
-        render_control_panel(sim, ui_state);
+        if (hardware_mode && hardware != nullptr) {
+            render_hardware_control_panel(*hardware, ui_state, hardware_server);
+        } else {
+            render_control_panel(sim, ui_state, hardware_server);
+        }
         ImGui::EndTable();
     }
 
@@ -2244,6 +2989,8 @@ int run_gui(const AppOptions& options) {
         options.structured_preset,
         GateBehaviorMode::Static,
         7));
+    HardwareViewerState hardware_view;
+    LiveViewStreamServer hardware_server;
     bool running = true;
     UiState ui_state;
     sync_ui_state_from_sim(&ui_state, sim);
@@ -2257,14 +3004,37 @@ int run_gui(const AppOptions& options) {
             }
         }
 
-        if (!ui_state.paused && !sim.goal_reached() && !sim.collision()) {
+        const LiveViewStreamServer::PollResult hardware_updates = hardware_server.poll();
+        if (hardware_updates.scene_received && hardware_updates.scene.has_value()) {
+            hardware_view.scene = *hardware_updates.scene;
+            hardware_view.has_scene = true;
+            hardware_view.frame = {};
+            hardware_view.history.clear();
+        }
+        if (hardware_updates.frame_received && hardware_updates.frame.has_value()) {
+            hardware_view.frame = *hardware_updates.frame;
+            if (hardware_view.frame.has_latest_sample) {
+                const bool duplicate =
+                    !hardware_view.history.empty() &&
+                    std::abs(hardware_view.history.back().time - hardware_view.frame.latest_sample.time) < 1e-9;
+                if (!duplicate) {
+                    hardware_view.history.push_back(hardware_view.frame.latest_sample);
+                }
+                constexpr int kMaxHardwareHistory = 2400;
+                if (static_cast<int>(hardware_view.history.size()) > kMaxHardwareHistory) {
+                    hardware_view.history.erase(hardware_view.history.begin());
+                }
+            }
+        }
+
+        if (ui_state.workspace_source == 0 && !ui_state.paused && !sim.goal_reached() && !sim.collision()) {
             for (int i = 0; i < ui_state.steps_per_frame; ++i) {
                 sim.step();
                 if (sim.goal_reached() || sim.collision()) {
                     break;
                 }
             }
-        } else if (ui_state.single_step) {
+        } else if (ui_state.workspace_source == 0 && ui_state.single_step) {
             sim.step();
             ui_state.single_step = false;
         }
@@ -2281,7 +3051,7 @@ int run_gui(const AppOptions& options) {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        render_workspace(sim, &ui_state);
+        render_workspace(sim, &hardware_view, &ui_state, &hardware_server);
 
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 9, 12, 15, 255);
