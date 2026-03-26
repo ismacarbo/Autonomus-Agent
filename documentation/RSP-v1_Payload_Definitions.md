@@ -271,6 +271,21 @@ Generic configuration update message.
 ### Semantic Notes
 This message is intentionally generic. Its exact parameter catalogue is part of system configuration policy, not of core transport design.
 
+### Current Parameter Catalogue
+
+| `PARAM_ID` | Name                    | Type(s)            | Notes |
+| ---------: | ----------------------- | ------------------ | ----- |
+| `0x01`     | `CMD_TIMEOUT_MS`        | `uint16`, `uint32` | Host command watchdog timeout |
+| `0x02`     | `IMU_TELEMETRY_MS`      | `uint16`, `uint32` | IMU telemetry period |
+| `0x03`     | `SAFETY_TELEMETRY_MS`   | `uint16`, `uint32` | Safety telemetry period |
+| `0x04`     | `MOTOR_TELEMETRY_MS`    | `uint16`, `uint32` | Motor state telemetry period |
+| `0x05`     | `HEARTBEAT_MS`          | `uint16`, `uint32` | Heartbeat-state telemetry period |
+| `0x06`     | `LEGACY_IR_ALERT_THRES` | legacy slot        | Kept for compatibility, unused by the current hardware |
+| `0x07`     | `LEGACY_FRONT_ALERT_CM` | legacy slot        | Kept for compatibility, unused by the current hardware |
+| `0x08`     | `SLEW_STEP`             | `uint8`            | PWM slew-rate step |
+| `0x09`     | `SAFETY_BYPASS`         | `uint8`            | Stored for compatibility; current encoder/IMU profile has no low-level proximity stop to bypass |
+| `0x0A`     | `ENCODER_TELEMETRY_MS`  | `uint16`, `uint32` | Encoder telemetry period |
+
 ---
 
 ## `HEARTBEAT_CMD` (`0x15`)
@@ -329,40 +344,42 @@ The host may use processed yaw and yaw rate directly or use raw channels for lat
 ## `SAFETY_TELEMETRY` (`0x21`)
 
 ### Role
-Report proximity-related and low-level safety-related sensor information.
+Report low-level safety-related information.
 
 ### Direction
 - Controller -> Host
 
 ### Payload
 
-| Field          | Size | Type     | Unit     | Description          |
-| -------------- | ---: | -------- | -------- | -------------------- |
+| Field          | Size | Type     | Unit     | Description |
+| -------------- | ---: | -------- | -------- | ----------- |
 | `MCU_TIME_MS`  |    4 | `uint32` | ms       | Controller timestamp |
-| `ULTRA_CM`     |    2 | `uint16` | cm       | Ultrasonic distance  |
-| `IR_LEFT_RAW`  |    2 | `uint16` | raw      | Left IR raw value    |
-| `IR_RIGHT_RAW` |    2 | `uint16` | raw      | Right IR raw value   |
-| `SAFETY_FLAGS` |    2 | `uint16` | bitfield | Safety status flags  |
+| `ULTRA_CM`     |    2 | `uint16` | cm       | Legacy compatibility slot, transmitted as zero on the current hardware profile |
+| `IR_LEFT_RAW`  |    2 | `uint16` | raw      | Legacy compatibility slot, transmitted as zero on the current hardware profile |
+| `IR_RIGHT_RAW` |    2 | `uint16` | raw      | Legacy compatibility slot, transmitted as zero on the current hardware profile |
+| `SAFETY_FLAGS` |    2 | `uint16` | bitfield | Safety status flags |
 
 ### Total Payload Size
 - `12 bytes`
 
 ### `SAFETY_FLAGS` Bit Definitions
 
-|   Bit | Name                 | Meaning                         |
-| ----: | -------------------- | ------------------------------- |
-|     0 | `ULTRA_VALID`        | Ultrasonic value valid          |
-|     1 | `IR_LEFT_ALERT`      | Left IR alert condition active  |
-|     2 | `IR_RIGHT_ALERT`     | Right IR alert condition active |
-|     3 | `FRONT_ALERT`        | Frontal obstacle alert active   |
-|     4 | `CMD_TIMEOUT_ACTIVE` | Command timeout state active    |
-|     5 | `EMERGENCY_STOP`     | Low-level emergency stop active |
-|     6 | `RESERVED`           | Reserved                        |
-|     7 | `RESERVED`           | Reserved                        |
-| 8..15 | `RESERVED`           | Reserved                        |
+|   Bit | Name                    | Meaning |
+| ----: | ----------------------- | ------- |
+|     0 | `LEGACY_ULTRA_VALID`    | Reserved legacy compatibility bit, kept at zero on the current hardware profile |
+|     1 | `LEGACY_IR_LEFT_ALERT`  | Reserved legacy compatibility bit, kept at zero on the current hardware profile |
+|     2 | `LEGACY_IR_RIGHT_ALERT` | Reserved legacy compatibility bit, kept at zero on the current hardware profile |
+|     3 | `LEGACY_FRONT_ALERT`    | Reserved legacy compatibility bit, kept at zero on the current hardware profile |
+|     4 | `CMD_TIMEOUT_ACTIVE`    | Command timeout state active |
+|     5 | `EMERGENCY_STOP`        | Low-level emergency stop active |
+|     6 | `RESERVED`              | Reserved |
+|     7 | `RESERVED`              | Reserved |
+| 8..15 | `RESERVED`              | Reserved |
 
 ### Interpretation Notes
-This message communicates both raw measurements and the controller's local safety interpretation.
+This message communicates the controller's low-level safety interpretation. Obstacle
+detection for the current robot is performed on the Raspberry Pi with LiDAR, not by
+the legacy proximity slots carried in this frame.
 
 ---
 
@@ -467,17 +484,17 @@ Report compact low-level system health and readiness.
 
 ### `STATUS_FLAGS` Bit Definitions
 
-|   Bit | Name             | Meaning                    |
-| ----: | ---------------- | -------------------------- |
-|     0 | `IMU_READY`      | IMU subsystem ready        |
-|     1 | `ULTRA_READY`    | Ultrasonic subsystem ready |
-|     2 | `IR_READY`       | IR subsystem ready         |
-|     3 | `ENCODERS_READY` | Encoder subsystem ready    |
-|     4 | `MOTORS_READY`   | Motor driver ready         |
-|     5 | `CALIBRATING`    | Calibration in progress    |
-|     6 | `FAULT_LATCHED`  | Fault currently latched    |
-|     7 | `HOST_LINK_OK`   | Host communication healthy |
-| 8..15 | `RESERVED`       | Reserved                   |
+|   Bit | Name                 | Meaning |
+| ----: | -------------------- | ------- |
+|     0 | `IMU_READY`          | IMU subsystem ready |
+|     1 | `LEGACY_ULTRA_READY` | Reserved legacy compatibility bit, kept at zero on the current hardware profile |
+|     2 | `LEGACY_IR_READY`    | Reserved legacy compatibility bit, kept at zero on the current hardware profile |
+|     3 | `ENCODERS_READY`     | Encoder subsystem ready |
+|     4 | `MOTORS_READY`       | Motor driver ready |
+|     5 | `CALIBRATING`        | Calibration in progress |
+|     6 | `FAULT_LATCHED`      | Fault currently latched |
+|     7 | `HOST_LINK_OK`       | Host communication healthy |
+| 8..15 | `RESERVED`           | Reserved |
 
 ### Interpretation Notes
 This message is intended as a compact health summary rather than a detailed telemetry packet.
@@ -541,10 +558,11 @@ These error categories are used by the `ERROR` message and may also be reference
 | Uptime              | `s`         |
 | Yaw angle           | `mrad`      |
 | Yaw rate            | `mrad/s`    |
-| Ultrasonic distance | `cm`        |
 | Encoder position    | `ticks`     |
 | PWM command         | `PWM units` |
-| Raw IR / IMU values | `raw`       |
+| Legacy ultrasonic slot | `cm`     |
+| Legacy IR slots     | `raw`       |
+| Raw IMU values      | `raw`       |
 
 ---
 

@@ -23,6 +23,7 @@ struct ControllerTelemetry {
 
     std::uint32_t imu_ms = 0;
     std::uint32_t safety_ms = 0;
+    std::uint32_t encoder_ms = 0;
     std::uint32_t motor_ms = 0;
     std::uint32_t heartbeat_ms = 0;
 
@@ -35,6 +36,7 @@ struct ControllerTelemetry {
     std::int16_t acc_z_raw = 0;
     std::int16_t gyro_z_raw = 0;
 
+    // Legacy SAFETY_TELEMETRY compatibility slots kept by the current firmware profile.
     int dist_c_cm = -1;
     std::uint16_t ir_l_raw = 0;
     std::uint16_t ir_r_raw = 0;
@@ -60,9 +62,10 @@ struct ControllerTelemetry {
     bool have_imu = false;
     bool have_motor = false;
     bool have_safety = false;
+    bool have_encoder = false;
     bool have_heartbeat = false;
 
-    bool ready() const { return have_imu && have_motor; }
+    bool ready() const { return have_imu && have_motor && have_encoder && have_heartbeat; }
 };
 
 class RSPSerialBridge {

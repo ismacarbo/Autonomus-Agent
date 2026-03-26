@@ -28,6 +28,7 @@ enum class UnstructuredMapPreset {
     WideSlalom = 2,
     LowerBypass = 3,
     Custom = 4,
+    HardwareLab = 5,
 };
 
 const char* unstructured_map_preset_name(UnstructuredMapPreset preset);
@@ -37,6 +38,7 @@ enum class StructuredMapPreset {
     CircleLoop = 1,
     ZigZag = 2,
     Custom = 3,
+    HardwareTrack = 4,
 };
 
 const char* structured_map_preset_name(StructuredMapPreset preset);
@@ -100,6 +102,7 @@ class WorldMap {
     void set_gate_behavior(GateBehaviorMode gate_behavior, std::uint32_t gate_seed);
     void reset_gate_layout(std::uint32_t gate_seed);
     void update_gate_layout(double sim_time_s);
+    void set_bounds(const Rect& bounds) { bounds_ = bounds; }
     void set_start(const Vec2& start) { start_ = start; }
     void set_goal(const Vec2& goal) { goal_ = goal; }
     void set_start_heading(double start_heading) { start_heading_ = start_heading; }

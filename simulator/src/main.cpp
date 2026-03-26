@@ -53,7 +53,7 @@ using thesis_sim::WorldMap;
 struct AppOptions {
     bool headless = false;
     int max_steps = 6000;
-    EnvironmentMode environment_mode = EnvironmentMode::UnstructuredGates;
+    EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
 };
@@ -61,6 +61,12 @@ struct AppOptions {
 struct CanvasTransform {
     ImVec2 origin;
     float scale = 1.0f;
+};
+
+enum WorkspaceSource {
+    kWorkspaceSourceSimulation = 0,
+    kWorkspaceSourceHardwarePlanner = 1,
+    kWorkspaceSourceHardwareSlam = 2,
 };
 
 enum class MapEditorHandleType {
@@ -81,8 +87,11 @@ struct UiState {
     bool paused = true;
     bool single_step = false;
     int steps_per_frame = 1;
-    int workspace_source = 0;
+    int workspace_source = kWorkspaceSourceSimulation;
     int hardware_listen_port = 9559;
+    int hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
+    int hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
+    int hardware_structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
     bool show_grid = true;
     bool show_trails = true;
     bool show_lidar_rays = true;
@@ -90,7 +99,7 @@ struct UiState {
     bool show_gate_labels = true;
     bool show_world_hud = true;
     int gate_seed_input = 7;
-    int environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
+    int environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
     int unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
     int structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
     WorldMap scenario_editor_world;
@@ -306,7 +315,7 @@ WorldMap world_from_ui_selection(const PlannerDrivenVehicleSim& sim, const UiSta
         ui_state.scenario_editor_world.environment_mode() == EnvironmentMode::UnstructuredGates) {
         WorldMap custom = ui_state.scenario_editor_world;
         custom.finalize_editor_changes();
-        custom.set_gate_behavior(sim.gate_behavior(), sim.gate_seed());
+        custom.set_gate_behavior(GateBehaviorMode::Static, 0);
         return custom;
     }
     if (selected_mode == EnvironmentMode::StructuredRoad &&
@@ -617,6 +626,9 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
     if (mode == EnvironmentMode::StructuredRoad) {
         return WorldMap::structured_demo(structured_preset);
     }
+    if (preset == UnstructuredMapPreset::Custom) {
+        return WorldMap::unstructured_demo(UnstructuredMapPreset::Custom, GateBehaviorMode::Static, 0);
+    }
     return WorldMap::unstructured_demo(preset, gate_behavior, gate_seed);
 }
 
@@ -819,16 +831,106 @@ VehicleSnapshot build_vehicle_snapshot_from_live(const LiveVehicleState& live,
     return vehicle;
 }
 
+bool workspace_source_is_hardware(int source) {
+    return source == kWorkspaceSourceHardwarePlanner || source == kWorkspaceSourceHardwareSlam;
+}
+
+bool workspace_source_expects_slam(int source) {
+    return source == kWorkspaceSourceHardwareSlam;
+}
+
+const char* workspace_source_label(int source) {
+    switch (source) {
+        case kWorkspaceSourceHardwarePlanner:
+            return "Hardware Planner";
+        case kWorkspaceSourceHardwareSlam:
+            return "Hardware SLAM";
+        case kWorkspaceSourceSimulation:
+        default:
+            return "Simulation";
+    }
+}
+
+const char* unstructured_map_cli_name(UnstructuredMapPreset preset) {
+    switch (preset) {
+        case UnstructuredMapPreset::TightCorridor:
+            return "tight";
+        case UnstructuredMapPreset::WideSlalom:
+            return "slalom";
+        case UnstructuredMapPreset::LowerBypass:
+            return "lower";
+        case UnstructuredMapPreset::HardwareLab:
+            return "hardware_lab";
+        case UnstructuredMapPreset::Custom:
+            return "custom";
+        case UnstructuredMapPreset::RobotValidation:
+        default:
+            return "robot_validation";
+    }
+}
+
+const char* structured_map_cli_name(StructuredMapPreset preset) {
+    switch (preset) {
+        case StructuredMapPreset::CircleLoop:
+            return "circle";
+        case StructuredMapPreset::ZigZag:
+            return "zigzag";
+        case StructuredMapPreset::HardwareTrack:
+            return "hardware_track";
+        case StructuredMapPreset::Custom:
+            return "custom";
+        case StructuredMapPreset::ValidationRoad:
+        default:
+            return "validation";
+    }
+}
+
+std::string stream_profile_label(const std::string& stream_profile, int workspace_source) {
+    if (stream_profile == "slam") {
+        return "SLAM";
+    }
+    if (stream_profile == "planner") {
+        return "Planner";
+    }
+    return workspace_source_expects_slam(workspace_source) ? "SLAM" : "Planner";
+}
+
+std::string hardware_launch_hint(const UiState& ui_state) {
+    std::ostringstream cmd;
+    if (workspace_source_expects_slam(ui_state.workspace_source)) {
+        cmd << "thesis_robot_smoke_test"
+            << " --stream-host <pc-ip>"
+            << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
+            << " --scenario "
+            << (static_cast<EnvironmentMode>(ui_state.hardware_environment_mode) == EnvironmentMode::StructuredRoad
+                    ? "structured"
+                    : "unstructured");
+        if (static_cast<EnvironmentMode>(ui_state.hardware_environment_mode) == EnvironmentMode::StructuredRoad) {
+            cmd << " --structured-map "
+                << structured_map_cli_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset));
+        } else {
+            cmd << " --unstructured-map "
+                << unstructured_map_cli_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset));
+        }
+        cmd << " --infinite";
+    } else {
+        cmd << "thesis_robot_runner"
+            << " --stream-host <pc-ip>"
+            << " --stream-port " << std::max(ui_state.hardware_listen_port, 1);
+    }
+    return cmd.str();
+}
+
 void render_source_selector(UiState* ui_state, LiveViewStreamServer* hardware_server) {
     if (ui_state == nullptr) {
         return;
     }
 
-    const char* source_items[] = {"Simulation", "Hardware"};
+    const char* source_items[] = {"Simulation", "Hardware Planner", "Hardware SLAM"};
     int source = ui_state->workspace_source;
     if (ImGui::Combo("Workspace Source", &source, source_items, IM_ARRAYSIZE(source_items))) {
-        ui_state->workspace_source = std::clamp(source, 0, 1);
-        if (ui_state->workspace_source == 1 &&
+        ui_state->workspace_source = std::clamp(source, static_cast<int>(kWorkspaceSourceSimulation), static_cast<int>(kWorkspaceSourceHardwareSlam));
+        if (workspace_source_is_hardware(ui_state->workspace_source) &&
             hardware_server != nullptr &&
             !hardware_server->listening() &&
             ui_state->hardware_listen_port > 0) {
@@ -1851,7 +1953,10 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
     }
 
     if (!hardware.has_scene) {
-        ImGui::TextWrapped("Hardware mode is listening for live data. Start the listener from the side panel, then launch `thesis_robot_runner` on the Raspberry with `--stream-host` and `--stream-port`.");
+        ImGui::TextWrapped(
+            workspace_source_expects_slam(ui_state->workspace_source)
+                ? "Hardware SLAM mode is listening for live data. Select structured or unstructured from the side panel, then launch `thesis_robot_smoke_test` on the Raspberry with the generated `--scenario` and `--stream-*` options."
+                : "Hardware planner mode is listening for live data. Start the listener from the side panel, then launch `thesis_robot_runner` on the Raspberry with `--stream-host` and `--stream-port`.");
         ImGui::EndChild();
         return;
     }
@@ -1862,6 +1967,8 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
     if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
         if (frame.chosen_gate_index >= 0 && frame.chosen_gate_index < static_cast<int>(frame.gates.size())) {
             active_target = frame.gates[static_cast<std::size_t>(frame.chosen_gate_index)].spec.name.c_str();
+        } else if (hardware.scene.stream_profile == "slam") {
+            active_target = thesis_sim::unstructured_map_preset_name(world.unstructured_preset());
         }
     } else {
         active_target = thesis_sim::structured_map_preset_name(world.structured_preset());
@@ -1891,7 +1998,9 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
                 metric_card("hw_world_tracking", "Tracking", tracking_buf, "cte / heading", ImVec4(0.97f, 0.89f, 0.45f, 1.0f), 64.0f);
                 ImGui::TableNextColumn();
                 metric_card("hw_world_target", "Target", target_buf,
-                            world.environment_mode() == EnvironmentMode::UnstructuredGates ? "Active planner gate" : "Active structured loop",
+                            world.environment_mode() == EnvironmentMode::UnstructuredGates
+                                ? (hardware.scene.stream_profile == "slam" ? "Selected unstructured SLAM context" : "Active planner gate")
+                                : (hardware.scene.stream_profile == "slam" ? "Selected structured SLAM context" : "Active structured loop"),
                             ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
                             64.0f);
                 ImGui::EndTable();
@@ -1963,6 +2072,14 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         draw_polyline(draw_list, tx, hardware.frame.planned_trajectory, kColorTrajectory, 3.0f);
     }
 
+    if (ui_state->show_lidar_hits && !frame.slam_points.empty()) {
+        const size_t slam_stride = frame.slam_points.size() > 2800 ? (frame.slam_points.size() / 2800) + 1 : 1;
+        for (size_t i = 0; i < frame.slam_points.size(); i += slam_stride) {
+            const ImVec2 point_screen = world_to_screen(tx, frame.slam_points[i]);
+            draw_list->AddCircleFilled(point_screen, 2.2f, IM_COL32(132, 255, 196, 92));
+        }
+    }
+
     if (hardware.scene.lidar_enabled && (ui_state->show_lidar_rays || ui_state->show_lidar_hits)) {
         const Vec2 lidar_origin = frame.navigation_position;
         const size_t lidar_stride = frame.lidar_hits.size() > 720 ? 2 : 1;
@@ -2021,19 +2138,22 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
     if (ui_state->show_world_hud) {
         char hud_line[96];
         std::vector<OverlayLine> top_left = {
-            {"Hardware viewport", IM_COL32(240, 243, 235, 255)},
+            {hardware.scene.stream_profile == "slam" ? "Hardware SLAM viewport" : "Hardware viewport", IM_COL32(240, 243, 235, 255)},
             {thesis_sim::environment_mode_name(world.environment_mode()), IM_COL32(170, 179, 185, 255)},
             {world.environment_mode() == EnvironmentMode::UnstructuredGates
                  ? thesis_sim::unstructured_map_preset_name(world.unstructured_preset())
                  : thesis_sim::structured_map_preset_name(world.structured_preset()),
              IM_COL32(170, 179, 185, 255)},
+            {stream_profile_label(hardware.scene.stream_profile, ui_state->workspace_source), IM_COL32(170, 179, 185, 255)},
             {hardware.scene.range_sensor_name, IM_COL32(170, 179, 185, 255)},
         };
         draw_overlay_panel(draw_list, ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 16.0f), 228.0f, top_left);
 
         std::snprintf(hud_line, sizeof(hud_line), "speed %.2f m/s", frame.vehicle.speed);
         std::vector<OverlayLine> top_right = {
-            {frame.goal_reached ? "Mission complete" : (frame.safety_stop_active ? "Safety stop active" : "Hardware stream live"),
+            {frame.goal_reached ? "Mission complete"
+                                : (frame.safety_stop_active ? "Safety stop active"
+                                                            : (hardware.scene.stream_profile == "slam" ? "SLAM stream live" : "Hardware stream live")),
              frame.goal_reached ? IM_COL32(124, 238, 151, 255)
                                 : (frame.safety_stop_active ? IM_COL32(255, 124, 102, 255) : IM_COL32(255, 221, 113, 255))},
             {hud_line, IM_COL32(240, 243, 235, 255)},
@@ -2041,7 +2161,11 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         std::snprintf(hud_line, sizeof(hud_line), "goal %.2f m", frame.distance_to_goal);
         top_right.push_back({hud_line, IM_COL32(170, 179, 185, 255)});
         if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
-            std::snprintf(hud_line, sizeof(hud_line), "gate %s | visible %d", active_target, static_cast<int>(frame.visible_gate_indices.size()));
+            if (hardware.scene.stream_profile == "slam") {
+                std::snprintf(hud_line, sizeof(hud_line), "context %s | map pts %d", active_target, static_cast<int>(frame.slam_points.size()));
+            } else {
+                std::snprintf(hud_line, sizeof(hud_line), "gate %s | visible %d", active_target, static_cast<int>(frame.visible_gate_indices.size()));
+            }
         } else {
             std::snprintf(hud_line, sizeof(hud_line), "road pts %d", static_cast<int>(world.road_centerline().size()));
         }
@@ -2057,6 +2181,9 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         }
         if (hardware.scene.lidar_enabled && ui_state->show_lidar_hits) {
             legend.push_back({"lime/cyan: LiDAR collision points", kColorLidarHit});
+        }
+        if (!frame.slam_points.empty() && ui_state->show_lidar_hits) {
+            legend.push_back({"mint: accumulated SLAM map", IM_COL32(132, 255, 196, 200)});
         }
         const float legend_height = 20.0f + static_cast<float>(legend.size()) * (ImGui::GetFontSize() + 5.0f);
         draw_overlay_panel(draw_list,
@@ -2377,6 +2504,16 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     render_source_selector(ui_state, hardware_server);
     ImGui::Separator();
 
+    const bool slam_source = workspace_source_expects_slam(ui_state->workspace_source);
+    const std::string configured_profile = slam_source ? "SLAM" : "Planner";
+    const std::string live_profile =
+        hardware.has_scene ? stream_profile_label(hardware.scene.stream_profile, ui_state->workspace_source)
+                           : configured_profile;
+    const bool profile_mismatch =
+        hardware.has_scene && !hardware.scene.stream_profile.empty() &&
+        ((slam_source && hardware.scene.stream_profile != "slam") ||
+         (!slam_source && hardware.scene.stream_profile == "slam"));
+
     const char* status = hardware_server->connected()
                              ? (hardware.frame.goal_reached ? "Goal reached" : (hardware.frame.safety_stop_active ? "Safety stop" : "Live"))
                              : (hardware_server->listening() ? "Listening" : "Idle");
@@ -2395,9 +2532,20 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", hardware.frame.vehicle.speed);
     std::snprintf(tracking_buf, sizeof(tracking_buf), "%.2f m", hardware.frame.tracker_cross_track_error);
 
-    ImGui::TextUnformatted("Hardware Desk");
+    ImGui::TextUnformatted(slam_source ? "Hardware SLAM Desk" : "Hardware Desk");
     ImGui::TextColored(status_color, "%s", status);
-    ImGui::TextWrapped("This mode keeps the simulator UI but replaces the backend with live snapshots coming from the Raspberry.");
+    ImGui::TextWrapped(
+        slam_source
+            ? "This mode keeps the simulator UI but expects the online SLAM smoke-test stream, so the viewport can accumulate and visualize live obstacle points around the robot."
+            : "This mode keeps the simulator UI but replaces the backend with live planner snapshots coming from the Raspberry.");
+    ImGui::Text("Configured session = %s", configured_profile.c_str());
+    ImGui::Text("Incoming stream = %s", live_profile.c_str());
+    if (profile_mismatch) {
+        ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.34f, 1.0f),
+                           "The menu is set to %s but the current stream is %s.",
+                           configured_profile.c_str(),
+                           live_profile.c_str());
+    }
 
     if (ImGui::BeginTable("HardwareHeroMetrics", 2, ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextColumn();
@@ -2415,6 +2563,112 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     if (ImGui::CollapsingHeader("Live Stream", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::InputInt("Listen Port", &ui_state->hardware_listen_port);
         ui_state->hardware_listen_port = std::max(ui_state->hardware_listen_port, 1);
+
+        if (slam_source) {
+            const char* environment_items[] = {
+                thesis_sim::environment_mode_name(EnvironmentMode::UnstructuredGates),
+                thesis_sim::environment_mode_name(EnvironmentMode::StructuredRoad),
+            };
+            int hardware_environment = ui_state->hardware_environment_mode == static_cast<int>(EnvironmentMode::UnstructuredGates) ? 0 : 1;
+            if (ImGui::Combo("SLAM Context", &hardware_environment, environment_items, IM_ARRAYSIZE(environment_items))) {
+                ui_state->hardware_environment_mode =
+                    hardware_environment == 0 ? static_cast<int>(EnvironmentMode::UnstructuredGates)
+                                              : static_cast<int>(EnvironmentMode::StructuredRoad);
+            }
+
+            if (static_cast<EnvironmentMode>(ui_state->hardware_environment_mode) == EnvironmentMode::StructuredRoad) {
+                const char* structured_items[] = {
+                    thesis_sim::structured_map_preset_name(StructuredMapPreset::ValidationRoad),
+                    thesis_sim::structured_map_preset_name(StructuredMapPreset::CircleLoop),
+                    thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
+                    thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
+                };
+                int selection = 0;
+                switch (static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset)) {
+                    case StructuredMapPreset::CircleLoop:
+                        selection = 1;
+                        break;
+                    case StructuredMapPreset::ZigZag:
+                        selection = 2;
+                        break;
+                    case StructuredMapPreset::HardwareTrack:
+                        selection = 3;
+                        break;
+                    case StructuredMapPreset::Custom:
+                    case StructuredMapPreset::ValidationRoad:
+                    default:
+                        selection = 0;
+                        break;
+                }
+                if (ImGui::Combo("Structured Map", &selection, structured_items, IM_ARRAYSIZE(structured_items))) {
+                    switch (selection) {
+                        case 1:
+                            ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::CircleLoop);
+                            break;
+                        case 2:
+                            ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::ZigZag);
+                            break;
+                        case 3:
+                            ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::HardwareTrack);
+                            break;
+                        case 0:
+                        default:
+                            ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
+                            break;
+                    }
+                }
+            } else {
+                const char* unstructured_items[] = {
+                    thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::RobotValidation),
+                    thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::TightCorridor),
+                    thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::WideSlalom),
+                    thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::LowerBypass),
+                    thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::HardwareLab),
+                };
+                int selection = 0;
+                switch (static_cast<UnstructuredMapPreset>(ui_state->hardware_unstructured_preset)) {
+                    case UnstructuredMapPreset::TightCorridor:
+                        selection = 1;
+                        break;
+                    case UnstructuredMapPreset::WideSlalom:
+                        selection = 2;
+                        break;
+                    case UnstructuredMapPreset::LowerBypass:
+                        selection = 3;
+                        break;
+                    case UnstructuredMapPreset::HardwareLab:
+                        selection = 4;
+                        break;
+                    case UnstructuredMapPreset::Custom:
+                    case UnstructuredMapPreset::RobotValidation:
+                    default:
+                        selection = 0;
+                        break;
+                }
+                if (ImGui::Combo("Unstructured Map", &selection, unstructured_items, IM_ARRAYSIZE(unstructured_items))) {
+                    switch (selection) {
+                        case 1:
+                            ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::TightCorridor);
+                            break;
+                        case 2:
+                            ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::WideSlalom);
+                            break;
+                        case 3:
+                            ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::LowerBypass);
+                            break;
+                        case 4:
+                            ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::HardwareLab);
+                            break;
+                        case 0:
+                        default:
+                            ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
+                            break;
+                    }
+                }
+            }
+            ImGui::TextWrapped("The SLAM context tells the app and the remote smoke test whether the online map should be framed as structured or unstructured.");
+            ImGui::Separator();
+        }
 
         if (!hardware_server->listening()) {
             if (ImGui::Button("Start Listening", ImVec2(-1.0f, 0.0f))) {
@@ -2442,7 +2696,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             ImGui::TextWrapped("Last stream error: %s", hardware_server->last_error().c_str());
         }
         ImGui::Separator();
-        ImGui::TextWrapped("Run on the Raspberry with `--stream-host <pc-ip> --stream-port %d`. If you want to transport it over SSH, expose this same port with a reverse tunnel.", ui_state->hardware_listen_port);
+        ImGui::TextWrapped("Launch on the Raspberry with:");
+        ImGui::TextWrapped("%s", hardware_launch_hint(*ui_state).c_str());
+        ImGui::TextWrapped("If you want to transport it over SSH, expose this same port with a reverse tunnel.");
     }
 
     ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
@@ -2450,6 +2706,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         if (!hardware.has_scene) {
             ImGui::TextDisabled("Waiting for scene metadata...");
         } else {
+            ImGui::Text("Stream profile = %s", live_profile.c_str());
             ImGui::Text("Localization = %s", hardware.scene.localization_mode.c_str());
             ImGui::Text("Heading source = %s", hardware.scene.heading_source.c_str());
             ImGui::Text("Stack = %s + %s",
@@ -2580,7 +2837,11 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         }
 
         if (sim.environment_mode() == EnvironmentMode::UnstructuredGates) {
-            ImGui::TextWrapped("Named gates are the planner's passage hypotheses through the free openings of the map. Keeping this section visible is useful when you debug wrong gate selection.");
+            if (sim.world().unstructured_preset() == UnstructuredMapPreset::Custom) {
+                ImGui::TextWrapped("Manual gate editor active: place gates and obstacles yourself, then let the planner reach each gate with the motion primitives on top of the mapped free space.");
+            } else {
+                ImGui::TextWrapped("Named gates are the planner's passage hypotheses through the free openings of the map. Keeping this section visible is useful when you debug wrong gate selection.");
+            }
 
             const char* preset_items[] = {
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::RobotValidation),
@@ -2590,41 +2851,48 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::Custom),
             };
             if (ImGui::Combo("Unstructured Map", &ui_state->unstructured_preset, preset_items, IM_ARRAYSIZE(preset_items))) {
+                const bool manual_editor = ui_state->unstructured_preset == static_cast<int>(UnstructuredMapPreset::Custom);
                 sim.load_world(world_from_ui_selection(sim, *ui_state));
                 sync_ui_state_from_sim(ui_state, sim);
+                ui_state->map_editor_enabled = manual_editor;
                 ui_state->paused = true;
             }
             ImGui::Text("Preset = %s", thesis_sim::unstructured_map_preset_name(sim.world().unstructured_preset()));
 
-            int gate_behavior = static_cast<int>(sim.gate_behavior());
-            bool gate_changed = false;
-            const char* gate_items[] = {
-                thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Static),
-                thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Randomized),
-                thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Mobile),
-            };
-            if (ImGui::Combo("Gate Layout", &gate_behavior, gate_items, IM_ARRAYSIZE(gate_items))) {
-                gate_changed = true;
+            if (sim.world().unstructured_preset() == UnstructuredMapPreset::Custom) {
+                ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.42f, 1.0f), "User-defined gates stay static in manual editor mode.");
+                ImGui::TextWrapped("Use the Map Editor section to add gates, move them directly in the viewport, and place obstacles the robot must sense and avoid.");
+            } else {
+                int gate_behavior = static_cast<int>(sim.gate_behavior());
+                bool gate_changed = false;
+                const char* gate_items[] = {
+                    thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Static),
+                    thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Randomized),
+                    thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Mobile),
+                };
+                if (ImGui::Combo("Gate Layout", &gate_behavior, gate_items, IM_ARRAYSIZE(gate_items))) {
+                    gate_changed = true;
+                }
+                if (ImGui::InputInt("Gate Seed", &ui_state->gate_seed_input)) {
+                    ui_state->gate_seed_input = std::max(ui_state->gate_seed_input, 0);
+                    gate_changed = true;
+                }
+                if (gate_changed) {
+                    sim.set_gate_behavior(
+                        static_cast<GateBehaviorMode>(std::clamp(gate_behavior, 0, static_cast<int>(IM_ARRAYSIZE(gate_items)) - 1)),
+                        static_cast<std::uint32_t>(ui_state->gate_seed_input));
+                    ui_state->report_written = false;
+                    ui_state->last_report_path.clear();
+                }
+                if (ImGui::Button("Regenerate Gates", ImVec2(-1.0f, 0.0f))) {
+                    ui_state->gate_seed_input = std::max(ui_state->gate_seed_input + 1, 0);
+                    sim.regenerate_gate_layout(static_cast<std::uint32_t>(ui_state->gate_seed_input));
+                    ui_state->report_written = false;
+                    ui_state->last_report_path.clear();
+                }
+                ImGui::Text("Gate mode = %s", thesis_sim::gate_behavior_mode_name(sim.gate_behavior()));
+                ImGui::Text("Gate seed = %u", sim.gate_seed());
             }
-            if (ImGui::InputInt("Gate Seed", &ui_state->gate_seed_input)) {
-                ui_state->gate_seed_input = std::max(ui_state->gate_seed_input, 0);
-                gate_changed = true;
-            }
-            if (gate_changed) {
-                sim.set_gate_behavior(
-                    static_cast<GateBehaviorMode>(std::clamp(gate_behavior, 0, static_cast<int>(IM_ARRAYSIZE(gate_items)) - 1)),
-                    static_cast<std::uint32_t>(ui_state->gate_seed_input));
-                ui_state->report_written = false;
-                ui_state->last_report_path.clear();
-            }
-            if (ImGui::Button("Regenerate Gates", ImVec2(-1.0f, 0.0f))) {
-                ui_state->gate_seed_input = std::max(ui_state->gate_seed_input + 1, 0);
-                sim.regenerate_gate_layout(static_cast<std::uint32_t>(ui_state->gate_seed_input));
-                ui_state->report_written = false;
-                ui_state->last_report_path.clear();
-            }
-            ImGui::Text("Gate mode = %s", thesis_sim::gate_behavior_mode_name(sim.gate_behavior()));
-            ImGui::Text("Gate seed = %u", sim.gate_seed());
         } else {
             ImGui::TextWrapped("Structured mode keeps the planner on a fixed road loop while the EKF fuses encoder, IMU and LiDAR for the state estimate.");
             const char* structured_items[] = {
@@ -2881,10 +3149,10 @@ void render_workspace(PlannerDrivenVehicleSim& sim,
         ImGui::TableSetupColumn("MainArea", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("ConfigArea", ImGuiTableColumnFlags_WidthFixed, 390.0f);
 
-        const bool hardware_mode = ui_state != nullptr && ui_state->workspace_source == 1;
+        const bool hardware_mode = ui_state != nullptr && workspace_source_is_hardware(ui_state->workspace_source);
         ImGui::TableNextColumn();
         if (ImGui::BeginTabBar("WorkspaceTabs")) {
-            if (ImGui::BeginTabItem(hardware_mode ? "Hardware" : "Simulation")) {
+            if (ImGui::BeginTabItem(hardware_mode ? workspace_source_label(ui_state->workspace_source) : "Simulation")) {
                 if (hardware_mode && hardware != nullptr) {
                     render_hardware_world_tab(*hardware, ui_state);
                 } else {
@@ -3010,6 +3278,9 @@ int run_gui(const AppOptions& options) {
             hardware_view.has_scene = true;
             hardware_view.frame = {};
             hardware_view.history.clear();
+            ui_state.hardware_environment_mode = static_cast<int>(hardware_view.scene.world.environment_mode());
+            ui_state.hardware_unstructured_preset = static_cast<int>(hardware_view.scene.world.unstructured_preset());
+            ui_state.hardware_structured_preset = static_cast<int>(hardware_view.scene.world.structured_preset());
         }
         if (hardware_updates.frame_received && hardware_updates.frame.has_value()) {
             hardware_view.frame = *hardware_updates.frame;
@@ -3027,14 +3298,14 @@ int run_gui(const AppOptions& options) {
             }
         }
 
-        if (ui_state.workspace_source == 0 && !ui_state.paused && !sim.goal_reached() && !sim.collision()) {
+        if (ui_state.workspace_source == kWorkspaceSourceSimulation && !ui_state.paused && !sim.goal_reached() && !sim.collision()) {
             for (int i = 0; i < ui_state.steps_per_frame; ++i) {
                 sim.step();
                 if (sim.goal_reached() || sim.collision()) {
                     break;
                 }
             }
-        } else if (ui_state.workspace_source == 0 && ui_state.single_step) {
+        } else if (ui_state.workspace_source == kWorkspaceSourceSimulation && ui_state.single_step) {
             sim.step();
             ui_state.single_step = false;
         }

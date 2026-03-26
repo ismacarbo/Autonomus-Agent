@@ -44,6 +44,7 @@ struct LiveGateFrame {
 
 struct LiveSceneSnapshot {
     std::string stream_label;
+    std::string stream_profile;
     WorldMap world;
     VehicleGeometry geometry{};
     bool imu_enabled = true;
@@ -85,6 +86,7 @@ struct LiveFrameSnapshot {
     std::vector<int> visible_gate_indices;
     std::vector<Vec2> trail;
     std::vector<Vec2> planned_trajectory;
+    std::vector<Vec2> slam_points;
     std::vector<LidarHit> lidar_hits;
     bool has_last_mpc_command = false;
     LiveMpcCommandView last_mpc_command{};

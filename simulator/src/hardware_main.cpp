@@ -13,7 +13,6 @@
 namespace {
 
 using thesis_sim::ControllerTelemetry;
-using thesis_sim::GateBehaviorMode;
 using thesis_sim::HardwarePlannerConfig;
 using thesis_sim::HardwarePlannerReport;
 using thesis_sim::HardwarePlannerRunner;
@@ -23,7 +22,7 @@ using thesis_sim::MotorControlMode;
 using thesis_sim::RealRobotBridge;
 using thesis_sim::RealRobotObservation;
 using thesis_sim::RPLidarA1;
-using thesis_sim::UnstructuredMapPreset;
+using thesis_sim::StructuredMapPreset;
 using thesis_sim::Vec2;
 using thesis_sim::VehicleControlInput;
 using thesis_sim::VehicleDynamicsModel;
@@ -41,7 +40,6 @@ struct AppOptions {
     bool auto_mode = true;
     bool gyro_zero = true;
     bool simulate = false;
-    UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
     std::string stream_host;
     int stream_port = 0;
     int stream_every_n_steps = 1;
@@ -63,35 +61,18 @@ Vec2 lidar_origin_world(const Vec2& base_position,
     return {base_position.x + rotated.x, base_position.y + rotated.y};
 }
 
-UnstructuredMapPreset parse_unstructured_preset(const std::string& value) {
-    if (value == "robot_validation" || value == "robot" || value == "validation") {
-        return UnstructuredMapPreset::RobotValidation;
-    }
-    if (value == "tight" || value == "tight_corridor") {
-        return UnstructuredMapPreset::TightCorridor;
-    }
-    if (value == "slalom" || value == "wide_slalom" || value == "wide") {
-        return UnstructuredMapPreset::WideSlalom;
-    }
-    if (value == "lower" || value == "lower_bypass") {
-        return UnstructuredMapPreset::LowerBypass;
-    }
-    return UnstructuredMapPreset::RobotValidation;
-}
-
 void print_usage(const char* argv0) {
     std::cout
         << "Usage: " << argv0
         << " --controller-port /dev/ttyACM0 --lidar-port /dev/ttyUSB0 [options]\n"
         << "Or:    " << argv0
-        << " --simulate [--unstructured-map robot_validation|tight|slalom|lower] [options]\n"
+        << " --simulate [options]\n"
         << "Options:\n"
         << "  --controller-baudrate N   default 115200\n"
         << "  --lidar-baudrate N        default 115200\n"
         << "  --max-steps N             default 1500\n"
         << "  --dt SEC                  default 0.10\n"
-        << "  --simulate                run the hardware planner against synthetic sensors\n"
-        << "  --unstructured-map NAME   robot_validation | tight | slalom | lower\n"
+        << "  --simulate                run the fixed compact structured hardware track against synthetic sensors\n"
         << "  --stream-host HOST        send live view snapshots to HOST\n"
         << "  --stream-port N           send live view snapshots to TCP port N\n"
         << "  --stream-every N          send one frame every N planner steps (default 1)\n"
@@ -117,8 +98,6 @@ AppOptions parse_args(int argc, char** argv) {
             options.dt = std::atof(argv[++i]);
         } else if (arg == "--simulate") {
             options.simulate = true;
-        } else if (arg == "--unstructured-map" && i + 1 < argc) {
-            options.unstructured_preset = parse_unstructured_preset(argv[++i]);
         } else if (arg == "--stream-host" && i + 1 < argc) {
             options.stream_host = argv[++i];
         } else if (arg == "--stream-port" && i + 1 < argc) {
@@ -195,6 +174,8 @@ ControllerTelemetry make_controller_telemetry(const thesis_sim::VehicleModelStat
     telemetry.enc_dt_ms = static_cast<std::uint16_t>(std::lround(state.encoder_dt_ms));
     telemetry.have_imu = true;
     telemetry.have_motor = true;
+    telemetry.have_encoder = true;
+    telemetry.have_heartbeat = true;
     return telemetry;
 }
 
@@ -266,7 +247,7 @@ int count_passed_gates(const HardwarePlannerRunner& runner) {
 int run_simulated(const AppOptions& options,
                   RealRobotBridge::Options bridge_options,
                   HardwarePlannerConfig planner_config) {
-    WorldMap world = WorldMap::thesis_demo(options.unstructured_preset, GateBehaviorMode::Static, 7);
+    WorldMap world = WorldMap::structured_demo(StructuredMapPreset::HardwareTrack);
     HardwarePlannerRunner runner(world, std::move(bridge_options), planner_config);
     LiveViewStreamClient streamer;
     if (!setup_stream_client(options, runner, &streamer)) {
@@ -374,7 +355,10 @@ int main(int argc, char** argv) {
         return run_simulated(options, std::move(bridge_options), planner_config);
     }
 
-    HardwarePlannerRunner runner(WorldMap::thesis_demo(), bridge_options, planner_config);
+    HardwarePlannerRunner runner(
+        WorldMap::structured_demo(StructuredMapPreset::HardwareTrack),
+        bridge_options,
+        planner_config);
     LiveViewStreamClient streamer;
 
     try {

@@ -28,7 +28,8 @@ Protocol[RSP Protocol Layer]
 
 MCU[Low Level Controller<br>Arduino]
 MotorCtrl[Motor Control]
-Sensors[IMU / Encoders / Safety Sensors]
+Sensors[MPU6050 / AO Encoders]
+Lidar[RPLidar A1]
 
 Hardware[Motors & Hardware]
 
@@ -36,6 +37,7 @@ User --> Host
 Host --> Planner
 Host --> Perception
 Host --> Protocol
+Lidar --> Host
 
 Protocol --> MCU
 
@@ -88,31 +90,25 @@ stateDiagram-v2
 
 [*] --> BOOT
 
-BOOT --> IDLE : boot_complete
-BOOT --> FAULT : boot_failure
+BOOT --> IDLE : setup_complete
 
-IDLE --> MANUAL : enter_manual
-IDLE --> AUTONOMOUS : enter_autonomous
-IDLE --> CALIBRATING : start_calibration
+IDLE --> MANUAL : MODE_CMD(manual)
+IDLE --> AUTONOMOUS : MODE_CMD(autonomous)
+IDLE --> CALIBRATING : GYRO_ZERO_CMD / MODE_CMD(calibration)
 
-MANUAL --> SAFE_STOP : stop / obstacle / timeout
-AUTONOMOUS --> SAFE_STOP : stop / obstacle
-
-SAFE_STOP --> IDLE : recover
-
+MANUAL --> IDLE : MODE_CMD(idle)
+AUTONOMOUS --> IDLE : MODE_CMD(idle)
 CALIBRATING --> IDLE : calibration_done
-CALIBRATING --> FAULT : calibration_failed
 
-MANUAL --> FAULT : fault
-AUTONOMOUS --> FAULT : fault
+MANUAL --> CALIBRATING : GYRO_ZERO_CMD
+AUTONOMOUS --> CALIBRATING : GYRO_ZERO_CMD
 
-FAULT --> IDLE : fault_cleared
+IDLE --> EMERGENCY_STOP : MODE_CMD(emergency_stop) / fault_latch
+MANUAL --> EMERGENCY_STOP : MODE_CMD(emergency_stop) / fault_latch
+AUTONOMOUS --> EMERGENCY_STOP : MODE_CMD(emergency_stop) / fault_latch
+CALIBRATING --> EMERGENCY_STOP : fault_latch
 
-IDLE --> SHUTDOWN : shutdown_request
-MANUAL --> SHUTDOWN : shutdown_request
-AUTONOMOUS --> SHUTDOWN : shutdown_request
-SAFE_STOP --> SHUTDOWN : shutdown_request
-FAULT --> SHUTDOWN : shutdown_request
+EMERGENCY_STOP --> IDLE : MODE_CMD(idle) / recovery
 ```
 ---
 
@@ -123,7 +119,9 @@ Sensors and commands propagate through the system.
 ```mermaid
 graph LR
 
-Sensors[Robot Sensors]
+Encoders[Wheel Encoders]
+Imu[MPU6050]
+Lidar[RPLidar A1]
 MCU[Arduino Controller]
 Serial[RSP Serial Bus]
 Host[High Level Controller]
@@ -131,9 +129,11 @@ Algorithms[Navigation / SLAM]
 Commands[Motor Commands]
 Motors[Motors]
 
-Sensors --> MCU
+Encoders --> MCU
+Imu --> MCU
 MCU --> Serial
 Serial --> Host
+Lidar --> Host
 Host --> Algorithms
 Algorithms --> Commands
 Commands --> Serial
@@ -162,20 +162,18 @@ Pi[Raspberry Pi]
 Arduino[Arduino Controller]
 
 IMU[IMU Sensor]
-Encoders[Wheel Encoders]
-Ultrasonic[Ultrasonic Sensor]
-IR[IR Sensors]
+Encoders[4x AO Wheel Encoders]
+Lidar[RPLidar A1]
 
 Driver[TB6612FNG Motor Driver]
 
 Motors[DC Motors]
 
 Pi --> Arduino
+Pi --> Lidar
 
 Arduino --> IMU
 Arduino --> Encoders
-Arduino --> Ultrasonic
-Arduino --> IR
 
 Arduino --> Driver
 Driver --> Motors
@@ -221,6 +219,11 @@ The FSM ensures:
 - safe stopping
 - deterministic transitions
 - clear recovery behavior
+
+On the current hardware profile:
+
+- low-level safety is mainly command timeout, stop requests, and emergency-stop latching
+- obstacle detection is performed primarily on the Raspberry Pi from LiDAR data
 
 ---
 

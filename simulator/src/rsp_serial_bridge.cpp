@@ -325,6 +325,8 @@ void RSPSerialBridge::handle_frame(const Frame& frame) {
         telemetry_.error_code = heartbeat->error_code;
         telemetry_.rx_timestamp_s = last_rx_ts_;
     } else if (const auto* encoder = std::get_if<EncoderTelemetryPayload>(&decoded.data)) {
+        telemetry_.have_encoder = true;
+        telemetry_.encoder_ms = encoder->mcu_time_ms;
         telemetry_.ms = std::max(telemetry_.ms, encoder->mcu_time_ms);
         telemetry_.ticks_left = encoder->ticks_left;
         telemetry_.ticks_right = encoder->ticks_right;

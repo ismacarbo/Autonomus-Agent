@@ -47,7 +47,6 @@ The low-level controller is the embedded device directly connected to motors and
 - motor actuation
 - low-level safety behavior
 - IMU acquisition
-- proximity sensor acquisition
 - encoder acquisition
 - execution of host commands
 - continuous state reporting
@@ -240,6 +239,10 @@ It is used for:
 `LEN` defines the payload length in bytes.
 Although the type permits large theoretical values, protocol-constrained devices should define a much smaller practical maximum.
 
+For the current Arduino/Raspberry hardware profile:
+
+- maximum payload length is `48 bytes`
+
 ### Payload Field
 
 `PAYLOAD` contains the message-specific data.
@@ -384,12 +387,16 @@ A generic configuration message that supports parameter-level adjustment and con
 
 ### `HEARTBEAT_CMD` (`0x15`)
 A host-originated keepalive frame used to support watchdog and link-health policies.
+On the current firmware profile it is also what keeps the controller-side
+`HOST_LINK_OK` state active and allows periodic telemetry transmission.
 
 ### `IMU_TELEMETRY` (`0x20`)
 An inertial telemetry message carrying the local inertial state used by the host for estimation and control.
 
 ### `SAFETY_TELEMETRY` (`0x21`)
-A telemetry message carrying low-level proximity and safety-related information.
+A telemetry message carrying low-level safety-related information.
+On the current encoder/IMU hardware profile the proximity measurement slots are
+kept in the payload only for wire compatibility and are transmitted as zero.
 
 ### `ENCODER_TELEMETRY` (`0x22`)
 A telemetry message reporting wheel encoder state. The protocol conceptually favors cumulative counts over deltas.

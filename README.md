@@ -41,7 +41,8 @@ Current assumptions:
 - known 2D map
 - yaw and yaw-rate from IMU
 - LiDAR-based local pose correction against the known map
-- speed estimated from applied PWM until wheel encoders are added
+- speed estimated from encoder telemetry, fused with IMU and LiDAR
+- controller safety telemetry keeps legacy proximity slots for wire compatibility, but the current robot uses IMU + encoders on the Arduino and LiDAR on the Raspberry
 
 ### Build only the C++ simulator
 

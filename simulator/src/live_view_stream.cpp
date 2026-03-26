@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -20,12 +21,14 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 1U;
+constexpr std::uint16_t kPacketVersion = 3U;
+constexpr std::uint16_t kPacketHello = 0U;
 constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
 constexpr std::size_t kPacketHeaderSize = sizeof(std::uint32_t) + sizeof(std::uint16_t) + sizeof(std::uint16_t) + sizeof(std::uint32_t);
 constexpr std::uint32_t kMaxPacketBytes = 32U * 1024U * 1024U;
 constexpr double kTwoPi = 6.28318530717958647692;
+constexpr int kHelloTimeoutMs = 5000;
 
 template <typename T>
 void write_pod(std::vector<std::uint8_t>* out, const T& value) {
@@ -434,6 +437,7 @@ std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {
     std::vector<std::uint8_t> out;
     out.reserve(4096);
     write_string(&out, scene.stream_label);
+    write_string(&out, scene.stream_profile);
     write_world(&out, scene.world);
     write_geometry(&out, scene.geometry);
     write_bool(&out, scene.imu_enabled);
@@ -456,6 +460,7 @@ bool deserialize_scene(const std::vector<std::uint8_t>& data, LiveSceneSnapshot*
     std::size_t offset = 0;
     LiveSceneSnapshot parsed;
     if (!read_string(data, &offset, &parsed.stream_label) ||
+        !read_string(data, &offset, &parsed.stream_profile) ||
         !read_world(data, &offset, &parsed.world) ||
         !read_geometry(data, &offset, &parsed.geometry) ||
         !read_bool(data, &offset, &parsed.imu_enabled) ||
@@ -506,6 +511,7 @@ std::vector<std::uint8_t> serialize_frame(const LiveFrameSnapshot& frame) {
     });
     write_vector(&out, frame.trail, write_vec2);
     write_vector(&out, frame.planned_trajectory, write_vec2);
+    write_vector(&out, frame.slam_points, write_vec2);
     write_vector(&out, frame.lidar_hits, write_lidar_hit);
     write_bool(&out, frame.has_last_mpc_command);
     if (frame.has_last_mpc_command) {
@@ -552,6 +558,7 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
         }) ||
         !read_vector(data, &offset, &parsed.trail, read_vec2) ||
         !read_vector(data, &offset, &parsed.planned_trajectory, read_vec2) ||
+        !read_vector(data, &offset, &parsed.slam_points, read_vec2) ||
         !read_vector(data, &offset, &parsed.lidar_hits, read_lidar_hit) ||
         !read_bool(data, &offset, &parsed.has_last_mpc_command)) {
         return false;
@@ -626,11 +633,118 @@ bool send_all(int fd, const std::uint8_t* data, std::size_t size) {
     return true;
 }
 
+std::vector<std::uint8_t> make_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload) {
+    std::vector<std::uint8_t> packet;
+    packet.reserve(kPacketHeaderSize + payload.size());
+    write_pod(&packet, kPacketMagic);
+    write_pod(&packet, kPacketVersion);
+    write_pod(&packet, type);
+    write_pod<std::uint32_t>(&packet, static_cast<std::uint32_t>(payload.size()));
+    packet.insert(packet.end(), payload.begin(), payload.end());
+    return packet;
+}
+
+bool recv_all_with_timeout(int fd, std::uint8_t* data, std::size_t size, int timeout_ms) {
+    if (fd < 0 || data == nullptr) {
+        return false;
+    }
+
+    std::size_t received = 0;
+    while (received < size) {
+        pollfd pfd{};
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        const int rc = ::poll(&pfd, 1, timeout_ms);
+        if (rc == 0) {
+            errno = ETIMEDOUT;
+            return false;
+        }
+        if (rc < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            errno = ECONNRESET;
+            return false;
+        }
+
+        const ssize_t bytes = ::recv(fd, data + received, size - received, 0);
+        if (bytes <= 0) {
+            if (bytes < 0 && errno == EINTR) {
+                continue;
+            }
+            if (bytes == 0) {
+                errno = ECONNRESET;
+            }
+            return false;
+        }
+        received += static_cast<std::size_t>(bytes);
+    }
+    return true;
+}
+
+bool receive_server_hello(int fd, std::string* error) {
+    std::array<std::uint8_t, kPacketHeaderSize> header{};
+    if (!recv_all_with_timeout(fd, header.data(), header.size(), kHelloTimeoutMs)) {
+        if (error != nullptr) {
+            if (errno == ETIMEDOUT) {
+                *error = "live viewer handshake failed: timeout waiting for viewer hello";
+            } else {
+                *error = socket_error_message("live viewer handshake failed");
+            }
+        }
+        return false;
+    }
+
+    std::vector<std::uint8_t> header_vec(header.begin(), header.end());
+    std::size_t offset = 0;
+    std::uint32_t magic = 0U;
+    std::uint16_t version = 0U;
+    std::uint16_t type = 0U;
+    std::uint32_t size = 0U;
+    if (!read_pod(header_vec, &offset, &magic) ||
+        !read_pod(header_vec, &offset, &version) ||
+        !read_pod(header_vec, &offset, &type) ||
+        !read_pod(header_vec, &offset, &size)) {
+        if (error != nullptr) {
+            *error = "live viewer handshake failed: malformed header";
+        }
+        return false;
+    }
+    if (magic != kPacketMagic || version != kPacketVersion || type != kPacketHello) {
+        if (error != nullptr) {
+            *error = "live viewer handshake failed: protocol mismatch or wrong service on port";
+        }
+        return false;
+    }
+    if (size > kMaxPacketBytes) {
+        if (error != nullptr) {
+            *error = "live viewer handshake failed: packet too large";
+        }
+        return false;
+    }
+    if (size == 0U) {
+        return true;
+    }
+
+    std::vector<std::uint8_t> payload(size);
+    if (!recv_all_with_timeout(fd, payload.data(), payload.size(), kHelloTimeoutMs)) {
+        if (error != nullptr) {
+            *error = socket_error_message("live viewer handshake payload failed");
+        }
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) {
     LiveSceneSnapshot scene;
     scene.stream_label = "Hardware live stream";
+    scene.stream_profile = "planner";
     scene.world = runner.world();
     scene.geometry = runner.geometry();
     scene.imu_enabled = true;
@@ -765,6 +879,10 @@ bool LiveViewStreamClient::connect_to(const std::string& host, std::uint16_t por
         last_error_ = socket_error_message("connect failed");
         return false;
     }
+    if (!receive_server_hello(socket_fd_, &last_error_)) {
+        disconnect();
+        return false;
+    }
     return true;
 }
 
@@ -778,13 +896,7 @@ bool LiveViewStreamClient::send_packet(std::uint16_t type, const std::vector<std
         return false;
     }
 
-    std::vector<std::uint8_t> packet;
-    packet.reserve(kPacketHeaderSize + payload.size());
-    write_pod(&packet, kPacketMagic);
-    write_pod(&packet, kPacketVersion);
-    write_pod(&packet, type);
-    write_pod<std::uint32_t>(&packet, static_cast<std::uint32_t>(payload.size()));
-    packet.insert(packet.end(), payload.begin(), payload.end());
+    const std::vector<std::uint8_t> packet = make_packet(type, payload);
 
     if (!send_all(socket_fd_, packet.data(), packet.size())) {
         last_error_ = socket_error_message("send failed");
@@ -877,6 +989,12 @@ bool LiveViewStreamServer::accept_client() {
 
     close_client();
     client_fd_ = fd;
+    const std::vector<std::uint8_t> hello_packet = make_packet(kPacketHello, {});
+    if (!send_all(client_fd_, hello_packet.data(), hello_packet.size())) {
+        last_error_ = socket_error_message("failed to send live viewer handshake");
+        close_client();
+        return false;
+    }
     if (!set_nonblocking(client_fd_)) {
         last_error_ = socket_error_message("failed to set client non-blocking");
         close_client();
@@ -960,6 +1078,7 @@ bool LiveViewStreamServer::parse_next_packet(PollResult* result) {
         LiveSceneSnapshot scene;
         if (!deserialize_scene(payload, &scene)) {
             last_error_ = "failed to decode live scene snapshot";
+            close_client();
             return false;
         }
         result->scene_received = true;
@@ -970,6 +1089,7 @@ bool LiveViewStreamServer::parse_next_packet(PollResult* result) {
         LiveFrameSnapshot frame;
         if (!deserialize_frame(payload, &frame)) {
             last_error_ = "failed to decode live frame snapshot";
+            close_client();
             return false;
         }
         result->frame_received = true;
@@ -978,6 +1098,7 @@ bool LiveViewStreamServer::parse_next_packet(PollResult* result) {
     }
 
     last_error_ = "unknown live stream packet type";
+    close_client();
     return false;
 }
 

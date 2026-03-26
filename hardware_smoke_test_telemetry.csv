@@ -1,0 +1,1 @@
+time_s,phase,cmd_left,cmd_right,controller_ready,pwm_left,pwm_right,target_pwm_left,target_pwm_right,ticks_left,ticks_right,delta_left,delta_right,ekf_x,ekf_y,ekf_yaw_deg,ekf_speed,ekf_yaw_rate_dps,front_distance_m,min_scan_range_m,have_lidar,matched_pose,map_points

@@ -15,7 +15,7 @@ inline constexpr std::uint8_t kRspSof2 = 0x55;
 inline constexpr std::uint8_t kRspVersion = 0x01;
 inline constexpr std::size_t kRspHeaderLen = 6;
 inline constexpr std::size_t kRspFrameOverhead = 2 + kRspHeaderLen + 2;
-inline constexpr std::size_t kRspDefaultMaxPayload = 128;
+inline constexpr std::size_t kRspDefaultMaxPayload = 48;
 
 enum class MsgType : std::uint8_t {
     Ping = 0x01,
@@ -101,19 +101,26 @@ enum class ConfigParamId : std::uint8_t {
     SafetyTelemetryMs = 0x03,
     MotorTelemetryMs = 0x04,
     HeartbeatMs = 0x05,
-    IrAlertThreshold = 0x06,
-    FrontAlertCm = 0x07,
+    LegacyIrAlertThreshold = 0x06,
+    LegacyFrontAlertCm = 0x07,
     SlewStep = 0x08,
     SafetyBypass = 0x09,
+    EncoderTelemetryMs = 0x0A,
+    IrAlertThreshold = LegacyIrAlertThreshold,
+    FrontAlertCm = LegacyFrontAlertCm,
 };
 
 enum class SafetyFlag : std::uint16_t {
-    UltraValid = 1U << 0,
-    IrLeftAlert = 1U << 1,
-    IrRightAlert = 1U << 2,
-    FrontAlert = 1U << 3,
+    LegacyUltraValid = 1U << 0,
+    LegacyIrLeftAlert = 1U << 1,
+    LegacyIrRightAlert = 1U << 2,
+    LegacyFrontAlert = 1U << 3,
     CmdTimeout = 1U << 4,
     EmergencyStop = 1U << 5,
+    UltraValid = LegacyUltraValid,
+    IrLeftAlert = LegacyIrLeftAlert,
+    IrRightAlert = LegacyIrRightAlert,
+    FrontAlert = LegacyFrontAlert,
 };
 
 enum class MotorFlag : std::uint16_t {
@@ -126,13 +133,23 @@ enum class MotorFlag : std::uint16_t {
 
 enum class StatusFlag : std::uint16_t {
     ImuReady = 1U << 0,
-    UltraReady = 1U << 1,
-    IrReady = 1U << 2,
+    LegacyUltraReady = 1U << 1,
+    LegacyIrReady = 1U << 2,
     EncodersReady = 1U << 3,
     MotorsReady = 1U << 4,
     Calibrating = 1U << 5,
     FaultLatched = 1U << 6,
     HostLinkOk = 1U << 7,
+    UltraReady = LegacyUltraReady,
+    IrReady = LegacyIrReady,
+};
+
+enum class EncoderFlag : std::uint16_t {
+    LeftValid = 1U << 0,
+    RightValid = 1U << 1,
+    LeftDirNeg = 1U << 2,
+    RightDirNeg = 1U << 3,
+    OverflowWarn = 1U << 4,
 };
 
 class ProtocolError : public std::runtime_error {

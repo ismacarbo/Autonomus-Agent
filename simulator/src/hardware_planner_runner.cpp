@@ -206,24 +206,56 @@ double curvature_from_steer(const VehicleGeometry& geometry, double steer_angle)
         geometry.max_curvature);
 }
 
+std::vector<ReferenceWaypoint> build_reference_waypoints(const std::vector<Vec2>& points, double speed_ref) {
+    std::vector<ReferenceWaypoint> reference;
+    if (points.size() < 2) {
+        return reference;
+    }
+
+    reference.reserve(points.size());
+    std::vector<double> headings(points.size(), 0.0);
+    for (size_t i = 0; i < points.size(); ++i) {
+        const Vec2 prev = points[i > 0 ? i - 1 : i];
+        const Vec2 next = points[i + 1 < points.size() ? i + 1 : i];
+        headings[i] = std::atan2(next.y - prev.y, next.x - prev.x);
+    }
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        double curvature = 0.0;
+        if (i > 0 && i + 1 < points.size()) {
+            const double ds = std::max(distance(points[i + 1], points[i - 1]) * 0.5, 1e-3);
+            curvature = wrap_angle(headings[i + 1] - headings[i - 1]) / ds;
+        }
+        reference.push_back({
+            points[i],
+            headings[i],
+            curvature,
+            speed_ref,
+        });
+    }
+    return reference;
+}
+
 std::vector<ReferenceWaypoint> build_reference_waypoints(const clothoid_info& clothoid,
                                                          double s_start,
                                                          double s_end,
                                                          int sample_count,
-                                                         double speed_ref) {
+                                                         double speed_ref,
+                                                         bool wrap_loop = false) {
     std::vector<ReferenceWaypoint> reference;
     if (!(s_end > s_start + 1e-4) || sample_count < 2) {
         return reference;
     }
 
+    const double road_length = std::max(clothoid.end_point_s, 1e-6);
     reference.reserve(static_cast<size_t>(sample_count));
     for (int i = 0; i < sample_count; ++i) {
         const double alpha =
             sample_count > 1 ? static_cast<double>(i) / static_cast<double>(sample_count - 1) : 0.0;
-        const double s = clamp_value(
-            s_start + alpha * (s_end - s_start),
-            0.0,
-            clothoid.end_point_s);
+        const double sample_s = s_start + alpha * (s_end - s_start);
+        const double s = wrap_loop
+                             ? wrap_arc_length(sample_s, road_length)
+                             : clamp_value(sample_s, 0.0, clothoid.end_point_s);
         double x = 0.0;
         double y = 0.0;
         clothoid.prev_road.eval(s, x, y);
@@ -272,6 +304,19 @@ double planner_speed_limit(double cruise_speed_limit, double curvature) {
 
     const double curvature_limit = 1.5 * std::pow(std::abs(curvature), -1.0 / 3.0);
     return clamp_value(curvature_limit, 0.15, cruise_speed_limit);
+}
+
+bool is_finite_pair(double a, double b) {
+    return std::isfinite(a) && std::isfinite(b);
+}
+
+bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
+    return points.size() >= 3 && distance(points.front(), points.back()) <= threshold;
+}
+
+bool structured_road_is_closed_loop(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::StructuredRoad &&
+           points_form_closed_loop(world.road_centerline(), 0.45);
 }
 
 }  // namespace
@@ -355,6 +400,11 @@ void HardwarePlannerRunner::reset() {
     lidar_compute_ms_ = 0.0;
     estimator_compute_ms_ = 0.0;
     step_compute_ms_ = 0.0;
+    structured_goal_progress_target_ = 0.0;
+    structured_progress_s_ = 0.0;
+    structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
+    structured_goal_position_ = world_.start();
+    structured_goal_ready_ = false;
     chosen_gate_index_ = -1;
     goal_reached_ = false;
     safety_stop_active_ = false;
@@ -376,6 +426,7 @@ void HardwarePlannerRunner::reset() {
     last_mpc_command_.reset();
 
     initialize_planner_state();
+    sync_road_from_world();
     estimator_.set_geometry(geometry_);
     estimator_.reset(world_.start(), world_.start_heading());
     reset_pose(world_.start(), world_.start_heading());
@@ -399,20 +450,31 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     sync_gate_specs_from_world(true);
     refresh_gate_diagnostics();
     update_selected_trajectory();
+    if (structured_road_is_closed_loop(world_)) {
+        distance_to_goal_ = structured_goal_ready_ ? structured_goal_progress_target_ : cl_.end_point_s;
+    } else {
+        distance_to_goal_ = distance(position, world_.goal());
+    }
 }
 
 void HardwarePlannerRunner::initialize_planner_state() {
+    const Rect& bounds = world_.bounds();
+    const double world_width = std::max(bounds.max_x - bounds.min_x, 0.0);
+    const double world_height = std::max(bounds.max_y - bounds.min_y, 0.0);
+    const double world_span = std::max(world_width, world_height);
+    const bool compact_world = world_span <= 5.0;
+
     sim_ = {};
-    sim_.W = 3.0;
-    sim_.T_max = 20.0;
-    sim_.la = 8.0;
-    sim_.la_stop = 18.0;
+    sim_.W = compact_world ? 0.90 : 3.0;
+    sim_.T_max = compact_world ? 8.0 : 20.0;
+    sim_.la = compact_world ? 1.20 : 8.0;
+    sim_.la_stop = compact_world ? 2.40 : 18.0;
     sim_.z_coord = 0.1;
     sim_.veh_W = geometry_.body_width;
     sim_.veh_L = geometry_.body_length;
-    sim_.end_sim = 200.0;
-    sim_.tol_obst = 0.25;
-    sim_.lat_tol = 0.2;
+    sim_.end_sim = compact_world ? std::max(world_span * 4.0, 6.0) : 200.0;
+    sim_.tol_obst = compact_world ? 0.18 : 0.25;
+    sim_.lat_tol = compact_world ? 0.12 : 0.2;
     sim_.DT = static_cast<float>(config_.nominal_dt);
     sim_.V_max = config_.cruise_speed_limit;
 
@@ -449,8 +511,29 @@ void HardwarePlannerRunner::initialize_gates() {
     }
 }
 
+void HardwarePlannerRunner::sync_road_from_world() {
+    if (world_.environment_mode() != EnvironmentMode::StructuredRoad || world_.road_centerline().size() < 2) {
+        road_.reset();
+        return;
+    }
+
+    road_ = std::make_unique<road_info>(static_cast<int>(world_.road_centerline().size()));
+    road_->n_points = static_cast<int>(world_.road_centerline().size());
+    road_->points_x.resize(world_.road_centerline().size());
+    road_->points_y.resize(world_.road_centerline().size());
+    for (size_t i = 0; i < world_.road_centerline().size(); ++i) {
+        road_->points_x[i] = world_.road_centerline()[i].x;
+        road_->points_y[i] = world_.road_centerline()[i].y;
+    }
+    road_->current_cloth = cl_;
+}
+
 void HardwarePlannerRunner::sync_gate_specs_from_world(bool reset_flags) {
     const std::vector<GateSpec>& specs = world_.gates();
+    if (world_.environment_mode() != EnvironmentMode::UnstructuredGates) {
+        gates_.clear();
+        return;
+    }
     if (reset_flags || gates_.size() != specs.size()) {
         initialize_gates();
         return;
@@ -561,6 +644,37 @@ void HardwarePlannerRunner::plan_if_needed() {
     }
 
     update_speed_limit();
+    if (world_.environment_mode() == EnvironmentMode::StructuredRoad && road_ != nullptr) {
+        std::vector<double> commands = sel_jr(
+            false,
+            step_count_,
+            true,
+            road_.get(),
+            false,
+            nullptr,
+            sim_,
+            x0_,
+            g_x0_,
+            cl_,
+            null_stream_,
+            null_stream_,
+            null_stream_);
+
+        double next_j = commands.size() > 0 ? commands[0] : 0.0;
+        double next_r = commands.size() > 1 ? commands[1] : 0.0;
+        if (!is_finite_pair(next_j, next_r)) {
+            next_j = 0.0;
+            next_r = 0.0;
+        }
+
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        last_j_ = clamp_value(next_j, -3.5, 2.5);
+        last_r_ = clamp_value(next_r, -1.4, 1.4);
+        update_selected_trajectory();
+        return;
+    }
+
     const std::vector<int> active_indices = active_gate_indices();
     if (gates_.empty() || active_indices.empty()) {
         last_j_ = 0.0;
@@ -759,7 +873,9 @@ double HardwarePlannerRunner::score_candidate_pose(const Vec2& position,
 
     for (size_t i = 0; i < scan.size(); i += static_cast<size_t>(downsample)) {
         const RPLidarA1::ScanPoint& point = scan[i];
-        if (point.distance_m <= 0.0 || point.distance_m > config_.localization.max_range_m) {
+        if (point.distance_m <= 0.0 ||
+            point.distance_m < config_.localization.min_valid_range_m ||
+            point.distance_m > config_.localization.max_range_m) {
             continue;
         }
 
@@ -796,7 +912,7 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
 
     const Vec2 origin = lidar_origin_world(estimate_.position, estimate_.yaw, config_.localization);
     for (const RPLidarA1::ScanPoint& point : scan) {
-        if (point.distance_m <= 0.0) {
+        if (point.distance_m <= 0.0 || point.distance_m < config_.localization.min_valid_range_m) {
             continue;
         }
         const double angle_world = wrap_angle(
@@ -822,13 +938,24 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
         0.0,
         config_.cruise_speed_limit);
 
+    if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+        const double slowdown_radius = std::max(config_.goal_slowdown_radius_m, 0.25);
+        const double alpha = clamp_value(distance_to_goal_ / slowdown_radius, 0.0, 1.0);
+        double goal_speed_cap = 0.06 + alpha * (config_.cruise_speed_limit - 0.06);
+        if (distance_to_goal_ < std::max(config_.goal_tolerance_m * 2.0, 0.35)) {
+            goal_speed_cap = std::min(goal_speed_cap, 0.10);
+        }
+        planner_speed_ref_ = std::min(planner_speed_ref_, goal_speed_cap);
+        return;
+    }
+
     const int non_final_gate_count = std::max(static_cast<int>(world_.gates().size()) - 1, 0);
     if (count_passed_gates() >= non_final_gate_count && non_final_gate_count > 0) {
-        const double slowdown_radius = 4.0;
+        const double slowdown_radius = std::max(config_.goal_slowdown_radius_m, 0.25);
         const double alpha = clamp_value(distance_to_goal_ / slowdown_radius, 0.0, 1.0);
-        double goal_speed_cap = 0.08 + alpha * (config_.cruise_speed_limit - 0.08);
-        if (distance_to_goal_ < 1.5) {
-            goal_speed_cap = std::min(goal_speed_cap, 0.12);
+        double goal_speed_cap = 0.06 + alpha * (config_.cruise_speed_limit - 0.06);
+        if (distance_to_goal_ < std::max(config_.goal_tolerance_m * 2.0, 0.35)) {
+            goal_speed_cap = std::min(goal_speed_cap, 0.10);
         }
         planner_speed_ref_ = std::min(planner_speed_ref_, goal_speed_cap);
     }
@@ -837,18 +964,38 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
 void HardwarePlannerRunner::update_selected_trajectory() {
     planned_trajectory_.clear();
     reference_trajectory_.clear();
-    if (cl_.prev_road.num_segments() <= 0 || !(cl_.end_point_s > 0.0)) {
+    const bool has_planner_clothoid =
+        cl_.prev_road.num_segments() > 0 &&
+        std::isfinite(cl_.end_point_s) &&
+        cl_.end_point_s > 0.10;
+
+    if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
+        (!has_planner_clothoid || world_.road_centerline().size() < 2)) {
+        planned_trajectory_ = world_.road_centerline();
+        reference_trajectory_ = build_reference_waypoints(planned_trajectory_, planner_speed_ref_);
         return;
     }
 
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates && chosen_gate_index_ < 0) {
+        return;
+    }
+    if (!has_planner_clothoid) {
+        return;
+    }
+
+    const bool closed_structured_loop = structured_road_is_closed_loop(world_);
     double s_current = x0_.x;
     if (!std::isfinite(s_current)) {
         s_current = 0.0;
     }
-    s_current = clamp_value(std::max(0.0, s_current), 0.0, cl_.end_point_s);
+    if (closed_structured_loop) {
+        s_current = wrap_arc_length(s_current, cl_.end_point_s);
+    } else {
+        s_current = clamp_value(std::max(0.0, s_current), 0.0, cl_.end_point_s);
+    }
 
     double lateral_offset = 0.0;
-    if (!project_curvilinear_state(cl_, estimate_.position, s_current, false, &s_current, &lateral_offset)) {
+    if (!project_curvilinear_state(cl_, estimate_.position, s_current, closed_structured_loop, &s_current, &lateral_offset)) {
         double x_on_path = 0.0;
         double y_on_path = 0.0;
         cl_.prev_road.eval(s_current, x_on_path, y_on_path);
@@ -864,10 +1011,43 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     x0_.a = estimate_.accel;
     x0_.c = estimate_.curvature;
 
-    const double s_start = std::max(0.0, s_current);
-    double s_end = std::min(cl_.end_point_s, s_start + 22.0);
-    if (!(s_end > s_start + 0.10)) {
-        s_end = cl_.end_point_s;
+    if (closed_structured_loop) {
+        if (!structured_goal_ready_) {
+            const double goal_epsilon = std::clamp(0.02 * cl_.end_point_s, 0.25, 1.0);
+            structured_goal_progress_target_ = std::max(0.0, cl_.end_point_s - goal_epsilon);
+            structured_goal_position_ = world_.start();
+            structured_goal_ready_ = structured_goal_progress_target_ > 0.0;
+        }
+
+        if (!std::isfinite(structured_last_s_)) {
+            structured_last_s_ = s_current;
+            structured_progress_s_ = 0.0;
+        } else {
+            double delta_s = s_current - structured_last_s_;
+            if (delta_s < -0.5 * cl_.end_point_s) {
+                delta_s += cl_.end_point_s;
+            } else if (delta_s > 0.5 * cl_.end_point_s) {
+                delta_s -= cl_.end_point_s;
+            }
+            structured_progress_s_ = std::max(0.0, structured_progress_s_ + delta_s);
+            structured_last_s_ = s_current;
+        }
+    }
+
+    const bool unstructured = world_.environment_mode() == EnvironmentMode::UnstructuredGates;
+    const double lookahead_distance = unstructured ? 22.0 : (closed_structured_loop ? 14.0 : 18.0);
+    const int sample_count = unstructured ? 48 : (closed_structured_loop ? 64 : 36);
+    double s_start = closed_structured_loop ? wrap_arc_length(s_current, cl_.end_point_s) : std::max(0.0, s_current);
+    double s_end = 0.0;
+    if (closed_structured_loop) {
+        const double max_span = std::max(4.0, std::min(lookahead_distance, 0.75 * cl_.end_point_s));
+        s_end = s_start + max_span;
+    } else {
+        s_end = std::min(cl_.end_point_s, s_start + lookahead_distance);
+        if (!(s_end > s_start + 0.10)) {
+            s_start = std::max(0.0, cl_.end_point_s - 0.75);
+            s_end = cl_.end_point_s;
+        }
     }
     if (!(s_end > s_start + 0.10)) {
         return;
@@ -877,8 +1057,9 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         cl_,
         s_start,
         s_end,
-        48,
-        planner_speed_ref_);
+        sample_count,
+        planner_speed_ref_,
+        closed_structured_loop);
     planned_trajectory_ = extract_reference_positions(reference_trajectory_);
 }
 
@@ -1006,7 +1187,8 @@ void HardwarePlannerRunner::push_history() {
 double HardwarePlannerRunner::compute_min_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const {
     double min_range = config_.localization.max_range_m;
     for (const RPLidarA1::ScanPoint& point : scan) {
-        if (point.distance_m > 0.0) {
+        if (point.distance_m >= config_.localization.min_valid_range_m &&
+            point.distance_m <= config_.localization.max_range_m) {
             min_range = std::min(min_range, point.distance_m);
         }
     }
@@ -1016,7 +1198,9 @@ double HardwarePlannerRunner::compute_min_lidar_distance(const std::vector<RPLid
 double HardwarePlannerRunner::compute_front_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const {
     double min_range = config_.localization.max_range_m;
     for (const RPLidarA1::ScanPoint& point : scan) {
-        if (point.distance_m <= 0.0) {
+        if (point.distance_m <= 0.0 ||
+            point.distance_m < config_.localization.min_valid_range_m ||
+            point.distance_m > config_.localization.max_range_m) {
             continue;
         }
         const double local_angle = wrap_angle(config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
@@ -1105,8 +1289,21 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
 
     sim_time_ += bounded_dt;
     ++step_count_;
-    distance_to_goal_ = distance(estimate_.position, world_.goal());
-    goal_reached_ = distance_to_goal_ < 0.75 && std::abs(estimate_.speed) < 0.15;
+    if (structured_road_is_closed_loop(world_)) {
+        const double goal_position_distance =
+            distance(estimate_.position, structured_goal_ready_ ? structured_goal_position_ : world_.start());
+        distance_to_goal_ = structured_goal_ready_
+                                ? std::max(structured_goal_progress_target_ - structured_progress_s_, 0.0)
+                                : cl_.end_point_s;
+        const double progress_margin = std::max(0.8, 0.03 * std::max(cl_.end_point_s, 1.0));
+        goal_reached_ = structured_goal_ready_ &&
+                        structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
+                        goal_position_distance < 0.75;
+    } else {
+        distance_to_goal_ = distance(estimate_.position, world_.goal());
+        goal_reached_ = distance_to_goal_ < config_.goal_tolerance_m &&
+                        std::abs(estimate_.speed) < config_.goal_stop_speed_mps;
+    }
     step_compute_ms_ = elapsed_ms(step_start, std::chrono::steady_clock::now());
     push_history();
 

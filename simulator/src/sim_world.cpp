@@ -583,7 +583,9 @@ const char* unstructured_map_preset_name(UnstructuredMapPreset preset) {
         case UnstructuredMapPreset::LowerBypass:
             return "Lower Bypass";
         case UnstructuredMapPreset::Custom:
-            return "Custom";
+            return "Manual Gate Editor";
+        case UnstructuredMapPreset::HardwareLab:
+            return "Hardware Lab";
         default:
             return "Unknown";
     }
@@ -599,6 +601,8 @@ const char* structured_map_preset_name(StructuredMapPreset preset) {
             return "Zig-Zag";
         case StructuredMapPreset::Custom:
             return "Custom";
+        case StructuredMapPreset::HardwareTrack:
+            return "Hardware Track";
         default:
             return "Unknown";
     }
@@ -649,7 +653,6 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
 
     switch (preset) {
         case UnstructuredMapPreset::RobotValidation:
-        case UnstructuredMapPreset::Custom:
             world.obstacles_ = {
                 {10.0, 0.0, 12.0, 7.0},
                 {10.0, 15.0, 12.0, 24.0},
@@ -662,6 +665,16 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
                 {"upper_bypass", {17.4, 17.8}, {17.4, 17.8}, {0.32, 0.22}, 0.05, 1.40, 0.0, false},
                 {"exit_gap", {28.4, 16.2}, {28.4, 16.2}, {0.22, 0.40}, 0.06, 2.20, 0.0, false},
                 {"goal_approach", {33.0, 18.5}, {33.0, 18.5}, {0.32, 0.28}, 0.05, 2.90, 0.0, false},
+                {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+            };
+            break;
+        case UnstructuredMapPreset::Custom:
+            world.bounds_ = {0.0, 0.0, 2.0, 2.0};
+            world.start_ = {0.24, 1.00};
+            world.goal_ = {1.76, 1.00};
+            world.start_heading_ = 0.0;
+            world.obstacles_.clear();
+            world.gate_templates_ = {
                 {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
             };
             break;
@@ -713,6 +726,24 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
                 {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
             };
             break;
+        case UnstructuredMapPreset::HardwareLab:
+            world.bounds_ = {0.0, 0.0, 2.20, 2.00};
+            world.start_ = {0.28, 1.00};
+            world.goal_ = {1.94, 1.44};
+            world.start_heading_ = 0.0;
+            world.obstacles_ = {
+                {1.02, 0.78, 1.30, 1.22},
+                {1.60, 0.00, 1.82, 0.60},
+                {1.60, 1.28, 1.82, 2.00},
+            };
+            world.gate_templates_ = {
+                {"gate_entry", {0.92, 1.00}, {0.92, 1.00}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"upper_bypass", {1.26, 1.46}, {1.26, 1.46}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"exit_align", {1.56, 1.04}, {1.56, 1.04}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"goal_approach", {1.86, 1.18}, {1.86, 1.18}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+            };
+            break;
         default:
             break;
     }
@@ -748,6 +779,28 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.road_centerline_ = close_polyline_loop(make_zigzag_road(), 0.45);
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
+            world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+            break;
+        case StructuredMapPreset::HardwareTrack:
+            world.bounds_ = {0.0, 0.0, 2.0, 2.0};
+            world.obstacles_ = {
+                {1.08, 0.82, 1.30, 1.08},
+            };
+            world.road_centerline_ = {
+                {0.26, 1.00},
+                {0.40, 1.06},
+                {0.56, 1.14},
+                {0.72, 1.24},
+                {0.90, 1.36},
+                {1.08, 1.48},
+                {1.28, 1.46},
+                {1.44, 1.30},
+                {1.58, 1.12},
+                {1.74, 1.00},
+                {1.86, 0.96},
+            };
+            world.start_ = world.road_centerline_.front();
+            world.goal_ = world.road_centerline_.back();
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         default:

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <fstream>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -47,23 +49,27 @@ struct MotorPwmMapperConfig {
 struct LidarLocalizationConfig {
     int min_scan_points = 80;
     int scan_downsample = 6;
-    double max_range_m = 8.0;
+    double max_range_m = 3.0;
+    double min_valid_range_m = 0.12;
     double lidar_x_offset = 0.0;
     double lidar_y_offset = 0.0;
     double lidar_yaw_offset = 0.0;
-    double xy_search_window_m = 0.45;
-    double xy_search_step_m = 0.15;
-    double yaw_search_window_rad = 0.10;
-    double yaw_search_step_rad = 0.04;
-    double front_sector_half_angle_rad = 0.60;
-    double obstacle_stop_distance_m = 0.35;
+    double xy_search_window_m = 0.20;
+    double xy_search_step_m = 0.08;
+    double yaw_search_window_rad = 0.08;
+    double yaw_search_step_rad = 0.03;
+    double front_sector_half_angle_rad = 0.35;
+    double obstacle_stop_distance_m = 0.28;
 };
 
 struct HardwarePlannerConfig {
     double nominal_dt = 0.10;
     int control_interval_steps = 1;
     int max_history = 2400;
-    double cruise_speed_limit = 0.75;
+    double cruise_speed_limit = 0.22;
+    double goal_tolerance_m = 0.22;
+    double goal_stop_speed_mps = 0.10;
+    double goal_slowdown_radius_m = 0.90;
     bool auto_set_autonomous_mode = true;
     bool auto_gyro_zero = true;
     DifferentialDriveGeometry drive{};
@@ -191,6 +197,7 @@ class HardwarePlannerRunner {
   private:
     void initialize_planner_state();
     void initialize_gates();
+    void sync_road_from_world();
     void sync_gate_specs_from_world(bool reset_flags);
     void sync_planner_from_estimate(bool reset_relative_state);
     void update_speed_limit();
@@ -226,6 +233,7 @@ class HardwarePlannerRunner {
     clothoid_info cl_{};
     KinematicBicycleEkf estimator_{};
     KinematicBicycleMpcFollower mpc_follower_{};
+    std::unique_ptr<road_info> road_;
 
     std::vector<gate> gates_;
     std::vector<LidarHit> lidar_hits_;
@@ -261,6 +269,11 @@ class HardwarePlannerRunner {
     std::int32_t last_left_encoder_ticks_ = 0;
     std::int32_t last_right_encoder_ticks_ = 0;
     int chosen_gate_index_ = -1;
+    double structured_goal_progress_target_ = 0.0;
+    double structured_progress_s_ = 0.0;
+    double structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
+    Vec2 structured_goal_position_{};
+    bool structured_goal_ready_ = false;
     bool yaw_offset_initialized_ = false;
     bool have_raw_imu_yaw_ = false;
     bool encoder_ticks_initialized_ = false;
