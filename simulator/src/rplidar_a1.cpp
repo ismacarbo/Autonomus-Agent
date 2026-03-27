@@ -12,6 +12,9 @@ namespace thesis_sim {
 
 namespace {
 
+constexpr int kMotorWarmupMs = 350;
+constexpr int kStartScanRetryCount = 3;
+
 std::string bytes_to_hex(const std::vector<std::uint8_t>& data) {
     std::ostringstream oss;
     oss << std::uppercase << std::hex << std::setfill('0');
@@ -190,7 +193,7 @@ void RPLidarA1::start_motor() {
     serial_.set_dtr(false);
     set_motor_pwm(motor_pwm_);
     motor_running_ = true;
-    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    std::this_thread::sleep_for(std::chrono::milliseconds(kMotorWarmupMs));
 }
 
 void RPLidarA1::stop_motor() {
@@ -207,13 +210,40 @@ void RPLidarA1::start_scan(bool force) {
         start_motor();
     }
 
-    serial_.reset_input_buffer();
-    send_command(force ? kCmdForceScan : kCmdScan);
-    const Descriptor descriptor = read_descriptor(2.0);
-    if (descriptor.size != 5) {
-        throw LidarError("Unexpected scan descriptor size: " + std::to_string(descriptor.size));
+    std::string last_error;
+    for (int attempt = 0; attempt < kStartScanRetryCount; ++attempt) {
+        const bool use_force_scan = force || attempt > 0;
+        try {
+            if (attempt > 0) {
+                try {
+                    send_command(kCmdStop);
+                } catch (const LidarError&) {
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(60 + attempt * 40));
+            }
+
+            serial_.reset_input_buffer();
+            send_command(use_force_scan ? kCmdForceScan : kCmdScan);
+            const Descriptor descriptor = read_descriptor(2.5 + 0.5 * static_cast<double>(attempt));
+            if (descriptor.size != 5) {
+                throw LidarError("Unexpected scan descriptor size: " + std::to_string(descriptor.size));
+            }
+            scanning_ = true;
+            return;
+        } catch (const LidarError& e) {
+            last_error = e.what();
+            scanning_ = false;
+            try {
+                serial_.reset_input_buffer();
+            } catch (const SerialError&) {
+            }
+            if (attempt + 1 < kStartScanRetryCount) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(120 + attempt * 80));
+            }
+        }
     }
-    scanning_ = true;
+
+    throw LidarError("Unable to start scan on " + port_ + ": " + last_error);
 }
 
 void RPLidarA1::stop_scan(bool stop_motor_after) {

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iostream>
 #include <utility>
 
 namespace thesis_sim {
@@ -35,13 +36,24 @@ RealRobotBridge::RealRobotBridge(Options options)
       lidar_(options_.lidar_port, options_.lidar_baudrate, options_.lidar_timeout_s, options_.lidar_motor_pwm) {}
 
 void RealRobotBridge::connect(bool start_lidar_scan) {
+    last_lidar_error_.clear();
     if (!options_.controller.port.empty()) {
         controller_.connect();
     }
     if (!options_.lidar_port.empty()) {
-        lidar_.connect();
-        if (start_lidar_scan) {
-            lidar_.start_scan();
+        try {
+            lidar_.connect();
+            if (start_lidar_scan) {
+                lidar_.start_scan();
+            }
+        } catch (const LidarError& e) {
+            last_lidar_error_ = e.what();
+            if (lidar_.is_connected()) {
+                lidar_.disconnect();
+            }
+            refresh_lidar_snapshot({});
+            std::cerr << "hardware_runner_warning=LiDAR unavailable, continuing without live scan: "
+                      << last_lidar_error_ << '\n';
         }
     }
     refresh_observation_timestamp();
@@ -68,12 +80,25 @@ void RealRobotBridge::poll_controller(double timeout_s) {
 
 std::vector<RPLidarA1::ScanPoint> RealRobotBridge::read_lidar_scan(int min_points) {
     if (!lidar_.is_connected() || !lidar_.scanning()) {
+        refresh_lidar_snapshot({});
         return {};
     }
-    std::vector<RPLidarA1::ScanPoint> scan = lidar_.grab_scan(min_points);
-    refresh_lidar_snapshot(scan);
-    refresh_observation_timestamp();
-    return scan;
+    try {
+        std::vector<RPLidarA1::ScanPoint> scan = lidar_.grab_scan(min_points);
+        last_lidar_error_.clear();
+        refresh_lidar_snapshot(scan);
+        refresh_observation_timestamp();
+        return scan;
+    } catch (const LidarError& e) {
+        last_lidar_error_ = e.what();
+        refresh_lidar_snapshot({});
+        if (lidar_.is_connected()) {
+            lidar_.disconnect();
+        }
+        std::cerr << "hardware_runner_warning=LiDAR stream lost, continuing without live scan: "
+                  << last_lidar_error_ << '\n';
+        return {};
+    }
 }
 
 void RealRobotBridge::pump(double controller_timeout_s, int lidar_min_points, bool fetch_lidar) {
