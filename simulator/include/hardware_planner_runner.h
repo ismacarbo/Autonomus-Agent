@@ -44,6 +44,10 @@ struct MotorPwmMapperConfig {
     double right_scale = 1.00;
     double linear_feedback_gain = 75.0;
     double yaw_feedback_gain = 35.0;
+    int start_motion_pwm = 110;
+    double stall_speed_threshold_mps = 0.025;
+    double stall_target_speed_threshold_mps = 0.08;
+    int stall_boost_after_cycles = 3;
 };
 
 struct LidarLocalizationConfig {
@@ -277,6 +281,7 @@ class HardwarePlannerRunner {
     bool yaw_offset_initialized_ = false;
     bool have_raw_imu_yaw_ = false;
     bool encoder_ticks_initialized_ = false;
+    int no_motion_command_cycles_ = 0;
     bool connected_ = false;
     bool telemetry_ready_ = false;
     bool goal_reached_ = false;

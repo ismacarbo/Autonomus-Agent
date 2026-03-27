@@ -73,6 +73,36 @@ Vec2 lidar_origin_world(const Vec2& base_position, double base_yaw, const LidarL
     return {base_position.x + rotated.x, base_position.y + rotated.y};
 }
 
+int signum(int value) {
+    return (value > 0) - (value < 0);
+}
+
+void apply_start_motion_boost(int min_pwm, int* pwm_left, int* pwm_right) {
+    if (min_pwm <= 0 || pwm_left == nullptr || pwm_right == nullptr) {
+        return;
+    }
+
+    constexpr int kActiveThreshold = 4;
+    int active_min = std::numeric_limits<int>::max();
+    if (std::abs(*pwm_left) > kActiveThreshold) {
+        active_min = std::min(active_min, std::abs(*pwm_left));
+    }
+    if (std::abs(*pwm_right) > kActiveThreshold) {
+        active_min = std::min(active_min, std::abs(*pwm_right));
+    }
+    if (active_min == std::numeric_limits<int>::max() || active_min >= min_pwm) {
+        return;
+    }
+
+    const int delta = min_pwm - active_min;
+    if (std::abs(*pwm_left) > kActiveThreshold) {
+        *pwm_left = std::clamp(*pwm_left + signum(*pwm_left) * delta, -255, 255);
+    }
+    if (std::abs(*pwm_right) > kActiveThreshold) {
+        *pwm_right = std::clamp(*pwm_right + signum(*pwm_right) * delta, -255, 255);
+    }
+}
+
 VehicleGeometry make_vehicle_geometry(const HardwarePlannerConfig& config) {
     VehicleGeometry geometry{};
     geometry.wheelbase = config.drive.wheelbase;
@@ -416,6 +446,7 @@ void HardwarePlannerRunner::reset() {
     yaw_offset_initialized_ = false;
     have_raw_imu_yaw_ = false;
     encoder_ticks_initialized_ = false;
+    no_motion_command_cycles_ = 0;
     history_.clear();
     trail_.clear();
     planned_trajectory_.clear();
@@ -1145,6 +1176,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         static_cast<double>(ff_right + fb_linear + fb_yaw),
         -config_.pwm.max_pwm,
         config_.pwm.max_pwm));
+
+    const bool demanding_forward_motion =
+        !safety_stop_active_ &&
+        last_command_.target_speed >= config_.pwm.stall_target_speed_threshold_mps;
+    const bool robot_is_still =
+        std::abs(estimate_.speed) <= config_.pwm.stall_speed_threshold_mps;
+    if (demanding_forward_motion && robot_is_still) {
+        ++no_motion_command_cycles_;
+    } else {
+        no_motion_command_cycles_ = 0;
+    }
+
+    if (no_motion_command_cycles_ >= config_.pwm.stall_boost_after_cycles) {
+        apply_start_motion_boost(
+            std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
+            &last_command_.pwm_left,
+            &last_command_.pwm_right);
+    }
 }
 
 void HardwarePlannerRunner::push_history() {
@@ -1312,7 +1361,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             static_cast<std::int16_t>(last_command_.pwm_left),
             static_cast<std::int16_t>(last_command_.pwm_right),
             false,
-            MotorControlMode::DirectPwm);
+            MotorControlMode::SafeDirectPwm);
     }
 }
 
