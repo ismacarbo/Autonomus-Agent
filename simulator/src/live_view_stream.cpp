@@ -21,7 +21,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 3U;
+constexpr std::uint16_t kPacketVersion = 4U;
 constexpr std::uint16_t kPacketHello = 0U;
 constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
@@ -402,6 +402,13 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.estimator_ms);
     write_pod(out, sample.step_ms);
     write_pod(out, sample.visible_gates);
+    write_pod(out, sample.lidar_samples);
+    write_pod(out, sample.close_lidar_samples);
+    write_pod(out, sample.front_close_lidar_samples);
+    write_pod(out, sample.candidate_gates);
+    write_pod(out, sample.chosen_gate_distance);
+    write_pod(out, sample.accumulated_lidar_points);
+    write_pod(out, sample.no_motion_cycles);
     write_pod(out, sample.pwm_left);
     write_pod(out, sample.pwm_right);
 }
@@ -429,6 +436,13 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->estimator_ms) &&
            read_pod(data, offset, &sample->step_ms) &&
            read_pod(data, offset, &sample->visible_gates) &&
+           read_pod(data, offset, &sample->lidar_samples) &&
+           read_pod(data, offset, &sample->close_lidar_samples) &&
+           read_pod(data, offset, &sample->front_close_lidar_samples) &&
+           read_pod(data, offset, &sample->candidate_gates) &&
+           read_pod(data, offset, &sample->chosen_gate_distance) &&
+           read_pod(data, offset, &sample->accumulated_lidar_points) &&
+           read_pod(data, offset, &sample->no_motion_cycles) &&
            read_pod(data, offset, &sample->pwm_left) &&
            read_pod(data, offset, &sample->pwm_right);
 }
@@ -489,14 +503,24 @@ std::vector<std::uint8_t> serialize_frame(const LiveFrameSnapshot& frame) {
     write_bool(&out, frame.telemetry_ready);
     write_bool(&out, frame.goal_reached);
     write_bool(&out, frame.safety_stop_active);
+    write_bool(&out, frame.dynamic_gap_gates);
+    write_bool(&out, frame.planner_has_reference);
+    write_bool(&out, frame.stall_boost_active);
     write_pod(&out, frame.distance_to_goal);
     write_pod(&out, frame.min_lidar_distance);
     write_pod(&out, frame.front_lidar_distance);
+    write_pod(&out, frame.chosen_gate_distance);
     write_pod(&out, frame.last_j);
     write_pod(&out, frame.last_r);
     write_pod(&out, frame.planner_speed_ref);
     write_pod(&out, frame.tracker_cross_track_error);
     write_pod(&out, frame.tracker_heading_error_deg);
+    write_pod(&out, frame.valid_lidar_samples);
+    write_pod(&out, frame.close_lidar_samples);
+    write_pod(&out, frame.front_close_lidar_samples);
+    write_pod(&out, frame.candidate_gates);
+    write_pod(&out, frame.accumulated_lidar_points);
+    write_pod(&out, frame.no_motion_command_cycles);
     write_pod(&out, frame.chosen_gate_index);
     write_vehicle_state(&out, frame.vehicle);
     write_vec2(&out, frame.navigation_position);
@@ -536,14 +560,24 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
         !read_bool(data, &offset, &parsed.telemetry_ready) ||
         !read_bool(data, &offset, &parsed.goal_reached) ||
         !read_bool(data, &offset, &parsed.safety_stop_active) ||
+        !read_bool(data, &offset, &parsed.dynamic_gap_gates) ||
+        !read_bool(data, &offset, &parsed.planner_has_reference) ||
+        !read_bool(data, &offset, &parsed.stall_boost_active) ||
         !read_pod(data, &offset, &parsed.distance_to_goal) ||
         !read_pod(data, &offset, &parsed.min_lidar_distance) ||
         !read_pod(data, &offset, &parsed.front_lidar_distance) ||
+        !read_pod(data, &offset, &parsed.chosen_gate_distance) ||
         !read_pod(data, &offset, &parsed.last_j) ||
         !read_pod(data, &offset, &parsed.last_r) ||
         !read_pod(data, &offset, &parsed.planner_speed_ref) ||
         !read_pod(data, &offset, &parsed.tracker_cross_track_error) ||
         !read_pod(data, &offset, &parsed.tracker_heading_error_deg) ||
+        !read_pod(data, &offset, &parsed.valid_lidar_samples) ||
+        !read_pod(data, &offset, &parsed.close_lidar_samples) ||
+        !read_pod(data, &offset, &parsed.front_close_lidar_samples) ||
+        !read_pod(data, &offset, &parsed.candidate_gates) ||
+        !read_pod(data, &offset, &parsed.accumulated_lidar_points) ||
+        !read_pod(data, &offset, &parsed.no_motion_command_cycles) ||
         !read_pod(data, &offset, &parsed.chosen_gate_index) ||
         !read_vehicle_state(data, &offset, &parsed.vehicle) ||
         !read_vec2(data, &offset, &parsed.navigation_position) ||
@@ -1034,14 +1068,25 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     frame.telemetry_ready = runner.telemetry_ready();
     frame.goal_reached = runner.goal_reached();
     frame.safety_stop_active = runner.safety_stop_active();
+    frame.dynamic_gap_gates = runner.diagnostics().dynamic_gap_gates;
+    frame.planner_has_reference = runner.diagnostics().planner_has_reference;
+    frame.stall_boost_active = runner.diagnostics().stall_boost_active;
     frame.distance_to_goal = runner.distance_to_goal();
     frame.min_lidar_distance = runner.estimate().min_lidar_distance;
     frame.front_lidar_distance = runner.estimate().front_lidar_distance;
+    frame.chosen_gate_distance =
+        std::isfinite(runner.diagnostics().chosen_gate_distance) ? runner.diagnostics().chosen_gate_distance : -1.0;
     frame.last_j = runner.last_j();
     frame.last_r = runner.last_r();
     frame.planner_speed_ref = runner.planner_speed_reference();
     frame.tracker_cross_track_error = runner.tracker_cross_track_error();
     frame.tracker_heading_error_deg = runner.tracker_heading_error_deg();
+    frame.valid_lidar_samples = runner.diagnostics().valid_lidar_points;
+    frame.close_lidar_samples = runner.diagnostics().close_lidar_points;
+    frame.front_close_lidar_samples = runner.diagnostics().front_close_lidar_points;
+    frame.candidate_gates = runner.diagnostics().candidate_gates;
+    frame.accumulated_lidar_points = runner.diagnostics().accumulated_lidar_points;
+    frame.no_motion_command_cycles = runner.diagnostics().no_motion_command_cycles;
     frame.chosen_gate_index = runner.chosen_gate_index();
     frame.navigation_position = runner.estimate().position;
     frame.navigation_yaw = runner.estimate().yaw;
@@ -1052,6 +1097,7 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     frame.visible_gate_indices = runner.visible_gate_indices();
     frame.trail = runner.trail();
     frame.planned_trajectory = runner.planned_trajectory();
+    frame.slam_points = runner.lidar_map_points();
     frame.lidar_hits = runner.lidar_hits();
 
     const HardwarePlannerEstimate& estimate = runner.estimate();
@@ -1080,12 +1126,12 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     frame.vehicle.left_pwm = command.pwm_left;
     frame.vehicle.right_pwm = command.pwm_right;
 
-    const auto& world_gates = runner.world().gates();
+    const auto& runtime_gate_specs = runner.gate_specs();
     const auto& planner_gates = runner.gates();
-    frame.gates.reserve(world_gates.size());
-    for (std::size_t i = 0; i < world_gates.size(); ++i) {
+    frame.gates.reserve(runtime_gate_specs.size());
+    for (std::size_t i = 0; i < runtime_gate_specs.size(); ++i) {
         LiveGateFrame gate_frame;
-        gate_frame.spec = world_gates[i];
+        gate_frame.spec = runtime_gate_specs[i];
         if (i < planner_gates.size()) {
             gate_frame.passed = planner_gates[i].passed;
         }

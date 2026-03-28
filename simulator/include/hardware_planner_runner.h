@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "action_selection.h"
@@ -66,6 +67,19 @@ struct LidarLocalizationConfig {
     double obstacle_stop_distance_m = 0.28;
 };
 
+struct GapExtractionConfig {
+    bool enabled = true;
+    double free_distance_threshold_m = 0.55;
+    double min_gap_width_m = 0.38;
+    double min_gap_angle_rad = 0.16;
+    double target_distance_scale = 0.72;
+    double min_target_distance_m = 0.45;
+    double max_target_distance_m = 1.35;
+    int max_candidate_gates = 5;
+    double map_point_resolution_m = 0.03;
+    int max_persistent_points = 6000;
+};
+
 struct HardwarePlannerConfig {
     double nominal_dt = 0.10;
     int control_interval_steps = 1;
@@ -79,6 +93,7 @@ struct HardwarePlannerConfig {
     DifferentialDriveGeometry drive{};
     MotorPwmMapperConfig pwm{};
     LidarLocalizationConfig localization{};
+    GapExtractionConfig gap_extraction{};
 };
 
 struct HardwarePlannerEstimate {
@@ -124,8 +139,29 @@ struct HardwareTelemetrySample {
     double estimator_ms = 0.0;
     double step_ms = 0.0;
     double visible_gates = 0.0;
+    double lidar_samples = 0.0;
+    double close_lidar_samples = 0.0;
+    double front_close_lidar_samples = 0.0;
+    double candidate_gates = 0.0;
+    double chosen_gate_distance = 0.0;
+    double accumulated_lidar_points = 0.0;
+    double no_motion_cycles = 0.0;
     int pwm_left = 0;
     int pwm_right = 0;
+};
+
+struct HardwarePlannerDiagnostics {
+    bool dynamic_gap_gates = false;
+    bool planner_has_reference = false;
+    bool lidar_front_blocked = false;
+    bool stall_boost_active = false;
+    int valid_lidar_points = 0;
+    int close_lidar_points = 0;
+    int front_close_lidar_points = 0;
+    int candidate_gates = 0;
+    int accumulated_lidar_points = 0;
+    int no_motion_command_cycles = 0;
+    double chosen_gate_distance = std::numeric_limits<double>::infinity();
 };
 
 struct HardwarePlannerReport {
@@ -135,12 +171,22 @@ struct HardwarePlannerReport {
     bool controller_front_alert = false;
     bool lidar_front_blocked = false;
     bool have_lidar_scan = false;
+    bool dynamic_gap_gates = false;
+    bool planner_has_reference = false;
+    bool stall_boost_active = false;
     int steps = 0;
     double runtime_s = 0.0;
     Vec2 final_position;
     double distance_to_goal = 0.0;
     double min_lidar_distance = 0.0;
     double front_lidar_distance = 0.0;
+    double chosen_gate_distance = 0.0;
+    int valid_lidar_points = 0;
+    int close_lidar_points = 0;
+    int front_close_lidar_points = 0;
+    int candidate_gates = 0;
+    int accumulated_lidar_points = 0;
+    int no_motion_command_cycles = 0;
     int passed_gates = 0;
     std::uint16_t controller_safety_flags = 0;
     std::uint16_t controller_motor_flags = 0;
@@ -175,12 +221,15 @@ class HardwarePlannerRunner {
     const HardwareControlCommand& last_command() const { return last_command_; }
     const std::optional<MpcCommand>& last_mpc_command() const { return last_mpc_command_; }
     const std::vector<LidarHit>& lidar_hits() const { return lidar_hits_; }
+    const std::vector<Vec2>& lidar_map_points() const { return lidar_map_points_; }
     const std::vector<HardwareTelemetrySample>& history() const { return history_; }
     const std::vector<Vec2>& trail() const { return trail_; }
     const std::vector<Vec2>& planned_trajectory() const { return planned_trajectory_; }
     const std::vector<ReferenceWaypoint>& reference_trajectory() const { return reference_trajectory_; }
     const std::vector<gate>& gates() const { return gates_; }
+    const std::vector<GateSpec>& gate_specs() const { return gate_specs_; }
     const std::vector<int>& visible_gate_indices() const { return visible_gate_indices_; }
+    const HardwarePlannerDiagnostics& diagnostics() const { return diagnostics_; }
     RealRobotBridge& bridge() { return bridge_; }
     const RealRobotBridge& bridge() const { return bridge_; }
 
@@ -214,6 +263,7 @@ class HardwarePlannerRunner {
     void correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan);
     double score_candidate_pose(const Vec2& position, double yaw, const std::vector<RPLidarA1::ScanPoint>& scan) const;
     void update_lidar_hits_world(const std::vector<RPLidarA1::ScanPoint>& scan);
+    void rebuild_dynamic_gap_gates(const std::vector<RPLidarA1::ScanPoint>& scan);
 
     void update_planner_references(double dt);
     void update_selected_trajectory();
@@ -225,6 +275,7 @@ class HardwarePlannerRunner {
     int wheel_speed_to_pwm(double wheel_speed_mps, double scale) const;
     int planning_interval_steps() const;
     int count_passed_gates() const;
+    bool dynamic_gap_mode_enabled() const;
 
     WorldMap world_;
     HardwarePlannerConfig config_;
@@ -240,7 +291,10 @@ class HardwarePlannerRunner {
     std::unique_ptr<road_info> road_;
 
     std::vector<gate> gates_;
+    std::vector<GateSpec> gate_specs_;
     std::vector<LidarHit> lidar_hits_;
+    std::vector<Vec2> lidar_map_points_;
+    std::unordered_set<std::uint64_t> lidar_map_keys_;
     std::vector<HardwareTelemetrySample> history_;
     std::vector<Vec2> trail_;
     std::vector<Vec2> planned_trajectory_;
@@ -249,6 +303,7 @@ class HardwarePlannerRunner {
 
     HardwarePlannerEstimate estimate_{};
     HardwareControlCommand last_command_{};
+    HardwarePlannerDiagnostics diagnostics_{};
     std::optional<MpcCommand> last_mpc_command_;
 
     std::ofstream null_stream_;
@@ -282,6 +337,8 @@ class HardwarePlannerRunner {
     bool have_raw_imu_yaw_ = false;
     bool encoder_ticks_initialized_ = false;
     int no_motion_command_cycles_ = 0;
+    bool use_dynamic_gap_gates_ = false;
+    bool stall_boost_active_ = false;
     bool connected_ = false;
     bool telemetry_ready_ = false;
     bool goal_reached_ = false;

@@ -13,6 +13,8 @@
 namespace {
 
 using thesis_sim::ControllerTelemetry;
+using thesis_sim::EnvironmentMode;
+using thesis_sim::GateBehaviorMode;
 using thesis_sim::HardwarePlannerConfig;
 using thesis_sim::HardwarePlannerReport;
 using thesis_sim::HardwarePlannerRunner;
@@ -23,6 +25,7 @@ using thesis_sim::RealRobotBridge;
 using thesis_sim::RealRobotObservation;
 using thesis_sim::RPLidarA1;
 using thesis_sim::StructuredMapPreset;
+using thesis_sim::UnstructuredMapPreset;
 using thesis_sim::Vec2;
 using thesis_sim::VehicleControlInput;
 using thesis_sim::VehicleDynamicsModel;
@@ -40,6 +43,9 @@ struct AppOptions {
     bool auto_mode = true;
     bool gyro_zero = true;
     bool simulate = false;
+    EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
+    UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
+    StructuredMapPreset structured_preset = StructuredMapPreset::HardwareTrack;
     std::string stream_host;
     int stream_port = 0;
     int stream_every_n_steps = 1;
@@ -51,6 +57,53 @@ double clamp_value(double value, double lo, double hi) {
 
 double deg_to_rad(double angle_deg) {
     return angle_deg * kPi / 180.0;
+}
+
+EnvironmentMode parse_environment_mode(const std::string& value) {
+    return value == "unstructured" ? EnvironmentMode::UnstructuredGates
+                                   : EnvironmentMode::StructuredRoad;
+}
+
+UnstructuredMapPreset parse_unstructured_preset(const std::string& value) {
+    if (value == "tight" || value == "tight_corridor") {
+        return UnstructuredMapPreset::TightCorridor;
+    }
+    if (value == "slalom" || value == "wide_slalom" || value == "wide") {
+        return UnstructuredMapPreset::WideSlalom;
+    }
+    if (value == "lower" || value == "lower_bypass") {
+        return UnstructuredMapPreset::LowerBypass;
+    }
+    if (value == "hardware_lab" || value == "lab") {
+        return UnstructuredMapPreset::HardwareLab;
+    }
+    if (value == "custom") {
+        return UnstructuredMapPreset::Custom;
+    }
+    return UnstructuredMapPreset::RobotValidation;
+}
+
+StructuredMapPreset parse_structured_preset(const std::string& value) {
+    if (value == "circle" || value == "circle_loop") {
+        return StructuredMapPreset::CircleLoop;
+    }
+    if (value == "zigzag" || value == "zig_zag") {
+        return StructuredMapPreset::ZigZag;
+    }
+    if (value == "hardware" || value == "hardware_track") {
+        return StructuredMapPreset::HardwareTrack;
+    }
+    if (value == "custom") {
+        return StructuredMapPreset::Custom;
+    }
+    return StructuredMapPreset::ValidationRoad;
+}
+
+WorldMap make_world_from_options(const AppOptions& options) {
+    if (options.environment_mode == EnvironmentMode::StructuredRoad) {
+        return WorldMap::structured_demo(options.structured_preset);
+    }
+    return WorldMap::unstructured_demo(options.unstructured_preset, GateBehaviorMode::Static, 0);
 }
 
 Vec2 lidar_origin_world(const Vec2& base_position,
@@ -72,7 +125,10 @@ void print_usage(const char* argv0) {
         << "  --lidar-baudrate N        default 115200\n"
         << "  --max-steps N             default 1500\n"
         << "  --dt SEC                  default 0.10\n"
-        << "  --simulate                run the fixed compact structured hardware track against synthetic sensors\n"
+        << "  --simulate                run the selected hardware scenario against synthetic sensors\n"
+        << "  --scenario MODE           structured | unstructured\n"
+        << "  --structured-map NAME     validation | circle | zigzag | hardware_track\n"
+        << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
         << "  --stream-host HOST        send live view snapshots to HOST\n"
         << "  --stream-port N           send live view snapshots to TCP port N\n"
         << "  --stream-every N          send one frame every N planner steps (default 1)\n"
@@ -98,6 +154,18 @@ AppOptions parse_args(int argc, char** argv) {
             options.dt = std::atof(argv[++i]);
         } else if (arg == "--simulate") {
             options.simulate = true;
+        } else if (arg == "--scenario" && i + 1 < argc) {
+            options.environment_mode = parse_environment_mode(argv[++i]);
+        } else if (arg.rfind("--scenario=", 0) == 0) {
+            options.environment_mode = parse_environment_mode(arg.substr(std::strlen("--scenario=")));
+        } else if (arg == "--structured-map" && i + 1 < argc) {
+            options.structured_preset = parse_structured_preset(argv[++i]);
+        } else if (arg.rfind("--structured-map=", 0) == 0) {
+            options.structured_preset = parse_structured_preset(arg.substr(std::strlen("--structured-map=")));
+        } else if (arg == "--unstructured-map" && i + 1 < argc) {
+            options.unstructured_preset = parse_unstructured_preset(argv[++i]);
+        } else if (arg.rfind("--unstructured-map=", 0) == 0) {
+            options.unstructured_preset = parse_unstructured_preset(arg.substr(std::strlen("--unstructured-map=")));
         } else if (arg == "--stream-host" && i + 1 < argc) {
             options.stream_host = argv[++i];
         } else if (arg == "--stream-port" && i + 1 < argc) {
@@ -247,7 +315,7 @@ int count_passed_gates(const HardwarePlannerRunner& runner) {
 int run_simulated(const AppOptions& options,
                   RealRobotBridge::Options bridge_options,
                   HardwarePlannerConfig planner_config) {
-    WorldMap world = WorldMap::structured_demo(StructuredMapPreset::HardwareTrack);
+    WorldMap world = make_world_from_options(options);
     HardwarePlannerRunner runner(world, std::move(bridge_options), planner_config);
     LiveViewStreamClient streamer;
     if (!setup_stream_client(options, runner, &streamer)) {
@@ -312,6 +380,18 @@ int run_simulated(const AppOptions& options,
     std::cout << "distance_to_goal=" << runner.distance_to_goal() << '\n';
     std::cout << "min_lidar_distance=" << runner.estimate().min_lidar_distance << '\n';
     std::cout << "front_lidar_distance=" << runner.estimate().front_lidar_distance << '\n';
+    std::cout << "dynamic_gap_gates=" << (runner.diagnostics().dynamic_gap_gates ? 1 : 0) << '\n';
+    std::cout << "planner_has_reference=" << (runner.diagnostics().planner_has_reference ? 1 : 0) << '\n';
+    std::cout << "stall_boost_active=" << (runner.diagnostics().stall_boost_active ? 1 : 0) << '\n';
+    std::cout << "valid_lidar_points=" << runner.diagnostics().valid_lidar_points << '\n';
+    std::cout << "close_lidar_points=" << runner.diagnostics().close_lidar_points << '\n';
+    std::cout << "front_close_lidar_points=" << runner.diagnostics().front_close_lidar_points << '\n';
+    std::cout << "candidate_gates=" << runner.diagnostics().candidate_gates << '\n';
+    std::cout << "chosen_gate_distance="
+              << (std::isfinite(runner.diagnostics().chosen_gate_distance) ? runner.diagnostics().chosen_gate_distance : -1.0)
+              << '\n';
+    std::cout << "accumulated_lidar_points=" << runner.diagnostics().accumulated_lidar_points << '\n';
+    std::cout << "no_motion_command_cycles=" << runner.diagnostics().no_motion_command_cycles << '\n';
     std::cout << "passed_gates=" << count_passed_gates(runner) << '\n';
     std::cout << "controller_safety_flags=0x0\n";
     std::cout << "controller_motor_flags=0x0\n";
@@ -356,7 +436,7 @@ int main(int argc, char** argv) {
     }
 
     HardwarePlannerRunner runner(
-        WorldMap::structured_demo(StructuredMapPreset::HardwareTrack),
+        make_world_from_options(options),
         bridge_options,
         planner_config);
     LiveViewStreamClient streamer;
@@ -391,6 +471,16 @@ int main(int argc, char** argv) {
         std::cout << "distance_to_goal=" << report.distance_to_goal << '\n';
         std::cout << "min_lidar_distance=" << report.min_lidar_distance << '\n';
         std::cout << "front_lidar_distance=" << report.front_lidar_distance << '\n';
+        std::cout << "dynamic_gap_gates=" << (report.dynamic_gap_gates ? 1 : 0) << '\n';
+        std::cout << "planner_has_reference=" << (report.planner_has_reference ? 1 : 0) << '\n';
+        std::cout << "stall_boost_active=" << (report.stall_boost_active ? 1 : 0) << '\n';
+        std::cout << "valid_lidar_points=" << report.valid_lidar_points << '\n';
+        std::cout << "close_lidar_points=" << report.close_lidar_points << '\n';
+        std::cout << "front_close_lidar_points=" << report.front_close_lidar_points << '\n';
+        std::cout << "candidate_gates=" << report.candidate_gates << '\n';
+        std::cout << "chosen_gate_distance=" << report.chosen_gate_distance << '\n';
+        std::cout << "accumulated_lidar_points=" << report.accumulated_lidar_points << '\n';
+        std::cout << "no_motion_command_cycles=" << report.no_motion_command_cycles << '\n';
         std::cout << "passed_gates=" << report.passed_gates << '\n';
         std::cout << "controller_safety_flags=0x" << std::hex << report.controller_safety_flags << std::dec << '\n';
         std::cout << "controller_motor_flags=0x" << std::hex << report.controller_motor_flags << std::dec << '\n';

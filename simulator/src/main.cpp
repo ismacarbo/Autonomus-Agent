@@ -897,15 +897,14 @@ std::string stream_profile_label(const std::string& stream_profile, int workspac
 
 std::string hardware_launch_hint(const UiState& ui_state) {
     std::ostringstream cmd;
+    const bool structured =
+        static_cast<EnvironmentMode>(ui_state.hardware_environment_mode) == EnvironmentMode::StructuredRoad;
     if (workspace_source_expects_slam(ui_state.workspace_source)) {
         cmd << "thesis_robot_smoke_test"
             << " --stream-host <pc-ip>"
             << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
-            << " --scenario "
-            << (static_cast<EnvironmentMode>(ui_state.hardware_environment_mode) == EnvironmentMode::StructuredRoad
-                    ? "structured"
-                    : "unstructured");
-        if (static_cast<EnvironmentMode>(ui_state.hardware_environment_mode) == EnvironmentMode::StructuredRoad) {
+            << " --scenario " << (structured ? "structured" : "unstructured");
+        if (structured) {
             cmd << " --structured-map "
                 << structured_map_cli_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset));
         } else {
@@ -916,7 +915,15 @@ std::string hardware_launch_hint(const UiState& ui_state) {
     } else {
         cmd << "thesis_robot_runner"
             << " --stream-host <pc-ip>"
-            << " --stream-port " << std::max(ui_state.hardware_listen_port, 1);
+            << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
+            << " --scenario " << (structured ? "structured" : "unstructured");
+        if (structured) {
+            cmd << " --structured-map "
+                << structured_map_cli_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset));
+        } else {
+            cmd << " --unstructured-map "
+                << unstructured_map_cli_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset));
+        }
     }
     return cmd.str();
 }
@@ -1956,7 +1963,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         ImGui::TextWrapped(
             workspace_source_expects_slam(ui_state->workspace_source)
                 ? "Hardware SLAM mode is listening for live data. Select structured or unstructured from the side panel, then launch `thesis_robot_smoke_test` on the Raspberry with the generated `--scenario` and `--stream-*` options."
-                : "Hardware planner mode is listening for live data. Start the listener from the side panel, then launch `thesis_robot_runner` on the Raspberry with `--stream-host` and `--stream-port`.");
+                : "Hardware planner mode is listening for live data. Select the planner scenario from the side panel, then launch `thesis_robot_runner` on the Raspberry with the generated `--scenario`, preset and `--stream-*` options.");
         ImGui::EndChild();
         return;
     }
@@ -2164,7 +2171,12 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             if (hardware.scene.stream_profile == "slam") {
                 std::snprintf(hud_line, sizeof(hud_line), "context %s | map pts %d", active_target, static_cast<int>(frame.slam_points.size()));
             } else {
-                std::snprintf(hud_line, sizeof(hud_line), "gate %s | visible %d", active_target, static_cast<int>(frame.visible_gate_indices.size()));
+                std::snprintf(hud_line,
+                              sizeof(hud_line),
+                              "gate %s | cand %d | map %d",
+                              active_target,
+                              frame.candidate_gates,
+                              static_cast<int>(frame.slam_points.size()));
             }
         } else {
             std::snprintf(hud_line, sizeof(hud_line), "road pts %d", static_cast<int>(world.road_centerline().size()));
@@ -2183,7 +2195,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             legend.push_back({"lime/cyan: LiDAR collision points", kColorLidarHit});
         }
         if (!frame.slam_points.empty() && ui_state->show_lidar_hits) {
-            legend.push_back({"mint: accumulated SLAM map", IM_COL32(132, 255, 196, 200)});
+            legend.push_back({"mint: accumulated LiDAR map", IM_COL32(132, 255, 196, 200)});
         }
         const float legend_height = 20.0f + static_cast<float>(legend.size()) * (ImGui::GetFontSize() + 5.0f);
         draw_overlay_panel(draw_list,
@@ -2716,6 +2728,10 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                         hardware.scene.range_sensor_name.c_str(),
                         hardware.frame.min_lidar_distance,
                         hardware.frame.front_lidar_distance);
+            ImGui::Text("LiDAR samples = %d valid, %d close, %d front-close",
+                        hardware.frame.valid_lidar_samples,
+                        hardware.frame.close_lidar_samples,
+                        hardware.frame.front_close_lidar_samples);
             ImGui::Text("Telemetry ready = %s", hardware.frame.telemetry_ready ? "yes" : "no");
         }
     }
@@ -2727,6 +2743,16 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::Text("yaw = %.1f deg   v = %.2f m/s", hardware.frame.navigation_yaw * 180.0 / 3.14159265358979323846, hardware.frame.navigation_speed);
         ImGui::Text("goal distance = %.2f m", hardware.frame.distance_to_goal);
         ImGui::Text("tracking: cte %.2f m   hdg %.2f deg", hardware.frame.tracker_cross_track_error, hardware.frame.tracker_heading_error_deg);
+        ImGui::Text("planner ref = %s   dynamic gaps = %s   stall boost = %s",
+                    hardware.frame.planner_has_reference ? "yes" : "no",
+                    hardware.frame.dynamic_gap_gates ? "yes" : "no",
+                    hardware.frame.stall_boost_active ? "yes" : "no");
+        ImGui::Text("gates = %d candidates   chosen distance = %.2f m",
+                    hardware.frame.candidate_gates,
+                    hardware.frame.chosen_gate_distance);
+        ImGui::Text("LiDAR map pts = %d   no-motion cycles = %d",
+                    hardware.frame.accumulated_lidar_points,
+                    hardware.frame.no_motion_command_cycles);
         if (hardware.frame.has_last_mpc_command) {
             ImGui::Text("MPC: accel %.2f   steer rate %.2f deg/s",
                         hardware.frame.last_mpc_command.accel_cmd,
