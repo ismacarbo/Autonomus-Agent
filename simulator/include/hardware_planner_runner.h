@@ -269,6 +269,7 @@ class HardwarePlannerRunner {
     void sync_road_from_world();
     void sync_gate_specs_from_world(bool reset_flags);
     void sync_planner_from_estimate(bool reset_relative_state);
+    void sync_estimate_from_ekf_state();
     void update_speed_limit();
     void update_gate_activation_window();
     std::vector<int> active_gate_indices() const;
@@ -276,6 +277,10 @@ class HardwarePlannerRunner {
     void plan_if_needed();
 
     void update_estimate_from_observation(const RealRobotObservation& observation, double dt);
+    void update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
+                                                         double dt,
+                                                         double measured_yaw,
+                                                         double measured_yaw_rate);
     void correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan);
     double score_candidate_pose(const Vec2& position, double yaw, const std::vector<RPLidarA1::ScanPoint>& scan) const;
     void update_lidar_hits_world(const std::vector<RPLidarA1::ScanPoint>& scan);

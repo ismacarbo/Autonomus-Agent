@@ -79,6 +79,34 @@ int signum(int value) {
     return (value > 0) - (value < 0);
 }
 
+bool controller_encoders_ready(const ControllerTelemetry& telemetry) {
+    const bool status_ready =
+        (telemetry.status_flags & static_cast<std::uint16_t>(StatusFlag::EncodersReady)) != 0U;
+    const bool left_valid =
+        (telemetry.enc_flags & static_cast<std::uint16_t>(EncoderFlag::LeftValid)) != 0U;
+    const bool right_valid =
+        (telemetry.enc_flags & static_cast<std::uint16_t>(EncoderFlag::RightValid)) != 0U;
+    return telemetry.have_encoder && status_ready && left_valid && right_valid && telemetry.enc_dt_ms > 0U;
+}
+
+double wheel_speed_from_pwm_estimate(int pwm, double scale, const VehicleGeometry& geometry) {
+    const double effective_pwm = std::abs(static_cast<double>(pwm));
+    if (effective_pwm < static_cast<double>(geometry.min_effective_pwm) || geometry.speed_estimate_per_pwm <= 0.0) {
+        return 0.0;
+    }
+
+    const double scaled_magnitude = std::max(0.0, effective_pwm - static_cast<double>(geometry.min_effective_pwm));
+    const double signed_speed =
+        scaled_magnitude * geometry.speed_estimate_per_pwm * std::max(std::abs(scale), 1e-3);
+    return std::copysign(signed_speed, static_cast<double>(pwm));
+}
+
+double forward_speed_from_pwm_estimate(const ControllerTelemetry& telemetry, const VehicleGeometry& geometry) {
+    const double left_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_l, geometry.left_pwm_scale, geometry);
+    const double right_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_r, geometry.right_pwm_scale, geometry);
+    return 0.5 * (left_speed + right_speed);
+}
+
 int full_scale_motion_pwm(int pwm, int max_pwm) {
     if (pwm == 0 || max_pwm <= 0) {
         return 0;
@@ -843,6 +871,15 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         yaw_offset_initialized_ = true;
     }
 
+    const double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
+    const double measured_yaw_rate = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
+
+    if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
+        !controller_encoders_ready(telemetry)) {
+        update_estimate_from_structured_motion_fallback(telemetry, dt, measured_yaw, measured_yaw_rate);
+        return;
+    }
+
     if (!encoder_ticks_initialized_) {
         last_left_encoder_ticks_ = telemetry.ticks_left;
         last_right_encoder_ticks_ = telemetry.ticks_right;
@@ -868,11 +905,71 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     const double odom_speed = encoder_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / encoder_dt : 0.0;
     const double odom_yaw_rate = encoder_dt > 1e-6 ? odom_delta_yaw / encoder_dt : 0.0;
     estimator_.predict(encoder_dt, odom_speed, odom_yaw_rate);
+    estimator_.update_imu(measured_yaw, measured_yaw_rate);
+    sync_estimate_from_ekf_state();
+}
 
-    const double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
-    const double measured_yaw_rate = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
+void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
+                                                                            double dt,
+                                                                            double measured_yaw,
+                                                                            double measured_yaw_rate) {
+    last_left_encoder_ticks_ = telemetry.ticks_left;
+    last_right_encoder_ticks_ = telemetry.ticks_right;
+    encoder_ticks_initialized_ = true;
+
+    const double effective_dt =
+        telemetry.enc_dt_ms > 0U
+            ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
+            : std::max(dt, 0.01);
+
+    const double pwm_speed_estimate = clamp_value(
+        std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
+        0.0,
+        geometry_.max_linear_speed);
+    const bool controller_driving =
+        std::abs(telemetry.pwm_l) >= geometry_.min_effective_pwm ||
+        std::abs(telemetry.pwm_r) >= geometry_.min_effective_pwm ||
+        std::abs(telemetry.target_pwm_l) >= geometry_.min_effective_pwm ||
+        std::abs(telemetry.target_pwm_r) >= geometry_.min_effective_pwm;
+
+    double fallback_speed = clamp_value(last_command_.target_speed, 0.0, geometry_.max_linear_speed);
+    if (fallback_speed <= 1e-4 && controller_driving) {
+        fallback_speed = pwm_speed_estimate;
+    } else if (!controller_driving) {
+        fallback_speed = 0.0;
+    }
+
+    const double fallback_yaw_rate = clamp_value(
+        std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
+        -config_.drive.max_yaw_rate,
+        config_.drive.max_yaw_rate);
+
+    estimator_.predict(effective_dt, fallback_speed, fallback_yaw_rate);
     estimator_.update_imu(measured_yaw, measured_yaw_rate);
 
+    if (road_ != nullptr &&
+        cl_.prev_road.num_segments() > 0 &&
+        std::isfinite(cl_.end_point_s) &&
+        cl_.end_point_s > 1e-6) {
+        const bool closed_structured_loop = structured_road_is_closed_loop(world_);
+        double s_fallback = std::isfinite(x0_.x) ? x0_.x : 0.0;
+        s_fallback += fallback_speed * effective_dt;
+        if (closed_structured_loop) {
+            s_fallback = wrap_arc_length(s_fallback, cl_.end_point_s);
+        } else {
+            s_fallback = clamp_value(s_fallback, 0.0, cl_.end_point_s);
+        }
+
+        double x_on_path = 0.0;
+        double y_on_path = 0.0;
+        cl_.prev_road.eval(s_fallback, x_on_path, y_on_path);
+        estimator_.update_lidar_pose({x_on_path, y_on_path}, measured_yaw, true);
+    }
+
+    sync_estimate_from_ekf_state();
+}
+
+void HardwarePlannerRunner::sync_estimate_from_ekf_state() {
     const EkfState& state = estimator_.state();
     estimate_.position = state.position;
     estimate_.yaw = state.yaw;
@@ -930,19 +1027,7 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
 
     if (std::isfinite(best_score)) {
         estimator_.update_lidar_pose(best_position, best_yaw, !yaw_offset_initialized_);
-        const EkfState& state = estimator_.state();
-        estimate_.position = state.position;
-        estimate_.yaw = state.yaw;
-        estimate_.speed = state.speed;
-        estimate_.accel = state.accel;
-        estimate_.yaw_rate = state.yaw_rate;
-        estimate_.curvature = std::abs(state.speed) > 0.05
-                                  ? clamp_value(
-                                        state.yaw_rate / state.speed,
-                                        -geometry_.max_curvature,
-                                        geometry_.max_curvature)
-                                  : 0.0;
-        estimate_.localized = true;
+        sync_estimate_from_ekf_state();
         if (have_raw_imu_yaw_) {
             yaw_offset_ = wrap_angle(estimate_.yaw - last_raw_imu_yaw_);
             yaw_offset_initialized_ = true;

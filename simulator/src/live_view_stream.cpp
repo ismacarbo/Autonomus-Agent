@@ -1065,6 +1065,13 @@ void apply_structured_display_remap(const StructuredDisplayRemap& remap, LiveFra
     frame->planned_trajectory = remap_points_to_display(remap, frame->planned_trajectory);
     frame->slam_points = remap_points_to_display(remap, frame->slam_points);
     frame->lidar_hits = remap_hits_to_display(remap, frame->lidar_hits, source_navigation_position);
+    if (frame->has_latest_sample) {
+        const Vec2 source_sample_position{frame->latest_sample.position_x, frame->latest_sample.position_y};
+        const Vec2 mapped_sample_position = remap_point_to_display(remap, source_sample_position);
+        frame->latest_sample.position_x = mapped_sample_position.x;
+        frame->latest_sample.position_y = mapped_sample_position.y;
+        frame->latest_sample.yaw = remap_yaw_to_display(remap, source_sample_position, frame->latest_sample.yaw);
+    }
 }
 
 }  // namespace
