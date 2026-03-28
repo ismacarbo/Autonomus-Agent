@@ -36,6 +36,23 @@ void throw_if_negative(int rc, const std::string& context) {
     }
 }
 
+void set_serial_speed(termios* tty, speed_t speed) {
+    if (tty == nullptr) {
+        throw SerialError("set_serial_speed: null termios");
+    }
+#if defined(__linux__) && defined(CBAUD)
+    // Set the encoded baudrate directly to avoid binding against the newer
+    // glibc cfset*speed symbols, which break execution on older Linux hosts.
+    tty->c_cflag &= static_cast<tcflag_t>(~CBAUD);
+    tty->c_cflag |= static_cast<tcflag_t>(speed);
+    tty->c_ispeed = speed;
+    tty->c_ospeed = speed;
+#else
+    throw_if_negative(cfsetispeed(tty, speed), "cfsetispeed");
+    throw_if_negative(cfsetospeed(tty, speed), "cfsetospeed");
+#endif
+}
+
 }  // namespace
 
 SerialPort::SerialPort(std::string device, int baudrate, double timeout_s) {
@@ -89,8 +106,7 @@ void SerialPort::open(const std::string& device, int baudrate, double timeout_s)
     tty.c_cc[VTIME] = 0;
 
     const speed_t speed = static_cast<speed_t>(resolve_baudrate(baudrate));
-    throw_if_negative(cfsetispeed(&tty, speed), "cfsetispeed");
-    throw_if_negative(cfsetospeed(&tty, speed), "cfsetospeed");
+    set_serial_speed(&tty, speed);
     throw_if_negative(tcsetattr(fd_, TCSANOW, &tty), "tcsetattr");
     throw_if_negative(tcflush(fd_, TCIOFLUSH), "tcflush");
 

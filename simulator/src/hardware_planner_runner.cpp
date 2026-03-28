@@ -79,6 +79,13 @@ int signum(int value) {
     return (value > 0) - (value < 0);
 }
 
+int full_scale_motion_pwm(int pwm, int max_pwm) {
+    if (pwm == 0 || max_pwm <= 0) {
+        return 0;
+    }
+    return signum(pwm) * max_pwm;
+}
+
 void apply_start_motion_boost(int min_pwm, int* pwm_left, int* pwm_right) {
     if (min_pwm <= 0 || pwm_left == nullptr || pwm_right == nullptr) {
         return;
@@ -1486,6 +1493,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             &last_command_.pwm_right);
         stall_boost_active_ = true;
     }
+
+    const bool commanding_motion =
+        !safety_stop_active_ &&
+        (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
+    if (commanding_motion) {
+        last_command_.pwm_left = full_scale_motion_pwm(last_command_.pwm_left, config_.pwm.max_pwm);
+        last_command_.pwm_right = full_scale_motion_pwm(last_command_.pwm_right, config_.pwm.max_pwm);
+    }
+
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
     diagnostics_.stall_boost_active = stall_boost_active_;
 }
@@ -1566,15 +1582,12 @@ int HardwarePlannerRunner::wheel_speed_to_pwm(double wheel_speed_mps, double sca
         return 0;
     }
 
-    const double sign = wheel_speed_mps >= 0.0 ? 1.0 : -1.0;
-    double pwm = config_.pwm.wheel_speed_to_pwm_bias +
-                 std::abs(wheel_speed_mps) * config_.pwm.wheel_speed_to_pwm_gain;
-    pwm *= scale;
-    pwm = clamp_value(
-        pwm,
-        static_cast<double>(config_.pwm.min_effective_pwm),
-        static_cast<double>(config_.pwm.max_pwm));
-    return static_cast<int>(std::lround(sign * pwm));
+    const int sign = wheel_speed_mps >= 0.0 ? 1 : -1;
+    const int scaled_max_pwm = static_cast<int>(std::lround(
+        clamp_value(std::abs(scale) * static_cast<double>(config_.pwm.max_pwm),
+                    0.0,
+                    static_cast<double>(config_.pwm.max_pwm))));
+    return sign * std::max(0, scaled_max_pwm);
 }
 
 void HardwarePlannerRunner::step() {

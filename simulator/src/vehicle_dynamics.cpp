@@ -173,13 +173,7 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
         if (std::abs(speed_mps) < 1e-4) {
             return 0;
         }
-        double pwm = geometry_.wheel_speed_to_pwm_bias +
-                     std::abs(speed_mps) * geometry_.wheel_speed_to_pwm_gain;
-        pwm = clamp_value(
-            pwm,
-            static_cast<double>(geometry_.min_effective_pwm),
-            static_cast<double>(geometry_.max_pwm));
-        return static_cast<int>(std::lround(sign_of(speed_mps) * pwm));
+        return static_cast<int>(std::lround(sign_of(speed_mps) * geometry_.max_pwm));
     }
 
     void update_model_state(double encoder_dt_ms,
