@@ -237,6 +237,7 @@ class HardwarePlannerRunner {
     bool telemetry_ready() const { return telemetry_ready_; }
     bool goal_reached() const { return goal_reached_; }
     bool safety_stop_active() const { return safety_stop_active_; }
+    bool lidar_enabled_for_current_mode() const;
     int step_count() const { return step_count_; }
     double sim_time() const { return sim_time_; }
     double last_j() const { return last_j_; }

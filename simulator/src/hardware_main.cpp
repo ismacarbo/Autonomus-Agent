@@ -117,7 +117,7 @@ Vec2 lidar_origin_world(const Vec2& base_position,
 void print_usage(const char* argv0) {
     std::cout
         << "Usage: " << argv0
-        << " --controller-port /dev/ttyACM0 --lidar-port /dev/ttyUSB0 [options]\n"
+        << " --controller-port /dev/ttyACM0 [--lidar-port /dev/ttyUSB0] [options]\n"
         << "Or:    " << argv0
         << " --simulate [options]\n"
         << "Options:\n"
@@ -333,13 +333,15 @@ int run_simulated(const AppOptions& options,
         observation.host_timestamp_s = host_time_s;
         observation.have_controller_telemetry = true;
         observation.controller = make_controller_telemetry(plant_state, runner.last_command());
-        observation.have_lidar_scan = true;
-        observation.lidar_scan = make_lidar_scan(world, plant_state, planner_config);
-        observation.min_lidar_range_m = observation.lidar_scan.empty()
-                                            ? 0.0
-                                            : observation.lidar_scan.front().distance_m;
-        for (const RPLidarA1::ScanPoint& point : observation.lidar_scan) {
-            observation.min_lidar_range_m = std::min(observation.min_lidar_range_m, point.distance_m);
+        if (runner.lidar_enabled_for_current_mode()) {
+            observation.have_lidar_scan = true;
+            observation.lidar_scan = make_lidar_scan(world, plant_state, planner_config);
+            observation.min_lidar_range_m = observation.lidar_scan.empty()
+                                                ? 0.0
+                                                : observation.lidar_scan.front().distance_m;
+            for (const RPLidarA1::ScanPoint& point : observation.lidar_scan) {
+                observation.min_lidar_range_m = std::min(observation.min_lidar_range_m, point.distance_m);
+            }
         }
 
         runner.step_with_observation(observation, planner_config.nominal_dt, false);
@@ -372,7 +374,7 @@ int run_simulated(const AppOptions& options,
               << ((runner.estimate().front_lidar_distance > 0.0 &&
                    runner.estimate().front_lidar_distance < planner_config.localization.obstacle_stop_distance_m) ? 1 : 0)
               << '\n';
-    std::cout << "have_lidar_scan=1\n";
+    std::cout << "have_lidar_scan=" << (runner.lidar_enabled_for_current_mode() ? 1 : 0) << '\n';
     std::cout << "steps=" << runner.step_count() << '\n';
     std::cout << "time=" << runner.sim_time() << '\n';
     std::cout << "final_x=" << runner.estimate().position.x << '\n';
@@ -410,7 +412,12 @@ int run_simulated(const AppOptions& options,
 
 int main(int argc, char** argv) {
     const AppOptions options = parse_args(argc, argv);
-    if (!options.simulate && (options.controller_port.empty() || options.lidar_port.empty())) {
+    const bool structured_mode = options.environment_mode == EnvironmentMode::StructuredRoad;
+    if (!options.simulate && options.controller_port.empty()) {
+        print_usage(argv[0]);
+        return 2;
+    }
+    if (!options.simulate && !structured_mode && options.lidar_port.empty()) {
         print_usage(argv[0]);
         return 2;
     }
@@ -422,7 +429,7 @@ int main(int argc, char** argv) {
     bridge_options.controller.startup_delay_s = 4.0;
     bridge_options.controller.heartbeat_interval_s = 0.75;
     bridge_options.controller.reset_on_connect = true;
-    bridge_options.lidar_port = options.lidar_port;
+    bridge_options.lidar_port = structured_mode ? std::string{} : options.lidar_port;
     bridge_options.lidar_baudrate = options.lidar_baudrate;
     bridge_options.lidar_timeout_s = 0.10;
 

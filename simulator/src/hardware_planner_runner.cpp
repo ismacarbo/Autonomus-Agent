@@ -383,7 +383,7 @@ void HardwarePlannerRunner::connect() {
         return;
     }
 
-    bridge_.connect(true);
+    bridge_.connect(lidar_enabled_for_current_mode());
     connected_ = true;
 
     if (bridge_.controller_connected()) {
@@ -720,6 +720,10 @@ int HardwarePlannerRunner::planning_interval_steps() const {
 bool HardwarePlannerRunner::dynamic_gap_mode_enabled() const {
     return world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
            config_.gap_extraction.enabled;
+}
+
+bool HardwarePlannerRunner::lidar_enabled_for_current_mode() const {
+    return world_.environment_mode() != EnvironmentMode::StructuredRoad;
 }
 
 void HardwarePlannerRunner::plan_if_needed() {
@@ -1578,7 +1582,10 @@ void HardwarePlannerRunner::step() {
         throw ProtocolResponseError("HardwarePlannerRunner not connected");
     }
 
-    bridge_.pump(std::min(0.05, config_.nominal_dt * 0.5), config_.localization.min_scan_points, true);
+    bridge_.pump(
+        std::min(0.05, config_.nominal_dt * 0.5),
+        config_.localization.min_scan_points,
+        lidar_enabled_for_current_mode());
     telemetry_ready_ = bridge_.observation().have_controller_telemetry;
     if (!telemetry_ready_) {
         return;
@@ -1597,6 +1604,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                                                   double dt,
                                                   bool send_pwm) {
     const double bounded_dt = clamp_value(dt, 0.01, 0.25);
+    const bool lidar_enabled = lidar_enabled_for_current_mode();
     if (observation.have_controller_telemetry) {
         telemetry_ready_ = true;
     }
@@ -1613,20 +1621,25 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     estimator_compute_ms_ = elapsed_ms(estimator_start, std::chrono::steady_clock::now());
 
     const auto lidar_start = std::chrono::steady_clock::now();
-    if (observation.have_lidar_scan) {
+    if (lidar_enabled && observation.have_lidar_scan) {
         correct_pose_with_lidar(observation.lidar_scan);
         update_lidar_hits_world(observation.lidar_scan);
         if (dynamic_gap_mode_enabled()) {
             rebuild_dynamic_gap_gates(observation.lidar_scan);
         }
     } else {
-        estimate_.min_lidar_distance = config_.localization.max_range_m;
-        estimate_.front_lidar_distance = config_.localization.max_range_m;
+        estimate_.min_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
+        estimate_.front_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
         lidar_hits_.clear();
+        if (!lidar_enabled) {
+            lidar_map_points_.clear();
+            lidar_map_keys_.clear();
+        }
         diagnostics_.valid_lidar_points = 0;
         diagnostics_.close_lidar_points = 0;
         diagnostics_.front_close_lidar_points = 0;
         diagnostics_.lidar_front_blocked = false;
+        diagnostics_.accumulated_lidar_points = 0;
         diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
     }
     lidar_compute_ms_ = elapsed_ms(lidar_start, std::chrono::steady_clock::now());
@@ -1684,6 +1697,7 @@ HardwarePlannerReport HardwarePlannerRunner::run(int max_steps) {
 
 HardwarePlannerReport HardwarePlannerRunner::current_report() const {
     const RealRobotObservation& observation = bridge_.observation();
+    const bool lidar_enabled = lidar_enabled_for_current_mode();
     const bool controller_front_alert =
         observation.have_controller_telemetry &&
         ((observation.controller.safety_flags &
@@ -1722,8 +1736,8 @@ HardwarePlannerReport HardwarePlannerRunner::current_report() const {
         telemetry_ready_,
         safety_stop_active_,
         controller_front_alert,
-        lidar_front_blocked,
-        observation.have_lidar_scan,
+        lidar_enabled && lidar_front_blocked,
+        lidar_enabled && observation.have_lidar_scan,
         diagnostics_.dynamic_gap_gates,
         diagnostics_.planner_has_reference,
         diagnostics_.stall_boost_active,

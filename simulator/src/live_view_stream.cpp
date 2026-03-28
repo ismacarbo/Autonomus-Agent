@@ -1041,21 +1041,22 @@ void apply_structured_display_remap(const StructuredDisplayRemap& remap, LiveFra
 
 LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) {
     const StructuredDisplayRemap remap = make_structured_display_remap(runner.world());
+    const bool lidar_enabled = runner.lidar_enabled_for_current_mode();
     LiveSceneSnapshot scene;
     scene.stream_label = "Hardware live stream";
     scene.stream_profile = "planner";
     scene.world = remap.display_world;
     scene.geometry = runner.geometry();
     scene.imu_enabled = true;
-    scene.lidar_enabled = true;
-    scene.localization_mode = "Encoders + IMU + LiDAR";
+    scene.lidar_enabled = lidar_enabled;
+    scene.localization_mode = lidar_enabled ? "Encoders + IMU + LiDAR" : "Encoders + IMU";
     scene.heading_source = "IMU";
-    scene.range_sensor_name = "RPLidar A1";
+    scene.range_sensor_name = lidar_enabled ? "RPLidar A1" : "LiDAR disabled for structured planner";
     scene.vehicle_model_name = "Car-like bicycle";
     scene.tracking_controller_name = "MPC path follower";
-    scene.active_lidar_beams = 360;
-    scene.active_lidar_fov_rad = kTwoPi;
-    scene.active_lidar_range = runner.config().localization.max_range_m;
+    scene.active_lidar_beams = lidar_enabled ? 360 : 0;
+    scene.active_lidar_fov_rad = lidar_enabled ? kTwoPi : 0.0;
+    scene.active_lidar_range = lidar_enabled ? runner.config().localization.max_range_m : 0.0;
     return scene;
 }
 
