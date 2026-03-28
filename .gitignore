@@ -16,6 +16,7 @@ build-ninja/
 reports/
 build-pi-headless/
 serialProtocolValidation.py
+committer.sh
 
 # Python cache / bytecode
 __pycache__/

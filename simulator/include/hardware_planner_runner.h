@@ -119,6 +119,9 @@ struct HardwareControlCommand {
 
 struct HardwareTelemetrySample {
     double time = 0.0;
+    double position_x = 0.0;
+    double position_y = 0.0;
+    double yaw = 0.0;
     double speed = 0.0;
     double accel = 0.0;
     double yaw_rate = 0.0;
@@ -146,8 +149,20 @@ struct HardwareTelemetrySample {
     double chosen_gate_distance = 0.0;
     double accumulated_lidar_points = 0.0;
     double no_motion_cycles = 0.0;
+    double chosen_gate_index = -1.0;
+    double safety_stop_active = 0.0;
+    double planner_has_reference = 0.0;
+    double dynamic_gap_gates = 0.0;
     int pwm_left = 0;
     int pwm_right = 0;
+    std::int16_t controller_pwm_left = 0;
+    std::int16_t controller_pwm_right = 0;
+    std::int16_t controller_target_pwm_left = 0;
+    std::int16_t controller_target_pwm_right = 0;
+    std::uint16_t controller_safety_flags = 0;
+    std::uint16_t controller_motor_flags = 0;
+    std::uint16_t controller_status_flags = 0;
+    std::uint16_t controller_error_code = 0;
 };
 
 struct HardwarePlannerDiagnostics {

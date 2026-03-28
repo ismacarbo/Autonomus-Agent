@@ -21,7 +21,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 4U;
+constexpr std::uint16_t kPacketVersion = 5U;
 constexpr std::uint16_t kPacketHello = 0U;
 constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
@@ -382,6 +382,9 @@ bool read_gate_frame(const std::vector<std::uint8_t>& data, std::size_t* offset,
 
 void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemetrySample& sample) {
     write_pod(out, sample.time);
+    write_pod(out, sample.position_x);
+    write_pod(out, sample.position_y);
+    write_pod(out, sample.yaw);
     write_pod(out, sample.speed);
     write_pod(out, sample.accel);
     write_pod(out, sample.yaw_rate);
@@ -409,13 +412,28 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.chosen_gate_distance);
     write_pod(out, sample.accumulated_lidar_points);
     write_pod(out, sample.no_motion_cycles);
+    write_pod(out, sample.chosen_gate_index);
+    write_pod(out, sample.safety_stop_active);
+    write_pod(out, sample.planner_has_reference);
+    write_pod(out, sample.dynamic_gap_gates);
     write_pod(out, sample.pwm_left);
     write_pod(out, sample.pwm_right);
+    write_pod(out, sample.controller_pwm_left);
+    write_pod(out, sample.controller_pwm_right);
+    write_pod(out, sample.controller_target_pwm_left);
+    write_pod(out, sample.controller_target_pwm_right);
+    write_pod(out, sample.controller_safety_flags);
+    write_pod(out, sample.controller_motor_flags);
+    write_pod(out, sample.controller_status_flags);
+    write_pod(out, sample.controller_error_code);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
     return sample != nullptr &&
            read_pod(data, offset, &sample->time) &&
+           read_pod(data, offset, &sample->position_x) &&
+           read_pod(data, offset, &sample->position_y) &&
+           read_pod(data, offset, &sample->yaw) &&
            read_pod(data, offset, &sample->speed) &&
            read_pod(data, offset, &sample->accel) &&
            read_pod(data, offset, &sample->yaw_rate) &&
@@ -443,8 +461,20 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->chosen_gate_distance) &&
            read_pod(data, offset, &sample->accumulated_lidar_points) &&
            read_pod(data, offset, &sample->no_motion_cycles) &&
+           read_pod(data, offset, &sample->chosen_gate_index) &&
+           read_pod(data, offset, &sample->safety_stop_active) &&
+           read_pod(data, offset, &sample->planner_has_reference) &&
+           read_pod(data, offset, &sample->dynamic_gap_gates) &&
            read_pod(data, offset, &sample->pwm_left) &&
-           read_pod(data, offset, &sample->pwm_right);
+           read_pod(data, offset, &sample->pwm_right) &&
+           read_pod(data, offset, &sample->controller_pwm_left) &&
+           read_pod(data, offset, &sample->controller_pwm_right) &&
+           read_pod(data, offset, &sample->controller_target_pwm_left) &&
+           read_pod(data, offset, &sample->controller_target_pwm_right) &&
+           read_pod(data, offset, &sample->controller_safety_flags) &&
+           read_pod(data, offset, &sample->controller_motor_flags) &&
+           read_pod(data, offset, &sample->controller_status_flags) &&
+           read_pod(data, offset, &sample->controller_error_code);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {

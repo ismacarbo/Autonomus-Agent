@@ -110,6 +110,9 @@ struct UiState {
     Vec2 drag_offset;
     bool report_written = false;
     std::string last_report_path;
+    bool hardware_report_written = false;
+    std::string last_hardware_report_path;
+    std::string last_hardware_report_error;
 };
 
 struct HardwareViewerState {
@@ -235,6 +238,7 @@ void draw_overlay_panel(ImDrawList* draw_list, const ImVec2& pos, float width, c
 void render_plot_hover_overlay(const char* title,
                                const std::vector<double>& x,
                                std::initializer_list<PlotHoverSeries> series_list);
+const char* workspace_source_label(int source);
 
 size_t plot_sample_stride(size_t point_count) {
     constexpr size_t kMaxPlotPoints = 600;
@@ -304,6 +308,9 @@ void sync_ui_state_from_sim(UiState* ui_state, const PlannerDrivenVehicleSim& si
     ui_state->drag_offset = {};
     ui_state->report_written = false;
     ui_state->last_report_path.clear();
+    ui_state->hardware_report_written = false;
+    ui_state->last_hardware_report_path.clear();
+    ui_state->last_hardware_report_error.clear();
 }
 
 WorldMap world_from_ui_selection(const PlannerDrivenVehicleSim& sim, const UiState& ui_state) {
@@ -340,6 +347,21 @@ MetricSummary summarize_metric(const std::vector<TelemetrySample>& history, doub
     }
     double total = 0.0;
     for (const TelemetrySample& sample : history) {
+        const double value = sample.*member;
+        total += value;
+        summary.max = std::max(summary.max, value);
+    }
+    summary.avg = total / static_cast<double>(history.size());
+    return summary;
+}
+
+MetricSummary summarize_metric(const std::vector<HardwareTelemetrySample>& history, double HardwareTelemetrySample::*member) {
+    MetricSummary summary;
+    if (history.empty()) {
+        return summary;
+    }
+    double total = 0.0;
+    for (const HardwareTelemetrySample& sample : history) {
         const double value = sample.*member;
         total += value;
         summary.max = std::max(summary.max, value);
@@ -388,6 +410,49 @@ std::string default_report_path(const PlannerDrivenVehicleSim& sim, const char* 
     return (report_dir / name.str()).string();
 }
 
+std::string default_hardware_report_path(const HardwareViewerState& hardware,
+                                         const UiState& ui_state,
+                                         const char* source_tag) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path report_dir = fs::current_path(ec) / "reports";
+    if (!ec) {
+        fs::create_directories(report_dir, ec);
+    }
+
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_tm{};
+    if (const std::tm* tm_ptr = std::localtime(&now_time)) {
+        local_tm = *tm_ptr;
+    }
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
+
+    const EnvironmentMode environment = hardware.has_scene
+                                            ? hardware.scene.world.environment_mode()
+                                            : static_cast<EnvironmentMode>(ui_state.hardware_environment_mode);
+    const std::string preset_name =
+        environment == EnvironmentMode::StructuredRoad
+            ? (hardware.has_scene
+                   ? thesis_sim::structured_map_preset_name(hardware.scene.world.structured_preset())
+                   : thesis_sim::structured_map_preset_name(
+                         static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset)))
+            : (hardware.has_scene
+                   ? thesis_sim::unstructured_map_preset_name(hardware.scene.world.unstructured_preset())
+                   : thesis_sim::unstructured_map_preset_name(
+                         static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset)));
+
+    std::ostringstream name;
+    name << "thesis_hardware_"
+         << (environment == EnvironmentMode::StructuredRoad ? "structured" : "unstructured")
+         << "_" << slugify(preset_name)
+         << "_" << source_tag << "_"
+         << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
+         << "_" << std::setw(3) << std::setfill('0') << millis
+         << ".json";
+    return (report_dir / name.str()).string();
+}
+
 void write_vec2_json(std::ostream& out, const Vec2& value) {
     out << "{\"x\":" << value.x << ",\"y\":" << value.y << "}";
 }
@@ -398,6 +463,359 @@ void write_rect_json(std::ostream& out, const Rect& rect) {
         << ",\"max_x\":" << rect.max_x
         << ",\"max_y\":" << rect.max_y
         << "}";
+}
+
+void write_world_json(std::ostream& out, const WorldMap& world) {
+    out << "{\n";
+    out << "      \"environment\": \"" << json_escape(thesis_sim::environment_mode_name(world.environment_mode())) << "\",\n";
+    out << "      \"unstructured_preset\": \"" << json_escape(thesis_sim::unstructured_map_preset_name(world.unstructured_preset())) << "\",\n";
+    out << "      \"structured_preset\": \"" << json_escape(thesis_sim::structured_map_preset_name(world.structured_preset())) << "\",\n";
+    out << "      \"gate_behavior\": \"" << json_escape(thesis_sim::gate_behavior_mode_name(world.gate_behavior())) << "\",\n";
+    out << "      \"gate_seed\": " << world.gate_seed() << ",\n";
+    out << "      \"bounds\": ";
+    write_rect_json(out, world.bounds());
+    out << ",\n";
+    out << "      \"start\": ";
+    write_vec2_json(out, world.start());
+    out << ",\n";
+    out << "      \"goal\": ";
+    write_vec2_json(out, world.goal());
+    out << ",\n";
+    out << "      \"start_heading_rad\": " << world.start_heading() << ",\n";
+    out << "      \"obstacles\": [\n";
+    for (size_t i = 0; i < world.obstacles().size(); ++i) {
+        out << "        ";
+        write_rect_json(out, world.obstacles()[i]);
+        out << (i + 1 < world.obstacles().size() ? ",\n" : "\n");
+    }
+    out << "      ],\n";
+    out << "      \"gates\": [\n";
+    for (size_t i = 0; i < world.gates().size(); ++i) {
+        const GateSpec& gate = world.gates()[i];
+        out << "        {\"name\":\"" << json_escape(gate.name) << "\",\"position\":";
+        write_vec2_json(out, gate.position);
+        out << ",\"anchor_position\":";
+        write_vec2_json(out, gate.anchor_position);
+        out << ",\"motion_amplitude\":";
+        write_vec2_json(out, gate.motion_amplitude);
+        out << ",\"motion_frequency_hz\":" << gate.motion_frequency_hz
+            << ",\"motion_phase_rad\":" << gate.motion_phase_rad
+            << ",\"heading_hint\":" << gate.heading_hint
+            << ",\"final\":" << (gate.final ? "true" : "false") << "}";
+        out << (i + 1 < world.gates().size() ? ",\n" : "\n");
+    }
+    out << "      ],\n";
+    out << "      \"road_centerline\": [\n";
+    for (size_t i = 0; i < world.road_centerline().size(); ++i) {
+        out << "        ";
+        write_vec2_json(out, world.road_centerline()[i]);
+        out << (i + 1 < world.road_centerline().size() ? ",\n" : "\n");
+    }
+    out << "      ]\n";
+    out << "    }";
+}
+
+void write_geometry_json(std::ostream& out, const thesis_sim::VehicleGeometry& geometry) {
+    out << "{"
+        << "\"wheelbase\":" << geometry.wheelbase
+        << ",\"cg_to_front\":" << geometry.cg_to_front
+        << ",\"cg_to_rear\":" << geometry.cg_to_rear
+        << ",\"track\":" << geometry.track
+        << ",\"body_length\":" << geometry.body_length
+        << ",\"body_width\":" << geometry.body_width
+        << ",\"wheel_radius\":" << geometry.wheel_radius
+        << ",\"max_curvature\":" << geometry.max_curvature
+        << ",\"max_linear_speed\":" << geometry.max_linear_speed
+        << ",\"max_yaw_rate\":" << geometry.max_yaw_rate
+        << ",\"max_accel\":" << geometry.max_accel
+        << ",\"max_decel\":" << geometry.max_decel
+        << ",\"max_pwm\":" << geometry.max_pwm
+        << ",\"min_effective_pwm\":" << geometry.min_effective_pwm
+        << ",\"wheel_speed_to_pwm_gain\":" << geometry.wheel_speed_to_pwm_gain
+        << ",\"wheel_speed_to_pwm_bias\":" << geometry.wheel_speed_to_pwm_bias
+        << ",\"left_pwm_scale\":" << geometry.left_pwm_scale
+        << ",\"right_pwm_scale\":" << geometry.right_pwm_scale
+        << ",\"linear_feedback_gain\":" << geometry.linear_feedback_gain
+        << ",\"yaw_feedback_gain\":" << geometry.yaw_feedback_gain
+        << ",\"encoder_ticks_per_revolution\":" << geometry.encoder_ticks_per_revolution
+        << "}";
+}
+
+void write_live_vehicle_state_json(std::ostream& out, const LiveVehicleState& vehicle) {
+    out << "{"
+        << "\"position\":";
+    write_vec2_json(out, vehicle.position);
+    out << ",\"yaw\":" << vehicle.yaw
+        << ",\"speed\":" << vehicle.speed
+        << ",\"accel\":" << vehicle.accel
+        << ",\"curvature\":" << vehicle.curvature
+        << ",\"steer_angle\":" << vehicle.steer_angle
+        << ",\"yaw_rate\":" << vehicle.yaw_rate
+        << ",\"sideslip\":" << vehicle.sideslip
+        << ",\"left_wheel_speed\":" << vehicle.left_wheel_speed
+        << ",\"right_wheel_speed\":" << vehicle.right_wheel_speed
+        << ",\"target_speed\":" << vehicle.target_speed
+        << ",\"target_yaw_rate\":" << vehicle.target_yaw_rate
+        << ",\"target_steer_angle\":" << vehicle.target_steer_angle
+        << ",\"left_encoder_ticks\":" << vehicle.left_encoder_ticks
+        << ",\"right_encoder_ticks\":" << vehicle.right_encoder_ticks
+        << ",\"left_encoder_delta\":" << vehicle.left_encoder_delta
+        << ",\"right_encoder_delta\":" << vehicle.right_encoder_delta
+        << ",\"left_pwm\":" << vehicle.left_pwm
+        << ",\"right_pwm\":" << vehicle.right_pwm
+        << ",\"encoder_dt_ms\":" << vehicle.encoder_dt_ms
+        << "}";
+}
+
+void write_live_gate_frame_json(std::ostream& out, const LiveGateFrame& gate) {
+    out << "{"
+        << "\"name\":\"" << json_escape(gate.spec.name) << "\",\"position\":";
+    write_vec2_json(out, gate.spec.position);
+    out << ",\"anchor_position\":";
+    write_vec2_json(out, gate.spec.anchor_position);
+    out << ",\"motion_amplitude\":";
+    write_vec2_json(out, gate.spec.motion_amplitude);
+    out << ",\"motion_frequency_hz\":" << gate.spec.motion_frequency_hz
+        << ",\"motion_phase_rad\":" << gate.spec.motion_phase_rad
+        << ",\"heading_hint\":" << gate.spec.heading_hint
+        << ",\"final\":" << (gate.spec.final ? "true" : "false")
+        << ",\"passed\":" << (gate.passed ? "true" : "false")
+        << "}";
+}
+
+void write_lidar_hit_json(std::ostream& out, const LidarHit& hit) {
+    out << "{"
+        << "\"angle\":" << hit.angle
+        << ",\"distance\":" << hit.distance
+        << ",\"point\":";
+    write_vec2_json(out, hit.point);
+    out << ",\"hit\":" << (hit.hit ? "true" : "false")
+        << "}";
+}
+
+void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample& sample) {
+    out << "{"
+        << "\"time\":" << sample.time
+        << ",\"position_x\":" << sample.position_x
+        << ",\"position_y\":" << sample.position_y
+        << ",\"yaw\":" << sample.yaw
+        << ",\"speed\":" << sample.speed
+        << ",\"accel\":" << sample.accel
+        << ",\"yaw_rate\":" << sample.yaw_rate
+        << ",\"jerk\":" << sample.jerk
+        << ",\"command_r\":" << sample.command_r
+        << ",\"target_speed\":" << sample.target_speed
+        << ",\"target_yaw_rate\":" << sample.target_yaw_rate
+        << ",\"curvature\":" << sample.curvature
+        << ",\"distance_to_goal\":" << sample.distance_to_goal
+        << ",\"min_lidar\":" << sample.min_lidar
+        << ",\"front_lidar\":" << sample.front_lidar
+        << ",\"planner_speed_ref\":" << sample.planner_speed_ref
+        << ",\"tracker_cross_track\":" << sample.tracker_cross_track
+        << ",\"tracker_heading_error_deg\":" << sample.tracker_heading_error_deg
+        << ",\"planning_ms\":" << sample.planning_ms
+        << ",\"tracking_ms\":" << sample.tracking_ms
+        << ",\"lidar_ms\":" << sample.lidar_ms
+        << ",\"estimator_ms\":" << sample.estimator_ms
+        << ",\"step_ms\":" << sample.step_ms
+        << ",\"visible_gates\":" << sample.visible_gates
+        << ",\"lidar_samples\":" << sample.lidar_samples
+        << ",\"close_lidar_samples\":" << sample.close_lidar_samples
+        << ",\"front_close_lidar_samples\":" << sample.front_close_lidar_samples
+        << ",\"candidate_gates\":" << sample.candidate_gates
+        << ",\"chosen_gate_distance\":" << sample.chosen_gate_distance
+        << ",\"accumulated_lidar_points\":" << sample.accumulated_lidar_points
+        << ",\"no_motion_cycles\":" << sample.no_motion_cycles
+        << ",\"chosen_gate_index\":" << sample.chosen_gate_index
+        << ",\"safety_stop_active\":" << sample.safety_stop_active
+        << ",\"planner_has_reference\":" << sample.planner_has_reference
+        << ",\"dynamic_gap_gates\":" << sample.dynamic_gap_gates
+        << ",\"pwm_left\":" << sample.pwm_left
+        << ",\"pwm_right\":" << sample.pwm_right
+        << ",\"controller_pwm_left\":" << sample.controller_pwm_left
+        << ",\"controller_pwm_right\":" << sample.controller_pwm_right
+        << ",\"controller_target_pwm_left\":" << sample.controller_target_pwm_left
+        << ",\"controller_target_pwm_right\":" << sample.controller_target_pwm_right
+        << ",\"controller_safety_flags\":" << sample.controller_safety_flags
+        << ",\"controller_motor_flags\":" << sample.controller_motor_flags
+        << ",\"controller_status_flags\":" << sample.controller_status_flags
+        << ",\"controller_error_code\":" << sample.controller_error_code
+        << "}";
+}
+
+bool write_hardware_json_report(const HardwareViewerState& hardware,
+                                const UiState& ui_state,
+                                const LiveViewStreamServer& hardware_server,
+                                const std::string& report_path) {
+    std::ofstream out(report_path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    const std::string status =
+        hardware_server.connected()
+            ? (hardware.frame.goal_reached ? "goal_reached" : (hardware.frame.safety_stop_active ? "safety_stop" : "live"))
+            : (hardware_server.listening() ? "listening" : "idle");
+
+    const MetricSummary planning_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::planning_ms);
+    const MetricSummary tracking_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::tracking_ms);
+    const MetricSummary lidar_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::lidar_ms);
+    const MetricSummary estimator_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::estimator_ms);
+    const MetricSummary step_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::step_ms);
+
+    out << std::fixed << std::setprecision(6);
+    out << "{\n";
+    out << "  \"schema\": \"thesis_hardware_report_v1\",\n";
+    out << "  \"status\": \"" << json_escape(status) << "\",\n";
+    out << "  \"workspace_source\": \"" << json_escape(workspace_source_label(ui_state.workspace_source)) << "\",\n";
+    out << "  \"listener\": {\n";
+    out << "    \"listening\": " << (hardware_server.listening() ? "true" : "false") << ",\n";
+    out << "    \"connected\": " << (hardware_server.connected() ? "true" : "false") << ",\n";
+    out << "    \"port\": " << hardware_server.port() << ",\n";
+    out << "    \"remote_endpoint\": \"" << json_escape(hardware_server.remote_endpoint()) << "\",\n";
+    out << "    \"last_error\": \"" << json_escape(hardware_server.last_error()) << "\"\n";
+    out << "  },\n";
+    out << "  \"scene\": {\n";
+    out << "    \"available\": " << (hardware.has_scene ? "true" : "false");
+    if (hardware.has_scene) {
+        out << ",\n";
+        out << "    \"stream_label\": \"" << json_escape(hardware.scene.stream_label) << "\",\n";
+        out << "    \"stream_profile\": \"" << json_escape(hardware.scene.stream_profile) << "\",\n";
+        out << "    \"imu_enabled\": " << (hardware.scene.imu_enabled ? "true" : "false") << ",\n";
+        out << "    \"lidar_enabled\": " << (hardware.scene.lidar_enabled ? "true" : "false") << ",\n";
+        out << "    \"localization_mode\": \"" << json_escape(hardware.scene.localization_mode) << "\",\n";
+        out << "    \"heading_source\": \"" << json_escape(hardware.scene.heading_source) << "\",\n";
+        out << "    \"range_sensor_name\": \"" << json_escape(hardware.scene.range_sensor_name) << "\",\n";
+        out << "    \"vehicle_model_name\": \"" << json_escape(hardware.scene.vehicle_model_name) << "\",\n";
+        out << "    \"tracking_controller_name\": \"" << json_escape(hardware.scene.tracking_controller_name) << "\",\n";
+        out << "    \"active_lidar_beams\": " << hardware.scene.active_lidar_beams << ",\n";
+        out << "    \"active_lidar_fov_rad\": " << hardware.scene.active_lidar_fov_rad << ",\n";
+        out << "    \"active_lidar_range\": " << hardware.scene.active_lidar_range << ",\n";
+        out << "    \"geometry\": ";
+        write_geometry_json(out, hardware.scene.geometry);
+        out << ",\n";
+        out << "    \"world\": ";
+        write_world_json(out, hardware.scene.world);
+        out << '\n';
+    } else {
+        out << '\n';
+    }
+    out << "  },\n";
+    out << "  \"frame\": {\n";
+    out << "    \"sim_time\": " << hardware.frame.sim_time << ",\n";
+    out << "    \"step_count\": " << hardware.frame.step_count << ",\n";
+    out << "    \"connected\": " << (hardware.frame.connected ? "true" : "false") << ",\n";
+    out << "    \"telemetry_ready\": " << (hardware.frame.telemetry_ready ? "true" : "false") << ",\n";
+    out << "    \"goal_reached\": " << (hardware.frame.goal_reached ? "true" : "false") << ",\n";
+    out << "    \"safety_stop_active\": " << (hardware.frame.safety_stop_active ? "true" : "false") << ",\n";
+    out << "    \"dynamic_gap_gates\": " << (hardware.frame.dynamic_gap_gates ? "true" : "false") << ",\n";
+    out << "    \"planner_has_reference\": " << (hardware.frame.planner_has_reference ? "true" : "false") << ",\n";
+    out << "    \"stall_boost_active\": " << (hardware.frame.stall_boost_active ? "true" : "false") << ",\n";
+    out << "    \"distance_to_goal\": " << hardware.frame.distance_to_goal << ",\n";
+    out << "    \"min_lidar_distance\": " << hardware.frame.min_lidar_distance << ",\n";
+    out << "    \"front_lidar_distance\": " << hardware.frame.front_lidar_distance << ",\n";
+    out << "    \"chosen_gate_distance\": " << hardware.frame.chosen_gate_distance << ",\n";
+    out << "    \"last_j\": " << hardware.frame.last_j << ",\n";
+    out << "    \"last_r\": " << hardware.frame.last_r << ",\n";
+    out << "    \"planner_speed_ref\": " << hardware.frame.planner_speed_ref << ",\n";
+    out << "    \"tracker_cross_track_error\": " << hardware.frame.tracker_cross_track_error << ",\n";
+    out << "    \"tracker_heading_error_deg\": " << hardware.frame.tracker_heading_error_deg << ",\n";
+    out << "    \"valid_lidar_samples\": " << hardware.frame.valid_lidar_samples << ",\n";
+    out << "    \"close_lidar_samples\": " << hardware.frame.close_lidar_samples << ",\n";
+    out << "    \"front_close_lidar_samples\": " << hardware.frame.front_close_lidar_samples << ",\n";
+    out << "    \"candidate_gates\": " << hardware.frame.candidate_gates << ",\n";
+    out << "    \"accumulated_lidar_points\": " << hardware.frame.accumulated_lidar_points << ",\n";
+    out << "    \"no_motion_command_cycles\": " << hardware.frame.no_motion_command_cycles << ",\n";
+    out << "    \"chosen_gate_index\": " << hardware.frame.chosen_gate_index << ",\n";
+    out << "    \"vehicle\": ";
+    write_live_vehicle_state_json(out, hardware.frame.vehicle);
+    out << ",\n";
+    out << "    \"navigation_position\": ";
+    write_vec2_json(out, hardware.frame.navigation_position);
+    out << ",\n";
+    out << "    \"navigation_yaw\": " << hardware.frame.navigation_yaw << ",\n";
+    out << "    \"navigation_yaw_rate\": " << hardware.frame.navigation_yaw_rate << ",\n";
+    out << "    \"navigation_curvature\": " << hardware.frame.navigation_curvature << ",\n";
+    out << "    \"navigation_speed\": " << hardware.frame.navigation_speed << ",\n";
+    out << "    \"navigation_accel\": " << hardware.frame.navigation_accel << ",\n";
+    out << "    \"has_last_mpc_command\": " << (hardware.frame.has_last_mpc_command ? "true" : "false") << ",\n";
+    out << "    \"last_mpc_command\": ";
+    if (hardware.frame.has_last_mpc_command) {
+        out << "{\"accel_cmd\":" << hardware.frame.last_mpc_command.accel_cmd
+            << ",\"steer_rate_cmd\":" << hardware.frame.last_mpc_command.steer_rate_cmd << "}";
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "    \"has_latest_sample\": " << (hardware.frame.has_latest_sample ? "true" : "false") << ",\n";
+    out << "    \"latest_sample\": ";
+    if (hardware.frame.has_latest_sample) {
+        write_hardware_sample_json(out, hardware.frame.latest_sample);
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "    \"visible_gate_indices\": [";
+    for (size_t i = 0; i < hardware.frame.visible_gate_indices.size(); ++i) {
+        if (i > 0) {
+            out << ',';
+        }
+        out << hardware.frame.visible_gate_indices[i];
+    }
+    out << "],\n";
+    out << "    \"gates\": [\n";
+    for (size_t i = 0; i < hardware.frame.gates.size(); ++i) {
+        out << "      ";
+        write_live_gate_frame_json(out, hardware.frame.gates[i]);
+        out << (i + 1 < hardware.frame.gates.size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"trail\": [\n";
+    for (size_t i = 0; i < hardware.frame.trail.size(); ++i) {
+        out << "      ";
+        write_vec2_json(out, hardware.frame.trail[i]);
+        out << (i + 1 < hardware.frame.trail.size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"planned_trajectory\": [\n";
+    for (size_t i = 0; i < hardware.frame.planned_trajectory.size(); ++i) {
+        out << "      ";
+        write_vec2_json(out, hardware.frame.planned_trajectory[i]);
+        out << (i + 1 < hardware.frame.planned_trajectory.size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"slam_points\": [\n";
+    for (size_t i = 0; i < hardware.frame.slam_points.size(); ++i) {
+        out << "      ";
+        write_vec2_json(out, hardware.frame.slam_points[i]);
+        out << (i + 1 < hardware.frame.slam_points.size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"lidar_hits\": [\n";
+    for (size_t i = 0; i < hardware.frame.lidar_hits.size(); ++i) {
+        out << "      ";
+        write_lidar_hit_json(out, hardware.frame.lidar_hits[i]);
+        out << (i + 1 < hardware.frame.lidar_hits.size() ? ",\n" : "\n");
+    }
+    out << "    ]\n";
+    out << "  },\n";
+    out << "  \"performance\": {\n";
+    out << "    \"history_samples\": " << hardware.history.size() << ",\n";
+    out << "    \"planning_ms\": {\"avg\": " << planning_summary.avg << ",\"max\": " << planning_summary.max << "},\n";
+    out << "    \"tracking_ms\": {\"avg\": " << tracking_summary.avg << ",\"max\": " << tracking_summary.max << "},\n";
+    out << "    \"lidar_ms\": {\"avg\": " << lidar_summary.avg << ",\"max\": " << lidar_summary.max << "},\n";
+    out << "    \"estimator_ms\": {\"avg\": " << estimator_summary.avg << ",\"max\": " << estimator_summary.max << "},\n";
+    out << "    \"step_ms\": {\"avg\": " << step_summary.avg << ",\"max\": " << step_summary.max << "}\n";
+    out << "  },\n";
+    out << "  \"history\": [\n";
+    for (size_t i = 0; i < hardware.history.size(); ++i) {
+        out << "    ";
+        write_hardware_sample_json(out, hardware.history[i]);
+        out << (i + 1 < hardware.history.size() ? ",\n" : "\n");
+    }
+    out << "  ]\n";
+    out << "}\n";
+    return true;
 }
 
 bool write_json_report(const PlannerDrivenVehicleSim& sim,
@@ -2714,6 +3132,44 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     }
 
     ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
+    if (ImGui::CollapsingHeader("Telemetry Capture", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const bool can_capture =
+            hardware.has_scene ||
+            !hardware.history.empty() ||
+            hardware.frame.connected ||
+            hardware.frame.step_count > 0;
+        ImGui::TextWrapped("Save a full hardware debug snapshot on demand. The file includes the current frame, controller flags, trajectory, LiDAR hits/map points, visible gates and the full workstation-side telemetry history.");
+        if (!can_capture) {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Save Hardware Telemetry", ImVec2(-1.0f, 0.0f))) {
+            const std::string report_path = default_hardware_report_path(hardware, *ui_state, "gui_manual");
+            if (write_hardware_json_report(hardware, *ui_state, *hardware_server, report_path)) {
+                ui_state->hardware_report_written = true;
+                ui_state->last_hardware_report_path = report_path;
+                ui_state->last_hardware_report_error.clear();
+            } else {
+                ui_state->hardware_report_written = false;
+                ui_state->last_hardware_report_error = "Could not write the hardware telemetry report.";
+            }
+        }
+        if (!can_capture) {
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Waiting for live hardware data before capture.");
+        }
+        ImGui::Text("History samples = %d", static_cast<int>(hardware.history.size()));
+        ImGui::Text("Current LiDAR hits = %d   map points = %d",
+                    static_cast<int>(hardware.frame.lidar_hits.size()),
+                    static_cast<int>(hardware.frame.slam_points.size()));
+        if (!ui_state->last_hardware_report_path.empty()) {
+            ImGui::TextWrapped("Last hardware report: %s", ui_state->last_hardware_report_path.c_str());
+        }
+        if (!ui_state->last_hardware_report_error.empty()) {
+            ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.34f, 1.0f), "%s", ui_state->last_hardware_report_error.c_str());
+        }
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
     if (ImGui::CollapsingHeader("Sensors & Localization", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (!hardware.has_scene) {
             ImGui::TextDisabled("Waiting for scene metadata...");
@@ -3304,6 +3760,9 @@ int run_gui(const AppOptions& options) {
             hardware_view.has_scene = true;
             hardware_view.frame = {};
             hardware_view.history.clear();
+            ui_state.hardware_report_written = false;
+            ui_state.last_hardware_report_path.clear();
+            ui_state.last_hardware_report_error.clear();
             ui_state.hardware_environment_mode = static_cast<int>(hardware_view.scene.world.environment_mode());
             ui_state.hardware_unstructured_preset = static_cast<int>(hardware_view.scene.world.unstructured_preset());
             ui_state.hardware_structured_preset = static_cast<int>(hardware_view.scene.world.structured_preset());

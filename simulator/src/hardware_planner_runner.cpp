@@ -1507,8 +1507,37 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 }
 
 void HardwarePlannerRunner::push_history() {
+    const RealRobotObservation& observation = bridge_.observation();
+    const std::int16_t controller_pwm_left = observation.have_controller_telemetry
+                                                 ? observation.controller.pwm_l
+                                                 : static_cast<std::int16_t>(0);
+    const std::int16_t controller_pwm_right = observation.have_controller_telemetry
+                                                  ? observation.controller.pwm_r
+                                                  : static_cast<std::int16_t>(0);
+    const std::int16_t controller_target_pwm_left = observation.have_controller_telemetry
+                                                        ? observation.controller.target_pwm_l
+                                                        : static_cast<std::int16_t>(0);
+    const std::int16_t controller_target_pwm_right = observation.have_controller_telemetry
+                                                         ? observation.controller.target_pwm_r
+                                                         : static_cast<std::int16_t>(0);
+    const std::uint16_t controller_safety_flags = observation.have_controller_telemetry
+                                                      ? observation.controller.safety_flags
+                                                      : static_cast<std::uint16_t>(0);
+    const std::uint16_t controller_motor_flags = observation.have_controller_telemetry
+                                                     ? observation.controller.motor_flags
+                                                     : static_cast<std::uint16_t>(0);
+    const std::uint16_t controller_status_flags = observation.have_controller_telemetry
+                                                      ? observation.controller.status_flags
+                                                      : static_cast<std::uint16_t>(0);
+    const std::uint16_t controller_error_code = observation.have_controller_telemetry
+                                                    ? observation.controller.error_code
+                                                    : static_cast<std::uint16_t>(0);
+
     history_.push_back({
         sim_time_,
+        estimate_.position.x,
+        estimate_.position.y,
+        estimate_.yaw,
         estimate_.speed,
         estimate_.accel,
         estimate_.yaw_rate,
@@ -1536,8 +1565,20 @@ void HardwarePlannerRunner::push_history() {
         std::isfinite(diagnostics_.chosen_gate_distance) ? diagnostics_.chosen_gate_distance : -1.0,
         static_cast<double>(diagnostics_.accumulated_lidar_points),
         static_cast<double>(diagnostics_.no_motion_command_cycles),
+        static_cast<double>(chosen_gate_index_),
+        safety_stop_active_ ? 1.0 : 0.0,
+        diagnostics_.planner_has_reference ? 1.0 : 0.0,
+        diagnostics_.dynamic_gap_gates ? 1.0 : 0.0,
         last_command_.pwm_left,
         last_command_.pwm_right,
+        controller_pwm_left,
+        controller_pwm_right,
+        controller_target_pwm_left,
+        controller_target_pwm_right,
+        controller_safety_flags,
+        controller_motor_flags,
+        controller_status_flags,
+        controller_error_code,
     });
 
     if (static_cast<int>(history_.size()) > config_.max_history) {
