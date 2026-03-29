@@ -874,8 +874,7 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     const double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
     const double measured_yaw_rate = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
 
-    if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
-        !controller_encoders_ready(telemetry)) {
+    if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
         update_estimate_from_structured_motion_fallback(telemetry, dt, measured_yaw, measured_yaw_rate);
         return;
     }
@@ -917,6 +916,7 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
     last_right_encoder_ticks_ = telemetry.ticks_right;
     encoder_ticks_initialized_ = true;
 
+    const double previous_speed = estimate_.speed;
     const double effective_dt =
         telemetry.enc_dt_ms > 0U
             ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
@@ -944,29 +944,57 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         -config_.drive.max_yaw_rate,
         config_.drive.max_yaw_rate);
 
-    estimator_.predict(effective_dt, fallback_speed, fallback_yaw_rate);
-    estimator_.update_imu(measured_yaw, measured_yaw_rate);
-
     if (road_ != nullptr &&
         cl_.prev_road.num_segments() > 0 &&
         std::isfinite(cl_.end_point_s) &&
         cl_.end_point_s > 1e-6) {
         const bool closed_structured_loop = structured_road_is_closed_loop(world_);
-        double s_fallback = std::isfinite(x0_.x) ? x0_.x : 0.0;
+        double s_fallback = std::isfinite(x0_.x)
+                                ? x0_.x
+                                : (std::isfinite(structured_last_s_) ? structured_last_s_ : 0.0);
         s_fallback += fallback_speed * effective_dt;
         if (closed_structured_loop) {
             s_fallback = wrap_arc_length(s_fallback, cl_.end_point_s);
         } else {
             s_fallback = clamp_value(s_fallback, 0.0, cl_.end_point_s);
         }
+        structured_progress_s_ = std::max(0.0, structured_progress_s_ + fallback_speed * effective_dt);
 
         double x_on_path = 0.0;
         double y_on_path = 0.0;
         cl_.prev_road.eval(s_fallback, x_on_path, y_on_path);
-        estimator_.update_lidar_pose({x_on_path, y_on_path}, measured_yaw, true);
+        estimate_.position = {x_on_path, y_on_path};
+        estimate_.yaw = measured_yaw;
+        estimate_.speed = fallback_speed;
+        estimate_.accel = effective_dt > 1e-6 ? (fallback_speed - previous_speed) / effective_dt : 0.0;
+        estimate_.yaw_rate = fallback_yaw_rate;
+        estimate_.curvature = std::abs(fallback_speed) > 0.05
+                                  ? clamp_value(
+                                        fallback_yaw_rate / fallback_speed,
+                                        -geometry_.max_curvature,
+                                        geometry_.max_curvature)
+                                  : 0.0;
+        estimate_.localized = true;
+        structured_last_s_ = s_fallback;
+        x0_.x = s_fallback;
+        x0_.n = 0.0;
+        x0_.b = 0.0;
+        estimator_.reset(estimate_.position, estimate_.yaw);
+        return;
     }
 
-    sync_estimate_from_ekf_state();
+    estimate_.yaw = measured_yaw;
+    estimate_.speed = fallback_speed;
+    estimate_.accel = effective_dt > 1e-6 ? (fallback_speed - previous_speed) / effective_dt : 0.0;
+    estimate_.yaw_rate = fallback_yaw_rate;
+    estimate_.curvature = std::abs(fallback_speed) > 0.05
+                              ? clamp_value(
+                                    fallback_yaw_rate / fallback_speed,
+                                    -geometry_.max_curvature,
+                                    geometry_.max_curvature)
+                              : 0.0;
+    estimate_.localized = true;
+    estimator_.reset(estimate_.position, estimate_.yaw);
 }
 
 void HardwarePlannerRunner::sync_estimate_from_ekf_state() {
@@ -1397,7 +1425,16 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     }
 
     double lateral_offset = 0.0;
-    if (!project_curvilinear_state(cl_, estimate_.position, s_current, closed_structured_loop, &s_current, &lateral_offset)) {
+    if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+        if (std::isfinite(structured_last_s_)) {
+            s_current = structured_last_s_;
+        }
+        if (closed_structured_loop) {
+            s_current = wrap_arc_length(s_current, cl_.end_point_s);
+        } else {
+            s_current = clamp_value(std::max(0.0, s_current), 0.0, cl_.end_point_s);
+        }
+    } else if (!project_curvilinear_state(cl_, estimate_.position, s_current, closed_structured_loop, &s_current, &lateral_offset)) {
         double x_on_path = 0.0;
         double y_on_path = 0.0;
         cl_.prev_road.eval(s_current, x_on_path, y_on_path);
@@ -1415,25 +1452,11 @@ void HardwarePlannerRunner::update_selected_trajectory() {
 
     if (closed_structured_loop) {
         if (!structured_goal_ready_) {
-            const double goal_epsilon = std::clamp(0.02 * cl_.end_point_s, 0.25, 1.0);
-            structured_goal_progress_target_ = std::max(0.0, cl_.end_point_s - goal_epsilon);
+            structured_goal_progress_target_ = std::max(0.0, cl_.end_point_s);
             structured_goal_position_ = world_.start();
             structured_goal_ready_ = structured_goal_progress_target_ > 0.0;
         }
-
-        if (!std::isfinite(structured_last_s_)) {
-            structured_last_s_ = s_current;
-            structured_progress_s_ = 0.0;
-        } else {
-            double delta_s = s_current - structured_last_s_;
-            if (delta_s < -0.5 * cl_.end_point_s) {
-                delta_s += cl_.end_point_s;
-            } else if (delta_s > 0.5 * cl_.end_point_s) {
-                delta_s -= cl_.end_point_s;
-            }
-            structured_progress_s_ = std::max(0.0, structured_progress_s_ + delta_s);
-            structured_last_s_ = s_current;
-        }
+        structured_last_s_ = s_current;
     }
 
     const bool unstructured = world_.environment_mode() == EnvironmentMode::UnstructuredGates;
@@ -1632,6 +1655,8 @@ void HardwarePlannerRunner::push_history() {
         last_command_.target_yaw_rate,
         estimate_.curvature,
         distance_to_goal_,
+        std::isfinite(x0_.x) ? x0_.x : 0.0,
+        structured_progress_s_,
         estimate_.min_lidar_distance,
         estimate_.front_lidar_distance,
         planner_speed_ref_,
@@ -1799,15 +1824,24 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     sim_time_ += bounded_dt;
     ++step_count_;
     if (structured_road_is_closed_loop(world_)) {
+        const double wrapped_track_s =
+            std::isfinite(x0_.x) ? wrap_arc_length(x0_.x, cl_.end_point_s) : 0.0;
         const double goal_position_distance =
             distance(estimate_.position, structured_goal_ready_ ? structured_goal_position_ : world_.start());
+        const double progress_margin = std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.05, 0.20);
+        const double start_window = std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
+        const bool returned_to_start =
+            wrapped_track_s <= start_window || wrapped_track_s >= std::max(cl_.end_point_s - start_window, 0.0);
         distance_to_goal_ = structured_goal_ready_
                                 ? std::max(structured_goal_progress_target_ - structured_progress_s_, 0.0)
                                 : cl_.end_point_s;
-        const double progress_margin = std::max(0.8, 0.03 * std::max(cl_.end_point_s, 1.0));
         goal_reached_ = structured_goal_ready_ &&
                         structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
-                        goal_position_distance < 0.75;
+                        (returned_to_start ||
+                         goal_position_distance < std::max(config_.goal_tolerance_m * 2.0, 0.35));
+        if (goal_reached_) {
+            distance_to_goal_ = 0.0;
+        }
     } else {
         distance_to_goal_ = distance(estimate_.position, world_.goal());
         goal_reached_ = distance_to_goal_ < config_.goal_tolerance_m &&

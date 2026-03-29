@@ -608,6 +608,8 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"target_yaw_rate\":" << sample.target_yaw_rate
         << ",\"curvature\":" << sample.curvature
         << ",\"distance_to_goal\":" << sample.distance_to_goal
+        << ",\"structured_track_s\":" << sample.structured_track_s
+        << ",\"structured_progress_s\":" << sample.structured_progress_s
         << ",\"min_lidar\":" << sample.min_lidar
         << ",\"front_lidar\":" << sample.front_lidar
         << ",\"planner_speed_ref\":" << sample.planner_speed_ref

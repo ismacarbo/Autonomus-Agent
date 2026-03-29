@@ -131,6 +131,8 @@ struct HardwareTelemetrySample {
     double target_yaw_rate = 0.0;
     double curvature = 0.0;
     double distance_to_goal = 0.0;
+    double structured_track_s = 0.0;
+    double structured_progress_s = 0.0;
     double min_lidar = 0.0;
     double front_lidar = 0.0;
     double planner_speed_ref = 0.0;

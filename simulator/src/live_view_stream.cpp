@@ -21,7 +21,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 5U;
+constexpr std::uint16_t kPacketVersion = 6U;
 constexpr std::uint16_t kPacketHello = 0U;
 constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
@@ -394,6 +394,8 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.target_yaw_rate);
     write_pod(out, sample.curvature);
     write_pod(out, sample.distance_to_goal);
+    write_pod(out, sample.structured_track_s);
+    write_pod(out, sample.structured_progress_s);
     write_pod(out, sample.min_lidar);
     write_pod(out, sample.front_lidar);
     write_pod(out, sample.planner_speed_ref);
@@ -443,6 +445,8 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->target_yaw_rate) &&
            read_pod(data, offset, &sample->curvature) &&
            read_pod(data, offset, &sample->distance_to_goal) &&
+           read_pod(data, offset, &sample->structured_track_s) &&
+           read_pod(data, offset, &sample->structured_progress_s) &&
            read_pod(data, offset, &sample->min_lidar) &&
            read_pod(data, offset, &sample->front_lidar) &&
            read_pod(data, offset, &sample->planner_speed_ref) &&
@@ -1086,7 +1090,7 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
     scene.geometry = runner.geometry();
     scene.imu_enabled = true;
     scene.lidar_enabled = lidar_enabled;
-    scene.localization_mode = lidar_enabled ? "Encoders + IMU + LiDAR" : "Encoders + IMU";
+    scene.localization_mode = lidar_enabled ? "IMU + LiDAR" : "IMU + road progress";
     scene.heading_source = "IMU";
     scene.range_sensor_name = lidar_enabled ? "RPLidar A1" : "LiDAR disabled for structured planner";
     scene.vehicle_model_name = "Car-like bicycle";
