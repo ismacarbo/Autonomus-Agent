@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <thread>
@@ -200,6 +201,7 @@ struct TestOptions {
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
+    std::string world_file;
     int forward_pwm = 150;
     int turn_pwm = 120;
     double forward_seconds = 2.0;
@@ -902,6 +904,20 @@ bool stream_enabled(const TestOptions& options) {
 }
 
 WorldMap make_selected_world(const TestOptions& options) {
+    if (!options.world_file.empty()) {
+        std::ifstream in(options.world_file, std::ios::binary);
+        if (!in.is_open()) {
+            throw std::runtime_error("could not open world file: " + options.world_file);
+        }
+        std::vector<std::uint8_t> blob(
+            (std::istreambuf_iterator<char>(in)),
+            std::istreambuf_iterator<char>());
+        WorldMap world;
+        if (!thesis_sim::deserialize_world_blob(blob, &world)) {
+            throw std::runtime_error("could not decode world file: " + options.world_file);
+        }
+        return world;
+    }
     if (options.environment_mode == EnvironmentMode::StructuredRoad) {
         return WorldMap::structured_demo(options.structured_preset);
     }
@@ -1172,6 +1188,7 @@ void print_usage(const char* argv0) {
         << "  --scenario MODE           structured | unstructured\n"
         << "  --structured-map NAME     validation | circle | zigzag | hardware_track\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
+        << "  --world-file PATH         load a custom exported `.thmap` world file\n"
         << "  --infinite                keep the SLAM session online and loop the motion script forever\n"
         << "  --once                    run the script once even when streaming to the GUI\n"
         << "  --output-prefix PATH      default hardware_smoke_test\n"
@@ -1253,6 +1270,10 @@ TestOptions parse_args(int argc, char** argv) {
             options.unstructured_preset = parse_unstructured_preset(argv[++i]);
         } else if (arg.rfind("--unstructured-map=", 0) == 0) {
             options.unstructured_preset = parse_unstructured_preset(arg.substr(std::strlen("--unstructured-map=")));
+        } else if (arg == "--world-file" && i + 1 < argc) {
+            options.world_file = argv[++i];
+        } else if (arg.rfind("--world-file=", 0) == 0) {
+            options.world_file = arg.substr(std::strlen("--world-file="));
         } else if (arg == "--infinite") {
             options.infinite = true;
         } else if (arg == "--once" || arg == "--finite") {

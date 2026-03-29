@@ -104,6 +104,9 @@ struct LiveFrameSnapshot {
     HardwareTelemetrySample latest_sample{};
 };
 
+std::vector<std::uint8_t> serialize_world_blob(const WorldMap& world);
+bool deserialize_world_blob(const std::vector<std::uint8_t>& data, WorldMap* world);
+
 LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner);
 LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner);
 

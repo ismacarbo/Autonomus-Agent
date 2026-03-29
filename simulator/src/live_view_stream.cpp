@@ -22,6 +22,8 @@ namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
 constexpr std::uint16_t kPacketVersion = 6U;
+constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
+constexpr std::uint16_t kWorldBlobVersion = 1U;
 constexpr std::uint16_t kPacketHello = 0U;
 constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
@@ -1079,6 +1081,33 @@ void apply_structured_display_remap(const StructuredDisplayRemap& remap, LiveFra
 }
 
 }  // namespace
+
+std::vector<std::uint8_t> serialize_world_blob(const WorldMap& world) {
+    std::vector<std::uint8_t> out;
+    out.reserve(512);
+    write_pod(&out, kWorldBlobMagic);
+    write_pod(&out, kWorldBlobVersion);
+    write_world(&out, world);
+    return out;
+}
+
+bool deserialize_world_blob(const std::vector<std::uint8_t>& data, WorldMap* world) {
+    if (world == nullptr) {
+        return false;
+    }
+
+    std::size_t offset = 0;
+    std::uint32_t magic = 0U;
+    std::uint16_t version = 0U;
+    if (!read_pod(data, &offset, &magic) ||
+        !read_pod(data, &offset, &version) ||
+        magic != kWorldBlobMagic ||
+        version != kWorldBlobVersion ||
+        !read_world(data, &offset, world)) {
+        return false;
+    }
+    return offset == data.size();
+}
 
 LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) {
     const StructuredDisplayRemap remap = make_structured_display_remap(runner.world());

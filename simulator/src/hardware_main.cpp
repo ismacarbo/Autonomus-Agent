@@ -3,9 +3,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "hardware_planner_runner.h"
 #include "live_view_stream.h"
@@ -46,6 +49,7 @@ struct AppOptions {
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
     StructuredMapPreset structured_preset = StructuredMapPreset::HardwareTrack;
+    std::string world_file;
     std::string stream_host;
     int stream_port = 0;
     int stream_every_n_steps = 1;
@@ -100,6 +104,20 @@ StructuredMapPreset parse_structured_preset(const std::string& value) {
 }
 
 WorldMap make_world_from_options(const AppOptions& options) {
+    if (!options.world_file.empty()) {
+        std::ifstream in(options.world_file, std::ios::binary);
+        if (!in.is_open()) {
+            throw std::runtime_error("could not open world file: " + options.world_file);
+        }
+        std::vector<std::uint8_t> blob(
+            (std::istreambuf_iterator<char>(in)),
+            std::istreambuf_iterator<char>());
+        WorldMap world;
+        if (!thesis_sim::deserialize_world_blob(blob, &world)) {
+            throw std::runtime_error("could not decode world file: " + options.world_file);
+        }
+        return world;
+    }
     if (options.environment_mode == EnvironmentMode::StructuredRoad) {
         return WorldMap::structured_demo(options.structured_preset);
     }
@@ -129,6 +147,7 @@ void print_usage(const char* argv0) {
         << "  --scenario MODE           structured | unstructured\n"
         << "  --structured-map NAME     validation | circle | zigzag | hardware_track\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
+        << "  --world-file PATH         load a custom exported `.thmap` world file\n"
         << "  --stream-host HOST        send live view snapshots to HOST\n"
         << "  --stream-port N           send live view snapshots to TCP port N\n"
         << "  --stream-every N          send one frame every N planner steps (default 1)\n"
@@ -166,6 +185,10 @@ AppOptions parse_args(int argc, char** argv) {
             options.unstructured_preset = parse_unstructured_preset(argv[++i]);
         } else if (arg.rfind("--unstructured-map=", 0) == 0) {
             options.unstructured_preset = parse_unstructured_preset(arg.substr(std::strlen("--unstructured-map=")));
+        } else if (arg == "--world-file" && i + 1 < argc) {
+            options.world_file = argv[++i];
+        } else if (arg.rfind("--world-file=", 0) == 0) {
+            options.world_file = arg.substr(std::strlen("--world-file="));
         } else if (arg == "--stream-host" && i + 1 < argc) {
             options.stream_host = argv[++i];
         } else if (arg == "--stream-port" && i + 1 < argc) {
@@ -313,9 +336,9 @@ int count_passed_gates(const HardwarePlannerRunner& runner) {
 }
 
 int run_simulated(const AppOptions& options,
+                  WorldMap world,
                   RealRobotBridge::Options bridge_options,
                   HardwarePlannerConfig planner_config) {
-    WorldMap world = make_world_from_options(options);
     HardwarePlannerRunner runner(world, std::move(bridge_options), planner_config);
     LiveViewStreamClient streamer;
     if (!setup_stream_client(options, runner, &streamer)) {
@@ -412,58 +435,59 @@ int run_simulated(const AppOptions& options,
 
 int main(int argc, char** argv) {
     const AppOptions options = parse_args(argc, argv);
-    const bool structured_mode = options.environment_mode == EnvironmentMode::StructuredRoad;
-    if (!options.simulate && options.controller_port.empty()) {
-        print_usage(argv[0]);
-        return 2;
-    }
-    if (!options.simulate && !structured_mode && options.lidar_port.empty()) {
-        print_usage(argv[0]);
-        return 2;
-    }
-
-    RealRobotBridge::Options bridge_options;
-    bridge_options.controller.port = options.controller_port;
-    bridge_options.controller.baudrate = options.controller_baudrate;
-    bridge_options.controller.timeout_s = 0.05;
-    bridge_options.controller.startup_delay_s = 4.0;
-    bridge_options.controller.heartbeat_interval_s = 0.75;
-    bridge_options.controller.reset_on_connect = true;
-    bridge_options.lidar_port = structured_mode ? std::string{} : options.lidar_port;
-    bridge_options.lidar_baudrate = options.lidar_baudrate;
-    bridge_options.lidar_timeout_s = 0.10;
-
-    HardwarePlannerConfig planner_config;
-    planner_config.nominal_dt = options.dt;
-    planner_config.auto_set_autonomous_mode = options.auto_mode;
-    planner_config.auto_gyro_zero = options.gyro_zero;
-
-    if (options.simulate) {
-        return run_simulated(options, std::move(bridge_options), planner_config);
-    }
-
-    HardwarePlannerRunner runner(
-        make_world_from_options(options),
-        bridge_options,
-        planner_config);
-    LiveViewStreamClient streamer;
-
+    std::unique_ptr<HardwarePlannerRunner> runner;
     try {
-        runner.connect();
-        if (!setup_stream_client(options, runner, &streamer)) {
-            runner.disconnect();
+        const WorldMap world = make_world_from_options(options);
+        const bool structured_mode = world.environment_mode() == EnvironmentMode::StructuredRoad;
+        if (!options.simulate && options.controller_port.empty()) {
+            print_usage(argv[0]);
+            return 2;
+        }
+        if (!options.simulate && !structured_mode && options.lidar_port.empty()) {
+            print_usage(argv[0]);
+            return 2;
+        }
+
+        RealRobotBridge::Options bridge_options;
+        bridge_options.controller.port = options.controller_port;
+        bridge_options.controller.baudrate = options.controller_baudrate;
+        bridge_options.controller.timeout_s = 0.05;
+        bridge_options.controller.startup_delay_s = 4.0;
+        bridge_options.controller.heartbeat_interval_s = 0.75;
+        bridge_options.controller.reset_on_connect = true;
+        bridge_options.lidar_port = structured_mode ? std::string{} : options.lidar_port;
+        bridge_options.lidar_baudrate = options.lidar_baudrate;
+        bridge_options.lidar_timeout_s = 0.10;
+
+        HardwarePlannerConfig planner_config;
+        planner_config.nominal_dt = options.dt;
+        planner_config.auto_set_autonomous_mode = options.auto_mode;
+        planner_config.auto_gyro_zero = options.gyro_zero;
+
+        if (options.simulate) {
+            return run_simulated(options, world, std::move(bridge_options), planner_config);
+        }
+
+        runner = std::make_unique<HardwarePlannerRunner>(
+            world,
+            bridge_options,
+            planner_config);
+        LiveViewStreamClient streamer;
+        runner->connect();
+        if (!setup_stream_client(options, *runner, &streamer)) {
+            runner->disconnect();
             return 2;
         }
 
         const int limit = options.max_steps > 0 ? options.max_steps : 1500;
-        while (runner.step_count() < limit && !runner.goal_reached()) {
-            runner.step();
-            stream_frame_if_due(options, runner, &streamer);
+        while (runner->step_count() < limit && !runner->goal_reached()) {
+            runner->step();
+            stream_frame_if_due(options, *runner, &streamer);
         }
-        stream_frame_if_due(options, runner, &streamer, true);
+        stream_frame_if_due(options, *runner, &streamer, true);
 
-        const HardwarePlannerReport report = runner.current_report();
-        runner.disconnect();
+        const HardwarePlannerReport report = runner->current_report();
+        runner->disconnect();
 
         std::cout << "status=" << (report.goal_reached ? "goal_reached" : "stopped") << '\n';
         std::cout << "telemetry_ready=" << (report.telemetry_ready ? 1 : 0) << '\n';
@@ -502,7 +526,9 @@ int main(int argc, char** argv) {
         return report.goal_reached ? 0 : 1;
     } catch (const std::exception& e) {
         try {
-            runner.disconnect();
+            if (runner) {
+                runner->disconnect();
+            }
         } catch (const std::exception&) {
         }
         std::cerr << "hardware_runner_error=" << e.what() << '\n';
