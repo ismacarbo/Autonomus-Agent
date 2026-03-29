@@ -117,6 +117,9 @@ struct UiState {
     std::string last_hardware_report_error;
     std::string last_hardware_world_path;
     std::string last_hardware_world_error;
+    bool hardware_world_sync_pending = false;
+    bool hardware_world_sync_ok = false;
+    std::string last_hardware_world_sync_status;
 };
 
 struct HardwareViewerState {
@@ -1467,12 +1470,10 @@ std::string hardware_launch_hint(const UiState& ui_state) {
             << " --stream-host <pc-ip>"
             << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
             << " --scenario " << (structured ? "structured" : "unstructured");
-        if (custom_world) {
-            cmd << " --world-file <copied-custom-map.thmap>";
-        } else if (structured) {
+        if (!custom_world && structured) {
             cmd << " --structured-map "
                 << structured_map_cli_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset));
-        } else {
+        } else if (!custom_world) {
             cmd << " --unstructured-map "
                 << unstructured_map_cli_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset));
         }
@@ -3373,12 +3374,20 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 ? static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset) == StructuredMapPreset::Custom
                 : static_cast<UnstructuredMapPreset>(ui_state->hardware_unstructured_preset) == UnstructuredMapPreset::Custom;
         if (custom_world_selected) {
-            if (!ui_state->last_hardware_world_path.empty()) {
-                ImGui::TextWrapped("Exported custom world: %s", ui_state->last_hardware_world_path.c_str());
-                ImGui::TextWrapped("Copy that `.thmap` file onto the Raspberry and replace `<copied-custom-map.thmap>` with its Pi path.");
+            if (workspace_source_expects_slam(ui_state->workspace_source)) {
+                if (!ui_state->last_hardware_world_path.empty()) {
+                    ImGui::TextWrapped("Exported custom world: %s", ui_state->last_hardware_world_path.c_str());
+                    ImGui::TextWrapped("Copy that `.thmap` file onto the Raspberry and replace `<copied-custom-map.thmap>` with its Pi path.");
+                } else {
+                    ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.34f, 1.0f),
+                                       "Export the custom map file first, then copy it to the Raspberry and launch with `--world-file`.");
+                }
+            } else if (ui_state->hardware_world_sync_pending || hardware_server->has_pending_world()) {
+                ImGui::TextColored(ImVec4(0.43f, 0.82f, 0.96f, 1.0f),
+                                   "Custom map sync is queued in the GUI and will be streamed to the Raspberry runner on connect.");
             } else {
                 ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.34f, 1.0f),
-                                   "Export the custom map file first, then copy it to the Raspberry and launch with `--world-file`.");
+                                   "Press `Send Map To Raspberry` after confirming the editor world. No `--world-file` is needed for the streamed workflow.");
             }
         }
         ImGui::TextWrapped("If you want to transport it over SSH, expose this same port with a reverse tunnel.");
@@ -3425,7 +3434,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
     if (ImGui::CollapsingHeader("Map Editor", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SameLine();
-        help_marker("Preview and reshape the hardware map locally before you launch the Raspberry runner. Export the final `.thmap` file and pass it with `--world-file`.");
+        help_marker("Preview and reshape the hardware map locally before you launch the Raspberry runner. You can now queue the confirmed map and stream it directly to the next connected runner.");
 
         WorldMap& editor_world = ui_state->hardware_editor_world;
         ImGui::Checkbox("Enable drag editing", &ui_state->map_editor_enabled);
@@ -3448,6 +3457,36 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             } else {
                 ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
                 ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
+            }
+        }
+        if (!workspace_source_expects_slam(ui_state->workspace_source)) {
+            if (ImGui::Button("Send Map To Raspberry", ImVec2(-1.0f, 0.0f))) {
+                WorldMap streamed_world = ui_state->hardware_editor_world;
+                streamed_world.finalize_editor_changes();
+                if (streamed_world.environment_mode() == EnvironmentMode::StructuredRoad) {
+                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
+                    ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::Custom);
+                } else {
+                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
+                    ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
+                }
+                if (hardware_server->queue_world(streamed_world)) {
+                    ui_state->hardware_editor_world = streamed_world;
+                    ui_state->hardware_editor_dirty = false;
+                    ui_state->hardware_world_sync_pending = true;
+                    ui_state->hardware_world_sync_ok = false;
+                    ui_state->last_hardware_world_sync_status =
+                        hardware_server->connected()
+                            ? "Custom map queued and sent to the connected Raspberry runner. Waiting for runner ack."
+                            : "Custom map queued in the GUI. It will be sent to the next Raspberry runner that connects.";
+                } else {
+                    ui_state->hardware_world_sync_pending = false;
+                    ui_state->hardware_world_sync_ok = false;
+                    ui_state->last_hardware_world_sync_status =
+                        hardware_server->last_error().empty()
+                            ? "Could not queue the custom map for Raspberry sync."
+                            : hardware_server->last_error();
+                }
             }
         }
         if (ImGui::Button("Export Custom Map File", ImVec2(-1.0f, 0.0f))) {
@@ -3568,6 +3607,15 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         }
         if (!ui_state->last_hardware_world_error.empty()) {
             ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.34f, 1.0f), "%s", ui_state->last_hardware_world_error.c_str());
+        }
+        if (!ui_state->last_hardware_world_sync_status.empty()) {
+            const ImVec4 sync_color =
+                ui_state->hardware_world_sync_pending
+                    ? ImVec4(0.43f, 0.82f, 0.96f, 1.0f)
+                    : (ui_state->hardware_world_sync_ok
+                           ? ImVec4(0.48f, 0.88f, 0.62f, 1.0f)
+                           : ImVec4(0.95f, 0.60f, 0.34f, 1.0f));
+            ImGui::TextColored(sync_color, "%s", ui_state->last_hardware_world_sync_status.c_str());
         }
     }
 
@@ -4186,6 +4234,11 @@ int run_gui(const AppOptions& options) {
                     hardware_view.history.erase(hardware_view.history.begin());
                 }
             }
+        }
+        if (hardware_updates.control_ack_received && hardware_updates.control_ack.has_value()) {
+            ui_state.hardware_world_sync_pending = false;
+            ui_state.hardware_world_sync_ok = hardware_updates.control_ack->ok;
+            ui_state.last_hardware_world_sync_status = hardware_updates.control_ack->message;
         }
 
         if (ui_state.workspace_source == kWorkspaceSourceSimulation && !ui_state.paused && !sim.goal_reached() && !sim.collision()) {

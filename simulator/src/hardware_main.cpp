@@ -213,7 +213,6 @@ bool stream_enabled(const AppOptions& options) {
 }
 
 bool setup_stream_client(const AppOptions& options,
-                         const HardwarePlannerRunner& runner,
                          LiveViewStreamClient* streamer) {
     if (!stream_enabled(options) || streamer == nullptr) {
         return true;
@@ -223,9 +222,65 @@ bool setup_stream_client(const AppOptions& options,
         std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
         return false;
     }
+    return true;
+}
+
+bool send_stream_scene(const AppOptions& options,
+                       const HardwarePlannerRunner& runner,
+                       LiveViewStreamClient* streamer) {
+    if (!stream_enabled(options) || streamer == nullptr || !streamer->connected()) {
+        return true;
+    }
     if (!streamer->send_scene(make_live_scene_snapshot(runner))) {
         std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
         return false;
+    }
+    return true;
+}
+
+bool process_stream_control(const AppOptions& options,
+                            HardwarePlannerRunner* runner,
+                            LiveViewStreamClient* streamer,
+                            bool* world_applied) {
+    if (world_applied != nullptr) {
+        *world_applied = false;
+    }
+    if (!stream_enabled(options) || runner == nullptr || streamer == nullptr || !streamer->connected()) {
+        return true;
+    }
+
+    const LiveViewStreamClient::PollResult poll_result = streamer->poll();
+    if (!streamer->connected()) {
+        if (!streamer->last_error().empty()) {
+            std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+        }
+        return false;
+    }
+    if (!poll_result.world_received || !poll_result.world.has_value()) {
+        return true;
+    }
+
+    const bool sensor_mode_changed =
+        runner->lidar_enabled_for_current_mode() !=
+        (poll_result.world->environment_mode() != EnvironmentMode::StructuredRoad);
+    try {
+        runner->apply_world(*poll_result.world);
+        std::string message = "custom map applied from GUI";
+        if (sensor_mode_changed) {
+            message += " (sensor mode changed; restart the runner if the new scenario needs different hardware ports)";
+        }
+        if (!streamer->send_control_ack(true, message)) {
+            std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+            return false;
+        }
+        if (world_applied != nullptr) {
+            *world_applied = true;
+        }
+    } catch (const std::exception& e) {
+        if (!streamer->send_control_ack(false, std::string("custom map rejected: ") + e.what())) {
+            std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+            return false;
+        }
     }
     return true;
 }
@@ -341,16 +396,38 @@ int run_simulated(const AppOptions& options,
                   HardwarePlannerConfig planner_config) {
     HardwarePlannerRunner runner(world, std::move(bridge_options), planner_config);
     LiveViewStreamClient streamer;
-    if (!setup_stream_client(options, runner, &streamer)) {
+    if (!setup_stream_client(options, &streamer)) {
+        return 2;
+    }
+    bool world_applied = false;
+    if (!process_stream_control(options, &runner, &streamer, &world_applied)) {
+        return 2;
+    }
+    if (!send_stream_scene(options, runner, &streamer)) {
         return 2;
     }
     std::unique_ptr<VehicleDynamicsModel> plant = thesis_sim::make_four_wheel_car_model(runner.geometry());
-    plant->reset(world.start(), world.start_heading());
+    plant->reset(runner.world().start(), runner.world().start_heading());
 
     bool collision = false;
     double host_time_s = 0.0;
     const int limit = options.max_steps > 0 ? options.max_steps : 1500;
     for (int step = 0; step < limit && !runner.goal_reached() && !collision; ++step) {
+        world_applied = false;
+        if (!process_stream_control(options, &runner, &streamer, &world_applied)) {
+            return 2;
+        }
+        if (world_applied) {
+            plant->reset(runner.world().start(), runner.world().start_heading());
+            collision = false;
+            host_time_s = 0.0;
+            if (!send_stream_scene(options, runner, &streamer)) {
+                return 2;
+            }
+            stream_frame_if_due(options, runner, &streamer, true);
+            continue;
+        }
+
         const thesis_sim::VehicleModelState& plant_state = plant->state();
         RealRobotObservation observation{};
         observation.host_timestamp_s = host_time_s;
@@ -358,7 +435,7 @@ int run_simulated(const AppOptions& options,
         observation.controller = make_controller_telemetry(plant_state, runner.last_command());
         if (runner.lidar_enabled_for_current_mode()) {
             observation.have_lidar_scan = true;
-            observation.lidar_scan = make_lidar_scan(world, plant_state, planner_config);
+            observation.lidar_scan = make_lidar_scan(runner.world(), plant_state, planner_config);
             observation.min_lidar_range_m = observation.lidar_scan.empty()
                                                 ? 0.0
                                                 : observation.lidar_scan.front().distance_m;
@@ -378,7 +455,7 @@ int run_simulated(const AppOptions& options,
         plant->step(planner_config.nominal_dt, control);
         host_time_s += planner_config.nominal_dt;
 
-        collision = world.collides(
+        collision = runner.world().collides(
             thesis_sim::make_box_corners(
                 plant->state().position,
                 plant->state().yaw,
@@ -474,13 +551,36 @@ int main(int argc, char** argv) {
             planner_config);
         LiveViewStreamClient streamer;
         runner->connect();
-        if (!setup_stream_client(options, *runner, &streamer)) {
+        if (!setup_stream_client(options, &streamer)) {
             runner->disconnect();
             return 2;
         }
+        bool world_applied = false;
+        if (!process_stream_control(options, runner.get(), &streamer, &world_applied)) {
+            runner->disconnect();
+            return 2;
+        }
+        if (!send_stream_scene(options, *runner, &streamer)) {
+            runner->disconnect();
+            return 2;
+        }
+        stream_frame_if_due(options, *runner, &streamer, true);
 
         const int limit = options.max_steps > 0 ? options.max_steps : 1500;
         while (runner->step_count() < limit && !runner->goal_reached()) {
+            world_applied = false;
+            if (!process_stream_control(options, runner.get(), &streamer, &world_applied)) {
+                runner->disconnect();
+                return 2;
+            }
+            if (world_applied) {
+                if (!send_stream_scene(options, *runner, &streamer)) {
+                    runner->disconnect();
+                    return 2;
+                }
+                stream_frame_if_due(options, *runner, &streamer, true);
+                continue;
+            }
             runner->step();
             stream_frame_if_due(options, *runner, &streamer);
         }

@@ -104,6 +104,11 @@ struct LiveFrameSnapshot {
     HardwareTelemetrySample latest_sample{};
 };
 
+struct LiveControlAck {
+    bool ok = false;
+    std::string message;
+};
+
 std::vector<std::uint8_t> serialize_world_blob(const WorldMap& world);
 bool deserialize_world_blob(const std::vector<std::uint8_t>& data, WorldMap* world);
 
@@ -112,6 +117,11 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner);
 
 class LiveViewStreamClient {
   public:
+    struct PollResult {
+        bool world_received = false;
+        std::optional<WorldMap> world;
+    };
+
     LiveViewStreamClient() = default;
     ~LiveViewStreamClient();
 
@@ -123,12 +133,17 @@ class LiveViewStreamClient {
 
     bool send_scene(const LiveSceneSnapshot& scene);
     bool send_frame(const LiveFrameSnapshot& frame);
+    bool send_control_ack(bool ok, const std::string& message);
+    PollResult poll();
 
   private:
     bool send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload);
+    void read_server_data();
+    bool parse_next_packet(PollResult* result);
 
     int socket_fd_ = -1;
     std::string last_error_;
+    std::vector<std::uint8_t> recv_buffer_;
 };
 
 class LiveViewStreamServer {
@@ -136,8 +151,10 @@ class LiveViewStreamServer {
     struct PollResult {
         bool scene_received = false;
         bool frame_received = false;
+        bool control_ack_received = false;
         std::optional<LiveSceneSnapshot> scene;
         std::optional<LiveFrameSnapshot> frame;
+        std::optional<LiveControlAck> control_ack;
     };
 
     LiveViewStreamServer() = default;
@@ -152,12 +169,16 @@ class LiveViewStreamServer {
     std::uint16_t port() const { return port_; }
     const std::string& remote_endpoint() const { return remote_endpoint_; }
     const std::string& last_error() const { return last_error_; }
+    bool has_pending_world() const { return pending_world_.has_value(); }
+    bool queue_world(const WorldMap& world);
 
   private:
     void close_client();
     bool accept_client();
     void read_client_data();
     bool parse_next_packet(PollResult* result);
+    bool send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload);
+    void flush_pending_world();
 
     int listen_fd_ = -1;
     int client_fd_ = -1;
@@ -165,6 +186,7 @@ class LiveViewStreamServer {
     std::string remote_endpoint_;
     std::string last_error_;
     std::vector<std::uint8_t> recv_buffer_;
+    std::optional<WorldMap> pending_world_;
 };
 
 }  // namespace thesis_sim

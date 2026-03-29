@@ -224,6 +224,7 @@ class HardwarePlannerRunner {
     void connect();
     void disconnect();
 
+    void apply_world(WorldMap world);
     void reset();
     void reset_pose(const Vec2& position, double heading);
     void step();
@@ -283,6 +284,10 @@ class HardwarePlannerRunner {
                                                          double dt,
                                                          double measured_yaw,
                                                          double measured_yaw_rate);
+    double stabilize_structured_track_s(double candidate_s,
+                                        double max_forward_step,
+                                        bool closed_loop,
+                                        double* progress_delta) const;
     void correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan);
     double score_candidate_pose(const Vec2& position, double yaw, const std::vector<RPLidarA1::ScanPoint>& scan) const;
     void update_lidar_hits_world(const std::vector<RPLidarA1::ScanPoint>& scan);

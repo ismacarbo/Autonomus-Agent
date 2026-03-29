@@ -21,12 +21,14 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 6U;
+constexpr std::uint16_t kPacketVersion = 7U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 1U;
 constexpr std::uint16_t kPacketHello = 0U;
 constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
+constexpr std::uint16_t kPacketWorld = 3U;
+constexpr std::uint16_t kPacketControlAck = 4U;
 constexpr std::size_t kPacketHeaderSize = sizeof(std::uint32_t) + sizeof(std::uint16_t) + sizeof(std::uint16_t) + sizeof(std::uint32_t);
 constexpr std::uint32_t kMaxPacketBytes = 32U * 1024U * 1024U;
 constexpr double kTwoPi = 6.28318530717958647692;
@@ -148,6 +150,29 @@ bool read_lidar_hit(const std::vector<std::uint8_t>& data, std::size_t* offset, 
            read_pod(data, offset, &hit->distance) &&
            read_vec2(data, offset, &hit->point) &&
            read_bool(data, offset, &hit->hit);
+}
+
+std::vector<std::uint8_t> serialize_control_ack(const LiveControlAck& ack) {
+    std::vector<std::uint8_t> out;
+    out.reserve(96);
+    write_bool(&out, ack.ok);
+    write_string(&out, ack.message);
+    return out;
+}
+
+bool deserialize_control_ack(const std::vector<std::uint8_t>& data, LiveControlAck* ack) {
+    if (ack == nullptr) {
+        return false;
+    }
+    std::size_t offset = 0;
+    LiveControlAck parsed;
+    if (!read_bool(data, &offset, &parsed.ok) ||
+        !read_string(data, &offset, &parsed.message) ||
+        offset != data.size()) {
+        return false;
+    }
+    *ack = std::move(parsed);
+    return true;
 }
 
 void write_geometry(std::vector<std::uint8_t>* out, const VehicleGeometry& geometry) {
@@ -696,6 +721,18 @@ bool send_all(int fd, const std::uint8_t* data, std::size_t size) {
             if (errno == EINTR) {
                 continue;
             }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                pollfd pfd{};
+                pfd.fd = fd;
+                pfd.events = POLLOUT;
+                const int rc = ::poll(&pfd, 1, 1000);
+                if (rc > 0) {
+                    continue;
+                }
+                if (rc == 0) {
+                    errno = ETIMEDOUT;
+                }
+            }
             return false;
         }
         sent += static_cast<std::size_t>(bytes);
@@ -1119,7 +1156,7 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
     scene.geometry = runner.geometry();
     scene.imu_enabled = true;
     scene.lidar_enabled = lidar_enabled;
-    scene.localization_mode = lidar_enabled ? "IMU + LiDAR" : "IMU + road progress";
+    scene.localization_mode = lidar_enabled ? "EKF (IMU + LiDAR)" : "EKF (IMU + road constraint)";
     scene.heading_source = "IMU";
     scene.range_sensor_name = lidar_enabled ? "RPLidar A1" : "LiDAR disabled for structured planner";
     scene.vehicle_model_name = "Car-like bicycle";
@@ -1267,11 +1304,17 @@ bool LiveViewStreamClient::connect_to(const std::string& host, std::uint16_t por
         disconnect();
         return false;
     }
+    if (!set_nonblocking(socket_fd_)) {
+        last_error_ = socket_error_message("failed to set stream client non-blocking");
+        disconnect();
+        return false;
+    }
     return true;
 }
 
 void LiveViewStreamClient::disconnect() {
     close_socket(&socket_fd_);
+    recv_buffer_.clear();
 }
 
 bool LiveViewStreamClient::send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload) {
@@ -1296,6 +1339,113 @@ bool LiveViewStreamClient::send_scene(const LiveSceneSnapshot& scene) {
 
 bool LiveViewStreamClient::send_frame(const LiveFrameSnapshot& frame) {
     return send_packet(kPacketFrame, serialize_frame(frame));
+}
+
+bool LiveViewStreamClient::send_control_ack(bool ok, const std::string& message) {
+    LiveControlAck ack;
+    ack.ok = ok;
+    ack.message = message;
+    return send_packet(kPacketControlAck, serialize_control_ack(ack));
+}
+
+void LiveViewStreamClient::read_server_data() {
+    if (socket_fd_ < 0) {
+        return;
+    }
+
+    std::array<std::uint8_t, 8192> chunk{};
+    while (true) {
+        const ssize_t bytes = ::recv(socket_fd_, chunk.data(), chunk.size(), 0);
+        if (bytes > 0) {
+            recv_buffer_.insert(recv_buffer_.end(), chunk.begin(), chunk.begin() + bytes);
+            continue;
+        }
+        if (bytes == 0) {
+            disconnect();
+            return;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        last_error_ = socket_error_message("recv failed");
+        disconnect();
+        return;
+    }
+}
+
+bool LiveViewStreamClient::parse_next_packet(PollResult* result) {
+    if (recv_buffer_.size() < kPacketHeaderSize) {
+        return false;
+    }
+
+    std::size_t offset = 0;
+    std::uint32_t magic = 0U;
+    std::uint16_t version = 0U;
+    std::uint16_t type = 0U;
+    std::uint32_t size = 0U;
+    if (!read_pod(recv_buffer_, &offset, &magic) ||
+        !read_pod(recv_buffer_, &offset, &version) ||
+        !read_pod(recv_buffer_, &offset, &type) ||
+        !read_pod(recv_buffer_, &offset, &size)) {
+        return false;
+    }
+
+    if (magic != kPacketMagic || version != kPacketVersion) {
+        last_error_ = "live stream protocol mismatch";
+        disconnect();
+        return false;
+    }
+    if (size > kMaxPacketBytes) {
+        last_error_ = "live stream packet too large";
+        disconnect();
+        return false;
+    }
+    if (recv_buffer_.size() < kPacketHeaderSize + size) {
+        return false;
+    }
+
+    std::vector<std::uint8_t> payload(size);
+    if (size > 0U) {
+        std::memcpy(payload.data(), recv_buffer_.data() + kPacketHeaderSize, size);
+    }
+    recv_buffer_.erase(
+        recv_buffer_.begin(),
+        recv_buffer_.begin() + static_cast<std::ptrdiff_t>(kPacketHeaderSize + size));
+
+    if (result == nullptr) {
+        return true;
+    }
+
+    if (type == kPacketWorld) {
+        WorldMap world;
+        if (!deserialize_world_blob(payload, &world)) {
+            last_error_ = "failed to decode live world command";
+            disconnect();
+            return false;
+        }
+        result->world_received = true;
+        result->world = std::move(world);
+        return true;
+    }
+
+    last_error_ = "unknown live stream packet type";
+    disconnect();
+    return false;
+}
+
+LiveViewStreamClient::PollResult LiveViewStreamClient::poll() {
+    PollResult result;
+    if (socket_fd_ < 0) {
+        return result;
+    }
+
+    read_server_data();
+    while (parse_next_packet(&result)) {
+    }
+    return result;
 }
 
 LiveViewStreamServer::~LiveViewStreamServer() {
@@ -1389,6 +1539,40 @@ bool LiveViewStreamServer::accept_client() {
     return true;
 }
 
+bool LiveViewStreamServer::send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload) {
+    if (client_fd_ < 0) {
+        last_error_ = "stream server has no connected client";
+        return false;
+    }
+
+    const std::vector<std::uint8_t> packet = make_packet(type, payload);
+    if (!send_all(client_fd_, packet.data(), packet.size())) {
+        last_error_ = socket_error_message("send failed");
+        close_client();
+        return false;
+    }
+    return true;
+}
+
+bool LiveViewStreamServer::queue_world(const WorldMap& world) {
+    pending_world_ = world;
+    if (client_fd_ >= 0) {
+        flush_pending_world();
+        return client_fd_ >= 0;
+    }
+    return true;
+}
+
+void LiveViewStreamServer::flush_pending_world() {
+    if (client_fd_ < 0 || !pending_world_.has_value()) {
+        return;
+    }
+    if (!send_packet(kPacketWorld, serialize_world_blob(*pending_world_))) {
+        return;
+    }
+    pending_world_.reset();
+}
+
 void LiveViewStreamServer::read_client_data() {
     if (client_fd_ < 0) {
         return;
@@ -1480,6 +1664,17 @@ bool LiveViewStreamServer::parse_next_packet(PollResult* result) {
         result->frame = std::move(frame);
         return true;
     }
+    if (type == kPacketControlAck) {
+        LiveControlAck ack;
+        if (!deserialize_control_ack(payload, &ack)) {
+            last_error_ = "failed to decode live control ack";
+            close_client();
+            return false;
+        }
+        result->control_ack_received = true;
+        result->control_ack = std::move(ack);
+        return true;
+    }
 
     last_error_ = "unknown live stream packet type";
     close_client();
@@ -1495,6 +1690,7 @@ LiveViewStreamServer::PollResult LiveViewStreamServer::poll() {
     if (client_fd_ < 0) {
         accept_client();
     }
+    flush_pending_world();
     read_client_data();
     while (parse_next_packet(&result)) {
     }

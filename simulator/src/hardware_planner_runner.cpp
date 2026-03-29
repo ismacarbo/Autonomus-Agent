@@ -465,6 +465,15 @@ void HardwarePlannerRunner::disconnect() {
     connected_ = false;
 }
 
+void HardwarePlannerRunner::apply_world(WorldMap world) {
+    if (connected_ && bridge_.controller_connected()) {
+        bridge_.send_pwm(0, 0, true);
+    }
+
+    world_ = std::move(world);
+    reset();
+}
+
 void HardwarePlannerRunner::reset() {
     step_count_ = 0;
     sim_time_ = 0.0;
@@ -912,89 +921,151 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
                                                                             double dt,
                                                                             double measured_yaw,
                                                                             double measured_yaw_rate) {
+    if (!encoder_ticks_initialized_) {
+        last_left_encoder_ticks_ = telemetry.ticks_left;
+        last_right_encoder_ticks_ = telemetry.ticks_right;
+        encoder_ticks_initialized_ = true;
+    }
+
+    const std::int32_t left_delta_ticks = telemetry.ticks_left - last_left_encoder_ticks_;
+    const std::int32_t right_delta_ticks = telemetry.ticks_right - last_right_encoder_ticks_;
     last_left_encoder_ticks_ = telemetry.ticks_left;
     last_right_encoder_ticks_ = telemetry.ticks_right;
-    encoder_ticks_initialized_ = true;
 
-    const double previous_speed = estimate_.speed;
     const double effective_dt =
         telemetry.enc_dt_ms > 0U
             ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
             : std::max(dt, 0.01);
+    const bool encoder_ready = controller_encoders_ready(telemetry);
 
-    const double pwm_speed_estimate = clamp_value(
-        std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
-        0.0,
-        geometry_.max_linear_speed);
-    const bool controller_driving =
-        std::abs(telemetry.pwm_l) >= geometry_.min_effective_pwm ||
-        std::abs(telemetry.pwm_r) >= geometry_.min_effective_pwm ||
-        std::abs(telemetry.target_pwm_l) >= geometry_.min_effective_pwm ||
-        std::abs(telemetry.target_pwm_r) >= geometry_.min_effective_pwm;
+    double odom_speed = 0.0;
+    double odom_yaw_rate = 0.0;
+    if (encoder_ready) {
+        const double ticks_to_distance =
+            (2.0 * kPi * geometry_.wheel_radius) /
+            static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
+        const double left_dist = static_cast<double>(left_delta_ticks) * ticks_to_distance;
+        const double right_dist = static_cast<double>(right_delta_ticks) * ticks_to_distance;
+        const double odom_delta_yaw =
+            std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
+        odom_speed = effective_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / effective_dt : 0.0;
+        odom_yaw_rate = effective_dt > 1e-6 ? odom_delta_yaw / effective_dt : 0.0;
+    } else {
+        const double pwm_speed_estimate = clamp_value(
+            std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
+            0.0,
+            geometry_.max_linear_speed);
+        const bool controller_driving =
+            std::abs(telemetry.pwm_l) >= geometry_.min_effective_pwm ||
+            std::abs(telemetry.pwm_r) >= geometry_.min_effective_pwm ||
+            std::abs(telemetry.target_pwm_l) >= geometry_.min_effective_pwm ||
+            std::abs(telemetry.target_pwm_r) >= geometry_.min_effective_pwm;
 
-    double fallback_speed = clamp_value(last_command_.target_speed, 0.0, geometry_.max_linear_speed);
-    if (fallback_speed <= 1e-4 && controller_driving) {
-        fallback_speed = pwm_speed_estimate;
-    } else if (!controller_driving) {
-        fallback_speed = 0.0;
+        odom_speed = clamp_value(last_command_.target_speed, 0.0, geometry_.max_linear_speed);
+        if (odom_speed <= 1e-4 && controller_driving) {
+            odom_speed = pwm_speed_estimate;
+        } else if (!controller_driving) {
+            odom_speed = 0.0;
+        }
+
+        odom_yaw_rate = clamp_value(
+            std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
     }
 
-    const double fallback_yaw_rate = clamp_value(
-        std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
-        -config_.drive.max_yaw_rate,
-        config_.drive.max_yaw_rate);
+    estimator_.predict(effective_dt, odom_speed, odom_yaw_rate);
+    estimator_.update_imu(measured_yaw, measured_yaw_rate);
+    sync_estimate_from_ekf_state();
 
-    if (road_ != nullptr &&
-        cl_.prev_road.num_segments() > 0 &&
-        std::isfinite(cl_.end_point_s) &&
-        cl_.end_point_s > 1e-6) {
-        const bool closed_structured_loop = structured_road_is_closed_loop(world_);
-        double s_fallback = std::isfinite(x0_.x)
-                                ? x0_.x
-                                : (std::isfinite(structured_last_s_) ? structured_last_s_ : 0.0);
-        s_fallback += fallback_speed * effective_dt;
-        if (closed_structured_loop) {
-            s_fallback = wrap_arc_length(s_fallback, cl_.end_point_s);
-        } else {
-            s_fallback = clamp_value(s_fallback, 0.0, cl_.end_point_s);
-        }
-        structured_progress_s_ = std::max(0.0, structured_progress_s_ + fallback_speed * effective_dt);
-
-        double x_on_path = 0.0;
-        double y_on_path = 0.0;
-        cl_.prev_road.eval(s_fallback, x_on_path, y_on_path);
-        estimate_.position = {x_on_path, y_on_path};
-        estimate_.yaw = measured_yaw;
-        estimate_.speed = fallback_speed;
-        estimate_.accel = effective_dt > 1e-6 ? (fallback_speed - previous_speed) / effective_dt : 0.0;
-        estimate_.yaw_rate = fallback_yaw_rate;
-        estimate_.curvature = std::abs(fallback_speed) > 0.05
-                                  ? clamp_value(
-                                        fallback_yaw_rate / fallback_speed,
-                                        -geometry_.max_curvature,
-                                        geometry_.max_curvature)
-                                  : 0.0;
-        estimate_.localized = true;
-        structured_last_s_ = s_fallback;
-        x0_.x = s_fallback;
+    if (road_ == nullptr ||
+        cl_.prev_road.num_segments() <= 0 ||
+        !std::isfinite(cl_.end_point_s) ||
+        cl_.end_point_s <= 1e-6) {
+        x0_.x = std::isfinite(structured_last_s_) ? structured_last_s_ : 0.0;
         x0_.n = 0.0;
         x0_.b = 0.0;
-        estimator_.reset(estimate_.position, estimate_.yaw);
         return;
     }
 
-    estimate_.yaw = measured_yaw;
-    estimate_.speed = fallback_speed;
-    estimate_.accel = effective_dt > 1e-6 ? (fallback_speed - previous_speed) / effective_dt : 0.0;
-    estimate_.yaw_rate = fallback_yaw_rate;
-    estimate_.curvature = std::abs(fallback_speed) > 0.05
-                              ? clamp_value(
-                                    fallback_yaw_rate / fallback_speed,
-                                    -geometry_.max_curvature,
-                                    geometry_.max_curvature)
-                              : 0.0;
+    const bool closed_structured_loop = structured_road_is_closed_loop(world_);
+    const double s_hint = std::isfinite(structured_last_s_)
+                              ? structured_last_s_
+                              : (std::isfinite(x0_.x) ? x0_.x : 0.0);
+    double projected_s = s_hint;
+    double projected_n = 0.0;
+    if (!project_curvilinear_state(cl_, estimate_.position, s_hint, closed_structured_loop, &projected_s, &projected_n)) {
+        x0_.x = s_hint;
+        x0_.n = 0.0;
+        x0_.b = 0.0;
+        structured_progress_s_ = std::max(0.0, structured_progress_s_ + odom_speed * effective_dt);
+        return;
+    }
+
+    const double max_forward_step =
+        std::max(odom_speed * effective_dt + 0.25, closed_structured_loop ? 0.08 : 0.05);
+    double progress_delta = 0.0;
+    const double constrained_s =
+        stabilize_structured_track_s(projected_s, max_forward_step, closed_structured_loop, &progress_delta);
+
+    double x_on_path = 0.0;
+    double y_on_path = 0.0;
+    cl_.prev_road.eval(constrained_s, x_on_path, y_on_path);
+    estimator_.update_lidar_pose({x_on_path, y_on_path}, measured_yaw, false);
+    sync_estimate_from_ekf_state();
+
+    double constrained_n = 0.0;
+    double confirmed_s = constrained_s;
+    if (project_curvilinear_state(cl_, estimate_.position, constrained_s, closed_structured_loop, &confirmed_s, &constrained_n)) {
+        x0_.n = constrained_n;
+    } else {
+        x0_.n = 0.0;
+    }
     estimate_.localized = true;
-    estimator_.reset(estimate_.position, estimate_.yaw);
+
+    structured_last_s_ = constrained_s;
+    structured_progress_s_ = std::max(0.0, structured_progress_s_ + progress_delta);
+    x0_.x = constrained_s;
+    x0_.b = 0.0;
+}
+
+double HardwarePlannerRunner::stabilize_structured_track_s(double candidate_s,
+                                                           double max_forward_step,
+                                                           bool closed_loop,
+                                                           double* progress_delta) const {
+    const double road_length = std::max(cl_.end_point_s, 1e-6);
+    const double safe_step = std::max(max_forward_step, 0.02);
+    if (!std::isfinite(structured_last_s_)) {
+        if (progress_delta != nullptr) {
+            *progress_delta = 0.0;
+        }
+        return closed_loop ? wrap_arc_length(candidate_s, road_length)
+                           : clamp_value(candidate_s, 0.0, road_length);
+    }
+
+    const double previous_s =
+        closed_loop ? wrap_arc_length(structured_last_s_, road_length)
+                    : clamp_value(structured_last_s_, 0.0, road_length);
+    double delta_s = candidate_s - previous_s;
+    if (closed_loop) {
+        if (delta_s > 0.5 * road_length) {
+            delta_s -= road_length;
+        } else if (delta_s < -0.5 * road_length) {
+            delta_s += road_length;
+        }
+    }
+
+    if (delta_s < -0.15) {
+        delta_s = 0.0;
+    }
+    delta_s = clamp_value(delta_s, 0.0, safe_step);
+    if (progress_delta != nullptr) {
+        *progress_delta = delta_s;
+    }
+
+    const double stabilized_s = previous_s + delta_s;
+    return closed_loop ? wrap_arc_length(stabilized_s, road_length)
+                       : clamp_value(stabilized_s, 0.0, road_length);
 }
 
 void HardwarePlannerRunner::sync_estimate_from_ekf_state() {
