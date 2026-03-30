@@ -4213,12 +4213,6 @@ int run_gui(const AppOptions& options) {
             ui_state.hardware_report_written = false;
             ui_state.last_hardware_report_path.clear();
             ui_state.last_hardware_report_error.clear();
-            ui_state.hardware_environment_mode = static_cast<int>(hardware_view.scene.world.environment_mode());
-            ui_state.hardware_unstructured_preset = static_cast<int>(hardware_view.scene.world.unstructured_preset());
-            ui_state.hardware_structured_preset = static_cast<int>(hardware_view.scene.world.structured_preset());
-            ui_state.hardware_editor_world = hardware_view.scene.world;
-            ui_state.hardware_editor_dirty = false;
-            reset_editor_interaction(&ui_state);
         }
         if (hardware_updates.frame_received && hardware_updates.frame.has_value()) {
             hardware_view.frame = *hardware_updates.frame;
