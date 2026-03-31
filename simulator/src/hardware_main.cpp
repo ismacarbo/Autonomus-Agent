@@ -45,6 +45,7 @@ struct AppOptions {
     double dt = 0.10;
     bool auto_mode = true;
     bool gyro_zero = true;
+    bool controller_reset_on_connect = false;
     bool simulate = false;
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
@@ -152,7 +153,8 @@ void print_usage(const char* argv0) {
         << "  --stream-port N           send live view snapshots to TCP port N\n"
         << "  --stream-every N          send one frame every N planner steps (default 1)\n"
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
-        << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n";
+        << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n"
+        << "  --controller-reset-on-connect  pulse DTR/RTS when opening the controller serial port\n";
 }
 
 AppOptions parse_args(int argc, char** argv) {
@@ -199,6 +201,8 @@ AppOptions parse_args(int argc, char** argv) {
             options.auto_mode = false;
         } else if (arg == "--no-gyro-zero") {
             options.gyro_zero = false;
+        } else if (arg == "--controller-reset-on-connect") {
+            options.controller_reset_on_connect = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -220,7 +224,7 @@ bool setup_stream_client(const AppOptions& options,
 
     if (!streamer->connect_to(options.stream_host, static_cast<std::uint16_t>(options.stream_port))) {
         std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
-        return false;
+        return true;
     }
     return true;
 }
@@ -233,7 +237,8 @@ bool send_stream_scene(const AppOptions& options,
     }
     if (!streamer->send_scene(make_live_scene_snapshot(runner))) {
         std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
-        return false;
+        streamer->disconnect();
+        return true;
     }
     return true;
 }
@@ -254,7 +259,7 @@ bool process_stream_control(const AppOptions& options,
         if (!streamer->last_error().empty()) {
             std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
         }
-        return false;
+        return true;
     }
     if (!poll_result.world_received || !poll_result.world.has_value()) {
         return true;
@@ -271,7 +276,8 @@ bool process_stream_control(const AppOptions& options,
         }
         if (!streamer->send_control_ack(true, message)) {
             std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
-            return false;
+            streamer->disconnect();
+            return true;
         }
         if (world_applied != nullptr) {
             *world_applied = true;
@@ -279,7 +285,8 @@ bool process_stream_control(const AppOptions& options,
     } catch (const std::exception& e) {
         if (!streamer->send_control_ack(false, std::string("custom map rejected: ") + e.what())) {
             std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
-            return false;
+            streamer->disconnect();
+            return true;
         }
     }
     return true;
@@ -531,7 +538,7 @@ int main(int argc, char** argv) {
         bridge_options.controller.timeout_s = 0.05;
         bridge_options.controller.startup_delay_s = 4.0;
         bridge_options.controller.heartbeat_interval_s = 0.75;
-        bridge_options.controller.reset_on_connect = true;
+        bridge_options.controller.reset_on_connect = options.controller_reset_on_connect;
         bridge_options.lidar_port = structured_mode ? std::string{} : options.lidar_port;
         bridge_options.lidar_baudrate = options.lidar_baudrate;
         bridge_options.lidar_timeout_s = 0.10;

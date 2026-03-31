@@ -1495,6 +1495,21 @@ void load_hardware_editor_from_selection(UiState* ui_state) {
     reset_editor_interaction(ui_state);
 }
 
+void clear_hardware_world_sync(UiState* ui_state,
+                               LiveViewStreamServer* hardware_server,
+                               const char* status_message = nullptr) {
+    if (ui_state == nullptr) {
+        return;
+    }
+    if (hardware_server != nullptr) {
+        hardware_server->clear_pending_world();
+    }
+    ui_state->hardware_world_sync_pending = false;
+    ui_state->hardware_world_sync_ok = false;
+    ui_state->last_hardware_world_sync_status =
+        status_message != nullptr ? status_message : "";
+}
+
 void render_source_selector(UiState* ui_state, LiveViewStreamServer* hardware_server) {
     if (ui_state == nullptr) {
         return;
@@ -3194,6 +3209,10 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 hardware_environment == 0 ? static_cast<int>(EnvironmentMode::UnstructuredGates)
                                           : static_cast<int>(EnvironmentMode::StructuredRoad);
             load_hardware_editor_from_selection(ui_state);
+            clear_hardware_world_sync(
+                ui_state,
+                hardware_server,
+                "Scenario selection changed locally. Press `Send Map To Raspberry` only if you want to stream this world.");
         }
 
         if (static_cast<EnvironmentMode>(ui_state->hardware_environment_mode) == EnvironmentMode::StructuredRoad) {
@@ -3259,6 +3278,10 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 ui_state->hardware_structured_preset = static_cast<int>(next_preset);
                 if (next_preset != StructuredMapPreset::Custom) {
                     load_hardware_editor_from_selection(ui_state);
+                    clear_hardware_world_sync(
+                        ui_state,
+                        hardware_server,
+                        "Structured preset restored locally. Press `Send Map To Raspberry` only if you want to stream this world.");
                 }
             }
         } else {
@@ -3331,6 +3354,10 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 ui_state->hardware_unstructured_preset = static_cast<int>(next_preset);
                 if (next_preset != UnstructuredMapPreset::Custom) {
                     load_hardware_editor_from_selection(ui_state);
+                    clear_hardware_world_sync(
+                        ui_state,
+                        hardware_server,
+                        "Unstructured preset restored locally. Press `Send Map To Raspberry` only if you want to stream this world.");
                 }
             }
         }
@@ -3440,6 +3467,10 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::Checkbox("Enable drag editing", &ui_state->map_editor_enabled);
         if (ImGui::Button("Load Selected Scenario", ImVec2(-1.0f, 0.0f))) {
             load_hardware_editor_from_selection(ui_state);
+            clear_hardware_world_sync(
+                ui_state,
+                hardware_server,
+                "Selected preset restored locally. Press `Send Map To Raspberry` only if you want to override the runner world.");
         }
         if (hardware.has_scene) {
             if (ImGui::Button("Load Live Stream Scene", ImVec2(-1.0f, 0.0f))) {

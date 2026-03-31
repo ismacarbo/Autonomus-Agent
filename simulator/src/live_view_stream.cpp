@@ -1563,6 +1563,10 @@ bool LiveViewStreamServer::queue_world(const WorldMap& world) {
     return true;
 }
 
+void LiveViewStreamServer::clear_pending_world() {
+    pending_world_.reset();
+}
+
 void LiveViewStreamServer::flush_pending_world() {
     if (client_fd_ < 0 || !pending_world_.has_value()) {
         return;

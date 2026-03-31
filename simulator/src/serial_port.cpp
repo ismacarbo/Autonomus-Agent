@@ -97,6 +97,7 @@ void SerialPort::open(const std::string& device, int baudrate, double timeout_s)
 
     cfmakeraw(&tty);
     tty.c_cflag |= static_cast<tcflag_t>(CLOCAL | CREAD);
+    tty.c_cflag &= static_cast<tcflag_t>(~HUPCL);
     tty.c_cflag &= static_cast<tcflag_t>(~CSTOPB);
     tty.c_cflag &= static_cast<tcflag_t>(~CRTSCTS);
     tty.c_cflag &= static_cast<tcflag_t>(~PARENB);

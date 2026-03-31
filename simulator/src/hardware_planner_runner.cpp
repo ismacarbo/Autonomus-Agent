@@ -445,15 +445,78 @@ void HardwarePlannerRunner::connect() {
         return;
     }
 
+    const auto reconnect_bridge = [&]() {
+        bridge_.disconnect();
+        connected_ = false;
+        telemetry_ready_ = false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        bridge_.connect(lidar_enabled_for_current_mode());
+        connected_ = true;
+    };
+
     bridge_.connect(lidar_enabled_for_current_mode());
     connected_ = true;
 
     if (bridge_.controller_connected()) {
+        // Prime the binary link first so the controller can start streaming after serial open.
+        for (int i = 0; i < 4; ++i) {
+            try {
+                bridge_.poll_controller(0.12);
+                break;
+            } catch (const std::exception& e) {
+                std::cerr << "hardware_runner_warning=controller bootstrap poll failed: "
+                          << e.what() << '\n';
+                if (i + 1 < 4) {
+                    reconnect_bridge();
+                }
+            }
+        }
+
         if (config_.auto_gyro_zero) {
-            bridge_.gyro_zero();
+            bool gyro_zero_ok = false;
+            for (int attempt = 0; attempt < 3 && !gyro_zero_ok; ++attempt) {
+                try {
+                    bridge_.gyro_zero();
+                    gyro_zero_ok = true;
+                } catch (const std::exception& e) {
+                    std::cerr << "hardware_runner_warning=GYRO_ZERO retry "
+                              << (attempt + 1) << "/3 failed: " << e.what() << '\n';
+                    if (attempt + 1 < 3) {
+                        reconnect_bridge();
+                        try {
+                            bridge_.poll_controller(0.18);
+                        } catch (const std::exception&) {
+                        }
+                    }
+                }
+            }
+            if (!gyro_zero_ok) {
+                std::cerr << "hardware_runner_warning=continuing without startup GYRO_ZERO; "
+                             "the controller boot calibration will be used\n";
+            }
         }
         if (config_.auto_set_autonomous_mode) {
-            bridge_.set_mode(ControllerMode::Autonomous);
+            bool autonomous_mode_ok = false;
+            for (int attempt = 0; attempt < 3 && !autonomous_mode_ok; ++attempt) {
+                try {
+                    bridge_.set_mode(ControllerMode::Autonomous);
+                    autonomous_mode_ok = true;
+                } catch (const std::exception& e) {
+                    std::cerr << "hardware_runner_warning=AUTONOMOUS mode retry "
+                              << (attempt + 1) << "/3 failed: " << e.what() << '\n';
+                    if (attempt + 1 < 3) {
+                        reconnect_bridge();
+                        try {
+                            bridge_.poll_controller(0.18);
+                        } catch (const std::exception&) {
+                        }
+                    }
+                }
+            }
+            if (!autonomous_mode_ok) {
+                std::cerr << "hardware_runner_warning=controller AUTONOMOUS mode was not acked on connect; "
+                             "continuing and relying on the current controller mode\n";
+            }
         }
     }
 

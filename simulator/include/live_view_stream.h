@@ -171,6 +171,7 @@ class LiveViewStreamServer {
     const std::string& last_error() const { return last_error_; }
     bool has_pending_world() const { return pending_world_.has_value(); }
     bool queue_world(const WorldMap& world);
+    void clear_pending_world();
 
   private:
     void close_client();
