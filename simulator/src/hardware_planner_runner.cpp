@@ -1716,25 +1716,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         !safety_stop_active_ &&
         (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
     if (commanding_motion) {
-        if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
-            const double cruise_ratio = clamp_value(
-                last_command_.target_speed / std::max(config_.cruise_speed_limit, 1e-3),
-                0.0,
-                1.0);
-            const double structured_cap_scale = 0.55 + 0.45 * cruise_ratio;
-            const int structured_cap = std::clamp(
-                static_cast<int>(std::lround(structured_cap_scale * static_cast<double>(config_.pwm.max_pwm) * 0.82)),
-                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm + 8),
-                config_.pwm.max_pwm);
-            const int structured_min = std::min(
-                structured_cap,
-                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm + 6));
-            last_command_.pwm_left = clamp_motion_pwm_band(last_command_.pwm_left, structured_min, structured_cap);
-            last_command_.pwm_right = clamp_motion_pwm_band(last_command_.pwm_right, structured_min, structured_cap);
-        } else {
-            last_command_.pwm_left = full_scale_motion_pwm(last_command_.pwm_left, config_.pwm.max_pwm);
-            last_command_.pwm_right = full_scale_motion_pwm(last_command_.pwm_right, config_.pwm.max_pwm);
-        }
+        last_command_.pwm_left = full_scale_motion_pwm(last_command_.pwm_left, config_.pwm.max_pwm);
+        last_command_.pwm_right = full_scale_motion_pwm(last_command_.pwm_right, config_.pwm.max_pwm);
     }
 
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
