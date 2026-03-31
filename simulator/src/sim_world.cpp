@@ -782,25 +782,29 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::HardwareTrack:
-            world.bounds_ = {0.0, 0.0, 2.0, 2.0};
-            world.obstacles_ = {
-                {1.08, 0.82, 1.30, 1.08},
-            };
-            world.road_centerline_ = {
-                {0.26, 1.00},
-                {0.40, 1.06},
-                {0.56, 1.14},
-                {0.72, 1.24},
-                {0.90, 1.36},
-                {1.08, 1.48},
-                {1.28, 1.46},
-                {1.44, 1.30},
-                {1.58, 1.12},
-                {1.74, 1.00},
-                {1.86, 0.96},
-            };
+            // Compact structured loop for indoor validation without obstacles.
+            world.bounds_ = {0.0, 0.0, 1.36, 1.18};
+            world.obstacles_.clear();
+            world.road_centerline_ = close_polyline_loop({
+                {0.18, 0.62},
+                {0.25, 0.77},
+                {0.38, 0.89},
+                {0.55, 0.98},
+                {0.74, 1.01},
+                {0.93, 0.96},
+                {1.07, 0.85},
+                {1.16, 0.70},
+                {1.17, 0.53},
+                {1.10, 0.38},
+                {0.97, 0.27},
+                {0.79, 0.20},
+                {0.60, 0.18},
+                {0.42, 0.23},
+                {0.28, 0.34},
+                {0.20, 0.47},
+            }, 0.18);
             world.start_ = world.road_centerline_.front();
-            world.goal_ = world.road_centerline_.back();
+            world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         default:

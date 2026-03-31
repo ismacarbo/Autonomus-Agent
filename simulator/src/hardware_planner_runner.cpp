@@ -114,6 +114,33 @@ int full_scale_motion_pwm(int pwm, int max_pwm) {
     return signum(pwm) * max_pwm;
 }
 
+int clamp_motion_pwm_band(int pwm, int min_pwm, int max_pwm) {
+    if (pwm == 0 || max_pwm <= 0) {
+        return 0;
+    }
+    const int safe_min = std::max(min_pwm, 0);
+    const int safe_max = std::max(max_pwm, safe_min);
+    const int magnitude = std::clamp(std::abs(pwm), safe_min, safe_max);
+    return signum(pwm) * magnitude;
+}
+
+double structured_tracking_speed_scale(double distance_to_goal,
+                                       double slowdown_radius,
+                                       double heading_error_deg,
+                                       double cross_track_error,
+                                       double curvature,
+                                       const VehicleGeometry& geometry) {
+    const double goal_scale =
+        0.55 + 0.45 * clamp_value(distance_to_goal / std::max(slowdown_radius, 0.25), 0.0, 1.0);
+    const double heading_scale =
+        1.0 - 0.55 * clamp_value(std::abs(heading_error_deg) / 45.0, 0.0, 1.0);
+    const double cross_track_scale =
+        1.0 - 0.45 * clamp_value(std::abs(cross_track_error) / 0.35, 0.0, 1.0);
+    const double curvature_scale =
+        1.0 - 0.30 * clamp_value(std::abs(curvature) / std::max(geometry.max_curvature, 1e-3), 0.0, 1.0);
+    return clamp_value(goal_scale * heading_scale * cross_track_scale * curvature_scale, 0.28, 1.0);
+}
+
 void apply_start_motion_boost(int min_pwm, int* pwm_left, int* pwm_right) {
     if (min_pwm <= 0 || pwm_left == nullptr || pwm_right == nullptr) {
         return;
@@ -1620,6 +1647,18 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_speed = 0.0;
     }
 
+    if (world_.environment_mode() == EnvironmentMode::StructuredRoad && !safety_stop_active_) {
+        const double slowdown_radius = std::max(config_.goal_slowdown_radius_m, 0.25);
+        const double speed_scale = structured_tracking_speed_scale(
+            distance_to_goal_,
+            slowdown_radius,
+            tracker_heading_error_deg_,
+            tracker_cross_track_error_,
+            last_command_.target_curvature,
+            geometry_);
+        last_command_.target_speed *= speed_scale;
+    }
+
     last_command_.target_speed = clamp_value(
         last_command_.target_speed,
         0.0,
@@ -1677,8 +1716,25 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         !safety_stop_active_ &&
         (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
     if (commanding_motion) {
-        last_command_.pwm_left = full_scale_motion_pwm(last_command_.pwm_left, config_.pwm.max_pwm);
-        last_command_.pwm_right = full_scale_motion_pwm(last_command_.pwm_right, config_.pwm.max_pwm);
+        if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+            const double cruise_ratio = clamp_value(
+                last_command_.target_speed / std::max(config_.cruise_speed_limit, 1e-3),
+                0.0,
+                1.0);
+            const double structured_cap_scale = 0.55 + 0.45 * cruise_ratio;
+            const int structured_cap = std::clamp(
+                static_cast<int>(std::lround(structured_cap_scale * static_cast<double>(config_.pwm.max_pwm) * 0.82)),
+                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm + 8),
+                config_.pwm.max_pwm);
+            const int structured_min = std::min(
+                structured_cap,
+                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm + 6));
+            last_command_.pwm_left = clamp_motion_pwm_band(last_command_.pwm_left, structured_min, structured_cap);
+            last_command_.pwm_right = clamp_motion_pwm_band(last_command_.pwm_right, structured_min, structured_cap);
+        } else {
+            last_command_.pwm_left = full_scale_motion_pwm(last_command_.pwm_left, config_.pwm.max_pwm);
+            last_command_.pwm_right = full_scale_motion_pwm(last_command_.pwm_right, config_.pwm.max_pwm);
+        }
     }
 
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
@@ -1804,12 +1860,16 @@ int HardwarePlannerRunner::wheel_speed_to_pwm(double wheel_speed_mps, double sca
         return 0;
     }
 
+    const double scaled_speed = std::abs(wheel_speed_mps) * std::max(std::abs(scale), 1e-3);
+    const double pwm = static_cast<double>(config_.pwm.min_effective_pwm) +
+                       config_.pwm.wheel_speed_to_pwm_bias +
+                       config_.pwm.wheel_speed_to_pwm_gain * scaled_speed;
     const int sign = wheel_speed_mps >= 0.0 ? 1 : -1;
-    const int scaled_max_pwm = static_cast<int>(std::lround(
-        clamp_value(std::abs(scale) * static_cast<double>(config_.pwm.max_pwm),
-                    0.0,
-                    static_cast<double>(config_.pwm.max_pwm))));
-    return sign * std::max(0, scaled_max_pwm);
+    const int magnitude = static_cast<int>(std::lround(clamp_value(
+        pwm,
+        static_cast<double>(config_.pwm.min_effective_pwm),
+        static_cast<double>(config_.pwm.max_pwm))));
+    return sign * magnitude;
 }
 
 void HardwarePlannerRunner::step() {
