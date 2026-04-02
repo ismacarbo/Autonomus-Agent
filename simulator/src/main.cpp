@@ -211,6 +211,44 @@ WorldMap apply_hardware_track_scale(const UiState& ui_state, WorldMap world) {
     return world;
 }
 
+bool validate_hardware_structured_world(const WorldMap& world, std::string* error_message) {
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+        return true;
+    }
+
+    const auto& road = world.road_centerline();
+    if (road.size() < 6) {
+        if (error_message != nullptr) {
+            *error_message = "Structured custom map rejected: the road collapsed to too few points. Reload Hardware Track and re-apply the resize/edit.";
+        }
+        return false;
+    }
+
+    double min_x = road.front().x;
+    double max_x = road.front().x;
+    double min_y = road.front().y;
+    double max_y = road.front().y;
+    for (const Vec2& point : road) {
+        min_x = std::min(min_x, point.x);
+        max_x = std::max(max_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_y = std::max(max_y, point.y);
+    }
+
+    const double road_span_x = max_x - min_x;
+    const double road_span_y = max_y - min_y;
+    const Rect bounds = world.bounds();
+    const double bounds_span_x = bounds.max_x - bounds.min_x;
+    const double bounds_span_y = bounds.max_y - bounds.min_y;
+    if (std::max(road_span_x, road_span_y) < 0.35 || std::max(bounds_span_x, bounds_span_y) < 0.50) {
+        if (error_message != nullptr) {
+            *error_message = "Structured custom map rejected: the edited road is too small for the hardware viewport and robot footprint.";
+        }
+        return false;
+    }
+    return true;
+}
+
 constexpr ImU32 kColorCanvas = IM_COL32(19, 24, 28, 255);
 constexpr ImU32 kColorGrid = IM_COL32(39, 49, 57, 255);
 constexpr ImU32 kColorBounds = IM_COL32(148, 162, 170, 255);
@@ -1578,6 +1616,15 @@ bool queue_current_hardware_world(UiState* ui_state,
     }
     WorldMap streamed_world = hardware_world_from_ui_selection(*ui_state);
     streamed_world.finalize_editor_changes();
+    std::string validation_error;
+    if (!validate_hardware_structured_world(streamed_world, &validation_error)) {
+        hardware_server->clear_pending_world();
+        ui_state->hardware_world_sync_pending = false;
+        ui_state->hardware_world_sync_ok = false;
+        ui_state->last_hardware_world_error = validation_error;
+        ui_state->last_hardware_world_sync_status = validation_error;
+        return false;
+    }
     if (hardware_server->queue_world(streamed_world)) {
         ui_state->hardware_editor_world = streamed_world;
         ui_state->hardware_editor_dirty = false;
@@ -3543,12 +3590,26 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             }
         }
         if (ImGui::Button("Apply Edited Map", ImVec2(-1.0f, 0.0f))) {
-            ui_state->hardware_editor_world.finalize_editor_changes();
-            ui_state->hardware_editor_dirty = false;
-            if (ui_state->hardware_editor_world.environment_mode() == EnvironmentMode::StructuredRoad) {
+            const WorldMap previous_world = ui_state->hardware_editor_world;
+            const bool previous_dirty = ui_state->hardware_editor_dirty;
+            WorldMap applied_world = ui_state->hardware_editor_world;
+            applied_world.finalize_editor_changes();
+            std::string validation_error;
+            if (!validate_hardware_structured_world(applied_world, &validation_error)) {
+                ui_state->hardware_editor_world = previous_world;
+                ui_state->hardware_editor_dirty = previous_dirty;
+                ui_state->last_hardware_world_error = validation_error;
+                ui_state->last_hardware_world_sync_status = validation_error;
+            } else if (applied_world.environment_mode() == EnvironmentMode::StructuredRoad) {
+                ui_state->hardware_editor_world = applied_world;
+                ui_state->hardware_editor_dirty = false;
+                ui_state->last_hardware_world_error.clear();
                 ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
                 ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::Custom);
             } else {
+                ui_state->hardware_editor_world = applied_world;
+                ui_state->hardware_editor_dirty = false;
+                ui_state->last_hardware_world_error.clear();
                 ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
                 ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
             }
@@ -3567,22 +3628,28 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         if (ImGui::Button("Export Custom Map File", ImVec2(-1.0f, 0.0f))) {
             WorldMap export_world = ui_state->hardware_editor_world;
             export_world.finalize_editor_changes();
-            const std::string world_path = default_hardware_world_path(*ui_state);
-            std::string error;
-            if (write_world_blob_file(export_world, world_path, &error)) {
-                ui_state->last_hardware_world_path = world_path;
-                ui_state->last_hardware_world_error.clear();
-                ui_state->hardware_editor_world = export_world;
-                ui_state->hardware_editor_dirty = false;
-                if (export_world.environment_mode() == EnvironmentMode::StructuredRoad) {
-                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
-                    ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::Custom);
-                } else {
-                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
-                    ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
-                }
+            std::string validation_error;
+            if (!validate_hardware_structured_world(export_world, &validation_error)) {
+                ui_state->last_hardware_world_error = validation_error;
+                ui_state->last_hardware_world_sync_status = validation_error;
             } else {
-                ui_state->last_hardware_world_error = error.empty() ? "Could not export the hardware map file." : error;
+                const std::string world_path = default_hardware_world_path(*ui_state);
+                std::string error;
+                if (write_world_blob_file(export_world, world_path, &error)) {
+                    ui_state->last_hardware_world_path = world_path;
+                    ui_state->last_hardware_world_error.clear();
+                    ui_state->hardware_editor_world = export_world;
+                    ui_state->hardware_editor_dirty = false;
+                    if (export_world.environment_mode() == EnvironmentMode::StructuredRoad) {
+                        ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
+                        ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::Custom);
+                    } else {
+                        ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
+                        ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
+                    }
+                } else {
+                    ui_state->last_hardware_world_error = error.empty() ? "Could not export the hardware map file." : error;
+                }
             }
         }
 
