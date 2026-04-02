@@ -2633,14 +2633,15 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         return;
     }
 
+    const bool show_live_scene = hardware.has_scene && !ui_state->hardware_world_sync_pending;
     const LiveFrameSnapshot& frame = hardware.frame;
-    const WorldMap preview_world = hardware.has_scene ? hardware.scene.world : hardware_world_from_ui_selection(*ui_state);
+    const WorldMap preview_world = show_live_scene ? hardware.scene.world : hardware_world_from_ui_selection(*ui_state);
     const WorldMap& world = preview_world;
     const char* active_target = "none";
     if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
-        if (hardware.has_scene && frame.chosen_gate_index >= 0 && frame.chosen_gate_index < static_cast<int>(frame.gates.size())) {
+        if (show_live_scene && frame.chosen_gate_index >= 0 && frame.chosen_gate_index < static_cast<int>(frame.gates.size())) {
             active_target = frame.gates[static_cast<std::size_t>(frame.chosen_gate_index)].spec.name.c_str();
-        } else if (hardware.has_scene && hardware.scene.stream_profile == "slam") {
+        } else if (show_live_scene && hardware.scene.stream_profile == "slam") {
             active_target = thesis_sim::unstructured_map_preset_name(world.unstructured_preset());
         } else {
             active_target = thesis_sim::unstructured_map_preset_name(world.unstructured_preset());
@@ -2674,12 +2675,12 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
                 ImGui::TableNextColumn();
                 metric_card("hw_world_target", "Target", target_buf,
                             world.environment_mode() == EnvironmentMode::UnstructuredGates
-                                ? ((hardware.has_scene && hardware.scene.stream_profile == "slam")
+                                ? ((show_live_scene && hardware.scene.stream_profile == "slam")
                                        ? "Selected unstructured SLAM context"
-                                       : (hardware.has_scene ? "Active planner gate" : "Local hardware preview target"))
-                                : ((hardware.has_scene && hardware.scene.stream_profile == "slam")
+                                       : (show_live_scene ? "Active planner gate" : "Local hardware preview target"))
+                                : ((show_live_scene && hardware.scene.stream_profile == "slam")
                                        ? "Selected structured SLAM context"
-                                       : (hardware.has_scene ? "Active structured loop" : "Local hardware preview loop")),
+                                       : (show_live_scene ? "Active structured loop" : "Local hardware preview loop")),
                             ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
                             64.0f);
                 ImGui::EndTable();
@@ -2696,7 +2697,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             ImGui::Checkbox("Labels", &ui_state->show_gate_labels);
             ImGui::Checkbox("HUD", &ui_state->show_world_hud);
             ImGui::TextWrapped(
-                hardware.has_scene
+                show_live_scene
                     ? "The hardware viewport reuses the same scene diagnostics, but all poses, LiDAR and trajectories now come from the remote robot stream."
                     : "No live stream yet: this viewport is previewing the selected hardware map locally, so you can edit it before launching the runner on the Raspberry.");
             ImGui::EndTable();
@@ -2749,12 +2750,12 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         draw_polyline(draw_list, tx, world.road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
     }
 
-    if (hardware.has_scene && ui_state->show_trails) {
+    if (show_live_scene && ui_state->show_trails) {
         draw_polyline(draw_list, tx, hardware.frame.trail, kColorEstimateTrail, 2.5f);
         draw_polyline(draw_list, tx, hardware.frame.planned_trajectory, kColorTrajectory, 3.0f);
     }
 
-    if (hardware.has_scene && ui_state->show_lidar_hits && !frame.slam_points.empty()) {
+    if (show_live_scene && ui_state->show_lidar_hits && !frame.slam_points.empty()) {
         const size_t slam_stride = frame.slam_points.size() > 2800 ? (frame.slam_points.size() / 2800) + 1 : 1;
         for (size_t i = 0; i < frame.slam_points.size(); i += slam_stride) {
             const ImVec2 point_screen = world_to_screen(tx, frame.slam_points[i]);
@@ -2762,7 +2763,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         }
     }
 
-    if (hardware.has_scene && hardware.scene.lidar_enabled && (ui_state->show_lidar_rays || ui_state->show_lidar_hits)) {
+    if (show_live_scene && hardware.scene.lidar_enabled && (ui_state->show_lidar_rays || ui_state->show_lidar_hits)) {
         const Vec2 lidar_origin = frame.navigation_position;
         const size_t lidar_stride = frame.lidar_hits.size() > 720 ? 2 : 1;
         if (ui_state->show_lidar_rays) {
@@ -2789,7 +2790,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         draw_list->AddCircleFilled(world_to_screen(tx, lidar_origin), 4.5f, IM_COL32(170, 255, 208, 220));
     }
 
-    if (hardware.has_scene) {
+    if (show_live_scene) {
         for (size_t i = 0; i < frame.gates.size(); ++i) {
             const LiveGateFrame& gate = frame.gates[i];
             const ImVec2 screen_pos = world_to_screen(tx, gate.spec.position);
@@ -2816,7 +2817,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         }
     }
 
-    if (hardware.has_scene) {
+    if (show_live_scene) {
         const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
         draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, 2.60f);
     }
@@ -2824,7 +2825,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
     if (ui_state->show_world_hud) {
         char hud_line[96];
         std::vector<OverlayLine> top_left = {
-            {hardware.has_scene
+            {show_live_scene
                  ? (hardware.scene.stream_profile == "slam" ? "Hardware SLAM viewport" : "Hardware viewport")
                  : "Hardware preview viewport",
              IM_COL32(240, 243, 235, 255)},
@@ -2833,22 +2834,22 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
                  ? thesis_sim::unstructured_map_preset_name(world.unstructured_preset())
                  : thesis_sim::structured_map_preset_name(world.structured_preset()),
              IM_COL32(170, 179, 185, 255)},
-            {hardware.has_scene ? stream_profile_label(hardware.scene.stream_profile, ui_state->workspace_source)
+            {show_live_scene ? stream_profile_label(hardware.scene.stream_profile, ui_state->workspace_source)
                                 : "Local preview",
              IM_COL32(170, 179, 185, 255)},
-            {hardware.has_scene ? hardware.scene.range_sensor_name : "Edit and export before Raspberry launch",
+            {show_live_scene ? hardware.scene.range_sensor_name : "Edit and export before Raspberry launch",
              IM_COL32(170, 179, 185, 255)},
         };
         draw_overlay_panel(draw_list, ImVec2(canvas_pos.x + 16.0f, canvas_pos.y + 16.0f), 228.0f, top_left);
 
         std::snprintf(hud_line, sizeof(hud_line), "speed %.2f m/s", frame.vehicle.speed);
         std::vector<OverlayLine> top_right = {
-            {hardware.has_scene
+            {show_live_scene
                  ? (frame.goal_reached ? "Mission complete"
                                        : (frame.safety_stop_active ? "Safety stop active"
                                                                    : (hardware.scene.stream_profile == "slam" ? "SLAM stream live" : "Hardware stream live")))
                  : "Preview ready",
-             hardware.has_scene
+             show_live_scene
                  ? (frame.goal_reached ? IM_COL32(124, 238, 151, 255)
                                        : (frame.safety_stop_active ? IM_COL32(255, 124, 102, 255) : IM_COL32(255, 221, 113, 255)))
                  : IM_COL32(132, 214, 255, 255)},
@@ -2857,9 +2858,9 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         std::snprintf(hud_line, sizeof(hud_line), "goal %.2f m", frame.distance_to_goal);
         top_right.push_back({hud_line, IM_COL32(170, 179, 185, 255)});
         if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
-            if (hardware.has_scene && hardware.scene.stream_profile == "slam") {
+            if (show_live_scene && hardware.scene.stream_profile == "slam") {
                 std::snprintf(hud_line, sizeof(hud_line), "context %s | map pts %d", active_target, static_cast<int>(frame.slam_points.size()));
-            } else if (hardware.has_scene) {
+            } else if (show_live_scene) {
                 std::snprintf(hud_line,
                               sizeof(hud_line),
                               "gate %s | cand %d | map %d",
@@ -2879,16 +2880,16 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             {"orange: estimated hardware trail", kColorEstimateTrail},
             {"yellow: selected planner trajectory", kColorTrajectory},
         };
-        if (hardware.has_scene && hardware.scene.lidar_enabled && ui_state->show_lidar_rays) {
+        if (show_live_scene && hardware.scene.lidar_enabled && ui_state->show_lidar_rays) {
             legend.push_back({"green: LiDAR hit rays", kColorLidar});
         }
-        if (hardware.has_scene && hardware.scene.lidar_enabled && ui_state->show_lidar_hits) {
+        if (show_live_scene && hardware.scene.lidar_enabled && ui_state->show_lidar_hits) {
             legend.push_back({"lime/cyan: LiDAR collision points", kColorLidarHit});
         }
-        if (hardware.has_scene && !frame.slam_points.empty() && ui_state->show_lidar_hits) {
+        if (show_live_scene && !frame.slam_points.empty() && ui_state->show_lidar_hits) {
             legend.push_back({"mint: accumulated LiDAR map", IM_COL32(132, 255, 196, 200)});
         }
-        if (!hardware.has_scene && ui_state->map_editor_enabled) {
+        if (!show_live_scene && ui_state->map_editor_enabled) {
             legend.push_back({"blue: editable preview road", kColorEditorOverlay});
         }
         const float legend_height = 20.0f + static_cast<float>(legend.size()) * (ImGui::GetFontSize() + 5.0f);
@@ -2898,7 +2899,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
                            legend);
     }
 
-    if (!hardware.has_scene && ui_state->map_editor_enabled) {
+    if (!show_live_scene && ui_state->map_editor_enabled) {
         draw_editor_overlay(draw_list, tx, ui_state->hardware_editor_world, *ui_state);
 
         const ImVec2 mouse_pos = ImGui::GetIO().MousePos;

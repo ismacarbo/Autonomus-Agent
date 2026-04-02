@@ -292,6 +292,34 @@ bool process_stream_control(const AppOptions& options,
     return true;
 }
 
+bool wait_for_initial_stream_world(const AppOptions& options,
+                                   HardwarePlannerRunner* runner,
+                                   LiveViewStreamClient* streamer,
+                                   bool* world_applied) {
+    if (world_applied != nullptr) {
+        *world_applied = false;
+    }
+    if (!stream_enabled(options) || runner == nullptr || streamer == nullptr || !streamer->connected()) {
+        return true;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(900);
+    while (std::chrono::steady_clock::now() < deadline && streamer->connected()) {
+        bool applied = false;
+        if (!process_stream_control(options, runner, streamer, &applied)) {
+            return false;
+        }
+        if (applied) {
+            if (world_applied != nullptr) {
+                *world_applied = true;
+            }
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return true;
+}
+
 void stream_frame_if_due(const AppOptions& options,
                          const HardwarePlannerRunner& runner,
                          LiveViewStreamClient* streamer,
@@ -563,7 +591,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         bool world_applied = false;
-        if (!process_stream_control(options, runner.get(), &streamer, &world_applied)) {
+        if (!wait_for_initial_stream_world(options, runner.get(), &streamer, &world_applied)) {
             runner->disconnect();
             return 2;
         }

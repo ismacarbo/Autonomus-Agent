@@ -323,6 +323,7 @@ bool read_world(const std::vector<std::uint8_t>& data, std::size_t* offset, Worl
                                   static_cast<GateBehaviorMode>(gate_behavior),
                                   gate_seed);
 
+    restored.set_bounds(bounds);
     restored.set_start(start);
     restored.set_goal(goal);
     restored.set_start_heading(start_heading);
