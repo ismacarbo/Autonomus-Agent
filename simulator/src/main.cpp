@@ -90,8 +90,9 @@ struct UiState {
     int workspace_source = kWorkspaceSourceSimulation;
     int hardware_listen_port = 9559;
     int hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
-    int hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
-    int hardware_structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
+    int hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
+    int hardware_structured_preset = static_cast<int>(StructuredMapPreset::HardwareTrack);
+    float hardware_track_scale = 1.0f;
     bool show_grid = true;
     bool show_trails = true;
     bool show_lidar_rays = true;
@@ -119,6 +120,7 @@ struct UiState {
     std::string last_hardware_world_error;
     bool hardware_world_sync_pending = false;
     bool hardware_world_sync_ok = false;
+    bool hardware_stream_connected_prev = false;
     std::string last_hardware_world_sync_status;
 };
 
@@ -146,6 +148,68 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
                               GateBehaviorMode gate_behavior,
                               std::uint32_t gate_seed);
 bool workspace_source_is_hardware(int source);
+
+Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
+    return {
+        center.x + (point.x - center.x) * scale,
+        center.y + (point.y - center.y) * scale,
+    };
+}
+
+Rect scale_rect_about(const Rect& rect, const Vec2& center, double scale) {
+    const Vec2 min_point = scale_point_about({rect.min_x, rect.min_y}, center, scale);
+    const Vec2 max_point = scale_point_about({rect.max_x, rect.max_y}, center, scale);
+    return {
+        std::min(min_point.x, max_point.x),
+        std::min(min_point.y, max_point.y),
+        std::max(min_point.x, max_point.x),
+        std::max(min_point.y, max_point.y),
+    };
+}
+
+WorldMap scale_world_map(const WorldMap& source, double scale) {
+    if (std::abs(scale - 1.0) <= 1e-6 || scale <= 0.0) {
+        return source;
+    }
+
+    WorldMap scaled = source;
+    const Rect bounds = source.bounds();
+    const Vec2 center{
+        (bounds.min_x + bounds.max_x) * 0.5,
+        (bounds.min_y + bounds.max_y) * 0.5,
+    };
+
+    scaled.set_bounds(scale_rect_about(bounds, center, scale));
+    scaled.set_start(scale_point_about(source.start(), center, scale));
+    scaled.set_goal(scale_point_about(source.goal(), center, scale));
+
+    for (Rect& obstacle : scaled.editable_obstacles()) {
+        obstacle = scale_rect_about(obstacle, center, scale);
+    }
+    for (GateSpec& gate : scaled.editable_gates()) {
+        gate.position = scale_point_about(gate.position, center, scale);
+        gate.anchor_position = scale_point_about(gate.anchor_position, center, scale);
+        gate.motion_amplitude.x *= scale;
+        gate.motion_amplitude.y *= scale;
+    }
+    for (Vec2& point : scaled.editable_road_centerline()) {
+        point = scale_point_about(point, center, scale);
+    }
+
+    return scaled;
+}
+
+WorldMap apply_hardware_track_scale(const UiState& ui_state, WorldMap world) {
+    const EnvironmentMode selected_mode = static_cast<EnvironmentMode>(ui_state.hardware_environment_mode);
+    const StructuredMapPreset selected_structured_preset =
+        static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset);
+    if (selected_mode == EnvironmentMode::StructuredRoad &&
+        selected_structured_preset == StructuredMapPreset::HardwareTrack) {
+        const double scale = std::clamp(static_cast<double>(ui_state.hardware_track_scale), 0.25, 2.0);
+        return scale_world_map(world, scale);
+    }
+    return world;
+}
 
 constexpr ImU32 kColorCanvas = IM_COL32(19, 24, 28, 255);
 constexpr ImU32 kColorGrid = IM_COL32(39, 49, 57, 255);
@@ -378,7 +442,8 @@ WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
         custom.finalize_editor_changes();
         return custom;
     }
-    return make_world_from_mode(selected_mode, selected_preset, selected_structured_preset, GateBehaviorMode::Static, 0);
+    WorldMap world = make_world_from_mode(selected_mode, selected_preset, selected_structured_preset, GateBehaviorMode::Static, 0);
+    return apply_hardware_track_scale(ui_state, std::move(world));
 }
 
 WorldMap* active_editor_world(UiState* ui_state) {
@@ -1446,11 +1511,11 @@ std::string hardware_launch_hint(const UiState& ui_state) {
     std::ostringstream cmd;
     const bool structured =
         static_cast<EnvironmentMode>(ui_state.hardware_environment_mode) == EnvironmentMode::StructuredRoad;
-    const bool custom_world =
-        structured
-            ? static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset) == StructuredMapPreset::Custom
-            : static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset) == UnstructuredMapPreset::Custom;
     if (workspace_source_expects_slam(ui_state.workspace_source)) {
+        const bool custom_world =
+            structured
+                ? static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset) == StructuredMapPreset::Custom
+                : static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset) == UnstructuredMapPreset::Custom;
         cmd << "thesis_robot_smoke_test"
             << " --stream-host <pc-ip>"
             << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
@@ -1470,13 +1535,6 @@ std::string hardware_launch_hint(const UiState& ui_state) {
             << " --stream-host <pc-ip>"
             << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
             << " --scenario " << (structured ? "structured" : "unstructured");
-        if (!custom_world && structured) {
-            cmd << " --structured-map "
-                << structured_map_cli_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset));
-        } else if (!custom_world) {
-            cmd << " --unstructured-map "
-                << unstructured_map_cli_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset));
-        }
     }
     return cmd.str();
 }
@@ -1485,12 +1543,13 @@ void load_hardware_editor_from_selection(UiState* ui_state) {
     if (ui_state == nullptr) {
         return;
     }
-    ui_state->hardware_editor_world = make_world_from_mode(
+    WorldMap selected_world = make_world_from_mode(
         static_cast<EnvironmentMode>(ui_state->hardware_environment_mode),
         static_cast<UnstructuredMapPreset>(ui_state->hardware_unstructured_preset),
         static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset),
         GateBehaviorMode::Static,
         0);
+    ui_state->hardware_editor_world = apply_hardware_track_scale(*ui_state, std::move(selected_world));
     ui_state->hardware_editor_dirty = false;
     reset_editor_interaction(ui_state);
 }
@@ -1508,6 +1567,34 @@ void clear_hardware_world_sync(UiState* ui_state,
     ui_state->hardware_world_sync_ok = false;
     ui_state->last_hardware_world_sync_status =
         status_message != nullptr ? status_message : "";
+}
+
+bool queue_current_hardware_world(UiState* ui_state,
+                                  LiveViewStreamServer* hardware_server,
+                                  const char* queued_message,
+                                  const char* failure_message) {
+    if (ui_state == nullptr || hardware_server == nullptr) {
+        return false;
+    }
+    WorldMap streamed_world = hardware_world_from_ui_selection(*ui_state);
+    streamed_world.finalize_editor_changes();
+    if (hardware_server->queue_world(streamed_world)) {
+        ui_state->hardware_editor_world = streamed_world;
+        ui_state->hardware_editor_dirty = false;
+        ui_state->hardware_world_sync_pending = true;
+        ui_state->hardware_world_sync_ok = false;
+        ui_state->last_hardware_world_sync_status =
+            queued_message != nullptr ? queued_message : "Hardware map queued for Raspberry sync.";
+        return true;
+    }
+
+    ui_state->hardware_world_sync_pending = false;
+    ui_state->hardware_world_sync_ok = false;
+    ui_state->last_hardware_world_sync_status =
+        hardware_server->last_error().empty()
+            ? (failure_message != nullptr ? failure_message : "Could not queue the hardware map for Raspberry sync.")
+            : hardware_server->last_error();
+    return false;
 }
 
 void render_source_selector(UiState* ui_state, LiveViewStreamServer* hardware_server) {
@@ -3212,64 +3299,47 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             clear_hardware_world_sync(
                 ui_state,
                 hardware_server,
-                "Scenario selection changed locally. Press `Send Map To Raspberry` only if you want to stream this world.");
+                "Scenario selection changed locally. It will be streamed automatically to the next Raspberry runner connection.");
         }
 
         if (static_cast<EnvironmentMode>(ui_state->hardware_environment_mode) == EnvironmentMode::StructuredRoad) {
             const StructuredMapPreset previous_preset =
                 static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset);
             const char* structured_items[] = {
-                thesis_sim::structured_map_preset_name(StructuredMapPreset::ValidationRoad),
-                thesis_sim::structured_map_preset_name(StructuredMapPreset::CircleLoop),
-                thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::Custom),
             };
             int selection = 0;
             switch (previous_preset) {
-                case StructuredMapPreset::CircleLoop:
-                    selection = 1;
-                    break;
-                case StructuredMapPreset::ZigZag:
-                    selection = 2;
-                    break;
                 case StructuredMapPreset::HardwareTrack:
-                    selection = 3;
+                    selection = 0;
                     break;
                 case StructuredMapPreset::Custom:
-                    selection = 4;
+                    selection = 1;
                     break;
-                case StructuredMapPreset::ValidationRoad:
                 default:
                     selection = 0;
                     break;
             }
             if (ImGui::Combo("Structured Map", &selection, structured_items, IM_ARRAYSIZE(structured_items))) {
-                StructuredMapPreset next_preset = StructuredMapPreset::ValidationRoad;
+                StructuredMapPreset next_preset = StructuredMapPreset::HardwareTrack;
                 switch (selection) {
-                    case 1:
-                        next_preset = StructuredMapPreset::CircleLoop;
-                        break;
-                    case 2:
-                        next_preset = StructuredMapPreset::ZigZag;
-                        break;
-                    case 3:
+                    case 0:
                         next_preset = StructuredMapPreset::HardwareTrack;
                         break;
-                    case 4:
+                    case 1:
                         next_preset = StructuredMapPreset::Custom;
                         break;
-                    case 0:
                     default:
-                        next_preset = StructuredMapPreset::ValidationRoad;
+                        next_preset = StructuredMapPreset::HardwareTrack;
                         break;
                 }
                 if (next_preset == StructuredMapPreset::Custom &&
                     ui_state->hardware_editor_world.environment_mode() != EnvironmentMode::StructuredRoad) {
                     ui_state->hardware_editor_world = make_world_from_mode(
                         EnvironmentMode::StructuredRoad,
-                        UnstructuredMapPreset::RobotValidation,
-                        previous_preset == StructuredMapPreset::Custom ? StructuredMapPreset::ValidationRoad : previous_preset,
+                        UnstructuredMapPreset::Custom,
+                        previous_preset == StructuredMapPreset::Custom ? StructuredMapPreset::HardwareTrack : previous_preset,
                         GateBehaviorMode::Static,
                         0);
                     ui_state->hardware_editor_dirty = false;
@@ -3281,71 +3351,40 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                     clear_hardware_world_sync(
                         ui_state,
                         hardware_server,
-                        "Structured preset restored locally. Press `Send Map To Raspberry` only if you want to stream this world.");
+                        "Structured preset restored locally. It will be streamed automatically to the next Raspberry runner connection.");
                 }
             }
         } else {
             const UnstructuredMapPreset previous_preset =
                 static_cast<UnstructuredMapPreset>(ui_state->hardware_unstructured_preset);
             const char* unstructured_items[] = {
-                thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::RobotValidation),
-                thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::TightCorridor),
-                thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::WideSlalom),
-                thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::LowerBypass),
-                thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::HardwareLab),
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::Custom),
             };
             int selection = 0;
             switch (previous_preset) {
-                case UnstructuredMapPreset::TightCorridor:
-                    selection = 1;
-                    break;
-                case UnstructuredMapPreset::WideSlalom:
-                    selection = 2;
-                    break;
-                case UnstructuredMapPreset::LowerBypass:
-                    selection = 3;
-                    break;
-                case UnstructuredMapPreset::HardwareLab:
-                    selection = 4;
-                    break;
                 case UnstructuredMapPreset::Custom:
-                    selection = 5;
+                    selection = 0;
                     break;
-                case UnstructuredMapPreset::RobotValidation:
                 default:
                     selection = 0;
                     break;
             }
             if (ImGui::Combo("Unstructured Map", &selection, unstructured_items, IM_ARRAYSIZE(unstructured_items))) {
-                UnstructuredMapPreset next_preset = UnstructuredMapPreset::RobotValidation;
+                UnstructuredMapPreset next_preset = UnstructuredMapPreset::Custom;
                 switch (selection) {
-                    case 1:
-                        next_preset = UnstructuredMapPreset::TightCorridor;
-                        break;
-                    case 2:
-                        next_preset = UnstructuredMapPreset::WideSlalom;
-                        break;
-                    case 3:
-                        next_preset = UnstructuredMapPreset::LowerBypass;
-                        break;
-                    case 4:
-                        next_preset = UnstructuredMapPreset::HardwareLab;
-                        break;
-                    case 5:
+                    case 0:
                         next_preset = UnstructuredMapPreset::Custom;
                         break;
-                    case 0:
                     default:
-                        next_preset = UnstructuredMapPreset::RobotValidation;
+                        next_preset = UnstructuredMapPreset::Custom;
                         break;
                 }
                 if (next_preset == UnstructuredMapPreset::Custom &&
                     ui_state->hardware_editor_world.environment_mode() != EnvironmentMode::UnstructuredGates) {
                     ui_state->hardware_editor_world = make_world_from_mode(
                         EnvironmentMode::UnstructuredGates,
-                        previous_preset == UnstructuredMapPreset::Custom ? UnstructuredMapPreset::RobotValidation : previous_preset,
-                        StructuredMapPreset::ValidationRoad,
+                        previous_preset == UnstructuredMapPreset::Custom ? UnstructuredMapPreset::Custom : previous_preset,
+                        StructuredMapPreset::HardwareTrack,
                         GateBehaviorMode::Static,
                         0);
                     ui_state->hardware_editor_dirty = false;
@@ -3357,7 +3396,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                     clear_hardware_world_sync(
                         ui_state,
                         hardware_server,
-                        "Unstructured preset restored locally. Press `Send Map To Raspberry` only if you want to stream this world.");
+                        "Unstructured preset restored locally. It will be streamed automatically to the next Raspberry runner connection.");
                 }
             }
         }
@@ -3365,7 +3404,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::TextWrapped(
             slam_source
                 ? "The SLAM context tells the app and the remote smoke test whether the online map should be framed as structured or unstructured."
-                : "This selection defines the planner world the Raspberry should use. Choose Custom after editing/exporting a reduced map for the real room.");
+                : "This selection defines the planner world the Raspberry should use. Choose Hardware Track for the built-in closed road, or Custom to edit a reduced map that will be streamed automatically to the Raspberry runner.");
         ImGui::Separator();
 
         if (!hardware_server->listening()) {
@@ -3411,10 +3450,10 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 }
             } else if (ui_state->hardware_world_sync_pending || hardware_server->has_pending_world()) {
                 ImGui::TextColored(ImVec4(0.43f, 0.82f, 0.96f, 1.0f),
-                                   "Custom map sync is queued in the GUI and will be streamed to the Raspberry runner on connect.");
+                                   "Custom map sync is queued in the GUI and will be streamed automatically to the Raspberry runner on connect.");
             } else {
-                ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.34f, 1.0f),
-                                   "Press `Send Map To Raspberry` after confirming the editor world. No `--world-file` is needed for the streamed workflow.");
+                ImGui::TextColored(ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
+                                   "The current hardware world will be streamed automatically to the Raspberry runner as soon as it connects.");
             }
         }
         ImGui::TextWrapped("If you want to transport it over SSH, expose this same port with a reverse tunnel.");
@@ -3461,16 +3500,39 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
     if (ImGui::CollapsingHeader("Map Editor", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SameLine();
-        help_marker("Preview and reshape the hardware map locally before you launch the Raspberry runner. You can now queue the confirmed map and stream it directly to the next connected runner.");
+        help_marker("Preview and reshape the hardware map locally before you launch the Raspberry runner. The current hardware world is streamed automatically to the next connected runner.");
 
         WorldMap& editor_world = ui_state->hardware_editor_world;
+        const bool hardware_structured_mode =
+            static_cast<EnvironmentMode>(ui_state->hardware_environment_mode) == EnvironmentMode::StructuredRoad;
+        const bool hardware_track_selected =
+            static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset) == StructuredMapPreset::HardwareTrack;
+        if (hardware_structured_mode) {
+            float track_scale = ui_state->hardware_track_scale;
+            if (ImGui::SliderFloat("Hardware Track Scale", &track_scale, 0.35f, 1.40f, "%.2fx")) {
+                ui_state->hardware_track_scale = track_scale;
+                if (hardware_track_selected) {
+                    load_hardware_editor_from_selection(ui_state);
+                    clear_hardware_world_sync(
+                        ui_state,
+                        hardware_server,
+                        "Hardware Track scale updated locally. The resized map will be streamed automatically to the next Raspberry runner connection.");
+                } else {
+                    ui_state->last_hardware_world_sync_status =
+                        "Hardware Track scale updated. It will apply the next time you load the Hardware Track preset.";
+                }
+            }
+            if (!hardware_track_selected) {
+                ImGui::TextDisabled("Scale applies to the built-in Hardware Track preset.");
+            }
+        }
         ImGui::Checkbox("Enable drag editing", &ui_state->map_editor_enabled);
         if (ImGui::Button("Load Selected Scenario", ImVec2(-1.0f, 0.0f))) {
             load_hardware_editor_from_selection(ui_state);
             clear_hardware_world_sync(
                 ui_state,
                 hardware_server,
-                "Selected preset restored locally. Press `Send Map To Raspberry` only if you want to override the runner world.");
+                "Selected preset restored locally. It will be streamed automatically to the next Raspberry runner connection.");
         }
         if (hardware.has_scene) {
             if (ImGui::Button("Load Live Stream Scene", ImVec2(-1.0f, 0.0f))) {
@@ -3491,33 +3553,14 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             }
         }
         if (!workspace_source_expects_slam(ui_state->workspace_source)) {
-            if (ImGui::Button("Send Map To Raspberry", ImVec2(-1.0f, 0.0f))) {
-                WorldMap streamed_world = ui_state->hardware_editor_world;
-                streamed_world.finalize_editor_changes();
-                if (streamed_world.environment_mode() == EnvironmentMode::StructuredRoad) {
-                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
-                    ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::Custom);
-                } else {
-                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
-                    ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
-                }
-                if (hardware_server->queue_world(streamed_world)) {
-                    ui_state->hardware_editor_world = streamed_world;
-                    ui_state->hardware_editor_dirty = false;
-                    ui_state->hardware_world_sync_pending = true;
-                    ui_state->hardware_world_sync_ok = false;
-                    ui_state->last_hardware_world_sync_status =
-                        hardware_server->connected()
-                            ? "Custom map queued and sent to the connected Raspberry runner. Waiting for runner ack."
-                            : "Custom map queued in the GUI. It will be sent to the next Raspberry runner that connects.";
-                } else {
-                    ui_state->hardware_world_sync_pending = false;
-                    ui_state->hardware_world_sync_ok = false;
-                    ui_state->last_hardware_world_sync_status =
-                        hardware_server->last_error().empty()
-                            ? "Could not queue the custom map for Raspberry sync."
-                            : hardware_server->last_error();
-                }
+            if (ImGui::Button("Resend Map To Raspberry", ImVec2(-1.0f, 0.0f))) {
+                queue_current_hardware_world(
+                    ui_state,
+                    hardware_server,
+                    hardware_server->connected()
+                        ? "Current hardware world re-sent to the connected Raspberry runner. Waiting for runner ack."
+                        : "Current hardware world queued in the GUI. It will be sent automatically to the next Raspberry runner that connects.",
+                    "Could not queue the current hardware world for Raspberry sync.");
             }
         }
         if (ImGui::Button("Export Custom Map File", ImVec2(-1.0f, 0.0f))) {
@@ -4236,6 +4279,19 @@ int run_gui(const AppOptions& options) {
         }
 
         const LiveViewStreamServer::PollResult hardware_updates = hardware_server.poll();
+        if (!workspace_source_expects_slam(ui_state.workspace_source)) {
+            const bool hardware_stream_connected = hardware_server.connected();
+            if (hardware_stream_connected && !ui_state.hardware_stream_connected_prev) {
+                queue_current_hardware_world(
+                    &ui_state,
+                    &hardware_server,
+                    "Current hardware world detected and queued automatically for the newly connected Raspberry runner. Waiting for runner ack.",
+                    "Could not auto-queue the current hardware world for the newly connected Raspberry runner.");
+            }
+            ui_state.hardware_stream_connected_prev = hardware_stream_connected;
+        } else {
+            ui_state.hardware_stream_connected_prev = hardware_server.connected();
+        }
         if (hardware_updates.scene_received && hardware_updates.scene.has_value()) {
             hardware_view.scene = *hardware_updates.scene;
             hardware_view.has_scene = true;

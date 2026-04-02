@@ -269,7 +269,23 @@ std::vector<Vec2> close_polyline_loop(std::vector<Vec2> points, double threshold
     return points;
 }
 
-std::vector<Vec2> open_points_to_closed_seed(const Vec2& start, const Vec2& goal) {
+std::vector<Vec2> open_points_to_closed_seed(const Rect& bounds, const Vec2& start, const Vec2& goal) {
+    const double width = std::max(bounds.max_x - bounds.min_x, 0.1);
+    const double height = std::max(bounds.max_y - bounds.min_y, 0.1);
+    const double min_span = std::max(std::min(width, height), 0.1);
+    const double max_span = std::max(width, height);
+    if (distance(start, goal) <= std::max(0.05, 0.08 * min_span)) {
+        const Vec2 center = clamp_to_bounds(bounds, start);
+        const double rx = std::clamp(0.22 * width, 0.08, 0.45 * width);
+        const double ry = std::clamp(0.22 * height, 0.08, 0.45 * height);
+        return {
+            {center.x + rx, center.y},
+            {center.x, center.y + ry},
+            {center.x - rx, center.y},
+            {center.x, center.y - ry},
+        };
+    }
+
     const Vec2 midpoint{
         0.5 * (start.x + goal.x),
         0.5 * (start.y + goal.y),
@@ -278,9 +294,11 @@ std::vector<Vec2> open_points_to_closed_seed(const Vec2& start, const Vec2& goal
         goal.x - start.x,
         goal.y - start.y,
     };
-    const double chord_length = std::max(std::hypot(chord.x, chord.y), 2.0);
+    const double chord_length = std::max(std::hypot(chord.x, chord.y), std::max(0.25 * max_span, 0.08));
     const Vec2 normal = perpendicular_unit(chord);
-    const double offset = std::max(0.35 * chord_length, 2.5);
+    const double offset = std::clamp(0.35 * chord_length,
+                                     std::max(0.08, 0.10 * min_span),
+                                     std::max(0.16, 0.40 * min_span));
     return {
         start,
         {midpoint.x + normal.x * offset, midpoint.y + normal.y * offset},
@@ -494,21 +512,39 @@ std::vector<Vec2> sanitize_structured_centerline(const Rect& bounds,
                                                  const Vec2& start,
                                                  const Vec2& goal,
                                                  const std::vector<Vec2>& raw_points) {
+    const double width = std::max(bounds.max_x - bounds.min_x, 0.1);
+    const double height = std::max(bounds.max_y - bounds.min_y, 0.1);
+    const double min_span = std::max(std::min(width, height), 0.1);
+    const double max_span = std::max(width, height);
+    const double loop_threshold = std::clamp(0.12 * min_span, 0.03, 0.45);
+    const double first_dedup_spacing = std::clamp(0.08 * min_span, 0.02, 0.35);
+    const double resample_spacing = std::clamp(0.10 * max_span, 0.04, 1.0);
+    const double final_dedup_spacing = std::clamp(0.10 * min_span, 0.02, 0.45);
+
     std::vector<Vec2> sanitized = raw_points;
-    if (points_form_closed_loop(sanitized, 0.45) && sanitized.size() > 2) {
+    if (points_form_closed_loop(sanitized, loop_threshold) && sanitized.size() > 2) {
         sanitized.pop_back();
     }
     if (sanitized.empty()) {
-        sanitized = open_points_to_closed_seed(start, goal);
+        sanitized = open_points_to_closed_seed(bounds, start, goal);
     }
 
     for (Vec2& point : sanitized) {
         point = clamp_to_bounds(bounds, point);
     }
 
-    sanitized = deduplicate_polyline(sanitized, 0.35);
+    const bool already_closed_loop = raw_points.size() >= 6 &&
+                                     points_form_closed_loop(raw_points, loop_threshold);
+    if (already_closed_loop) {
+        sanitized = deduplicate_polyline(sanitized, std::clamp(0.02 * min_span, 0.005, 0.10));
+        if (sanitized.size() >= 6) {
+            return close_polyline_loop(std::move(sanitized), loop_threshold);
+        }
+    }
+
+    sanitized = deduplicate_polyline(sanitized, first_dedup_spacing);
     if (sanitized.size() < 3) {
-        sanitized = open_points_to_closed_seed(start, goal);
+        sanitized = open_points_to_closed_seed(bounds, start, goal);
         for (Vec2& point : sanitized) {
             point = clamp_to_bounds(bounds, point);
         }
@@ -516,16 +552,16 @@ std::vector<Vec2> sanitize_structured_centerline(const Rect& bounds,
 
     sanitized = chaikin_closed_polyline(sanitized, sanitized.size() > 4 ? 2 : 1);
     if (sanitized.size() < 3) {
-        sanitized = open_points_to_closed_seed(start, goal);
+        sanitized = open_points_to_closed_seed(bounds, start, goal);
     }
 
-    sanitized = resample_closed_polyline(sanitized, 1.0);
-    sanitized = deduplicate_polyline(sanitized, 0.45);
+    sanitized = resample_closed_polyline(sanitized, resample_spacing);
+    sanitized = deduplicate_polyline(sanitized, final_dedup_spacing);
     if (sanitized.size() < 3) {
-        sanitized = open_points_to_closed_seed(start, goal);
+        sanitized = open_points_to_closed_seed(bounds, start, goal);
     }
 
-    return close_polyline_loop(std::move(sanitized), 0.45);
+    return close_polyline_loop(std::move(sanitized), loop_threshold);
 }
 
 void recompute_gate_headings(std::vector<GateSpec>* gates, const Vec2& goal) {
