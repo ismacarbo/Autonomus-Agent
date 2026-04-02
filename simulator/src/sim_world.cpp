@@ -818,27 +818,12 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::HardwareTrack:
-            // Compact structured loop for indoor validation without obstacles.
-            world.bounds_ = {0.0, 0.0, 1.34, 1.18};
+            // Default indoor hardware track: 0.50 m x 0.50 m circular loop without obstacles.
+            world.bounds_ = {0.0, 0.0, 0.50, 0.50};
             world.obstacles_.clear();
-            world.road_centerline_ = close_polyline_loop({
-                {0.36, 0.62},
-                {0.41, 0.74},
-                {0.52, 0.84},
-                {0.65, 0.91},
-                {0.80, 0.94},
-                {0.95, 0.90},
-                {1.06, 0.81},
-                {1.13, 0.69},
-                {1.14, 0.56},
-                {1.08, 0.45},
-                {0.98, 0.36},
-                {0.84, 0.31},
-                {0.69, 0.29},
-                {0.55, 0.33},
-                {0.45, 0.41},
-                {0.38, 0.51},
-            }, 0.14);
+            world.road_centerline_ = close_polyline_loop(
+                make_circle_loop({0.25, 0.25}, 0.20, 20),
+                0.08);
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
