@@ -290,6 +290,9 @@ class HardwarePlannerRunner {
                                         double* progress_delta) const;
     void correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan);
     double score_candidate_pose(const Vec2& position, double yaw, const std::vector<RPLidarA1::ScanPoint>& scan) const;
+    double score_candidate_pose_against_perception_map(const Vec2& position,
+                                                       double yaw,
+                                                       const std::vector<RPLidarA1::ScanPoint>& scan) const;
     void update_lidar_hits_world(const std::vector<RPLidarA1::ScanPoint>& scan);
     void rebuild_dynamic_gap_gates(const std::vector<RPLidarA1::ScanPoint>& scan);
 
@@ -304,6 +307,9 @@ class HardwarePlannerRunner {
     int planning_interval_steps() const;
     int count_passed_gates() const;
     bool dynamic_gap_mode_enabled() const;
+    bool perception_map_ready() const;
+    bool unstructured_perception_only_mode() const;
+    bool scan_supports_target(const Vec2& target, const std::vector<RPLidarA1::ScanPoint>& scan) const;
 
     WorldMap world_;
     HardwarePlannerConfig config_;

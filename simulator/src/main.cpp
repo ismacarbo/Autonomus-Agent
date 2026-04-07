@@ -249,6 +249,55 @@ bool validate_hardware_structured_world(const WorldMap& world, std::string* erro
     return true;
 }
 
+bool rect_contains_point(const Rect& rect, const Vec2& point, double margin = 0.0) {
+    return point.x >= rect.min_x + margin && point.x <= rect.max_x - margin &&
+           point.y >= rect.min_y + margin && point.y <= rect.max_y - margin;
+}
+
+bool validate_hardware_unstructured_world(const WorldMap& world, std::string* error_message) {
+    if (world.environment_mode() != EnvironmentMode::UnstructuredGates) {
+        return true;
+    }
+
+    const Rect bounds = world.bounds();
+    const double span_x = bounds.max_x - bounds.min_x;
+    const double span_y = bounds.max_y - bounds.min_y;
+    if (span_x < 0.60 || span_y < 0.50) {
+        if (error_message != nullptr) {
+            *error_message =
+                "Unstructured custom map rejected: the editable area is too small for LiDAR-based gate extraction on hardware.";
+        }
+        return false;
+    }
+
+    if (!rect_contains_point(bounds, world.start(), 0.06) || !rect_contains_point(bounds, world.goal(), 0.06)) {
+        if (error_message != nullptr) {
+            *error_message =
+                "Unstructured custom map rejected: start or goal is too close to the map boundary for safe hardware navigation.";
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool validate_hardware_world(const WorldMap& world, std::string* error_message) {
+    return validate_hardware_structured_world(world, error_message) &&
+           validate_hardware_unstructured_world(world, error_message);
+}
+
+WorldMap sanitize_hardware_unstructured_world(WorldMap world) {
+    if (world.environment_mode() != EnvironmentMode::UnstructuredGates) {
+        return world;
+    }
+
+    world.editable_obstacles().clear();
+    world.editable_gates().clear();
+    world.finalize_editor_changes();
+    world.set_gate_behavior(GateBehaviorMode::Static, 0);
+    return world;
+}
+
 constexpr ImU32 kColorCanvas = IM_COL32(19, 24, 28, 255);
 constexpr ImU32 kColorGrid = IM_COL32(39, 49, 57, 255);
 constexpr ImU32 kColorBounds = IM_COL32(148, 162, 170, 255);
@@ -470,8 +519,7 @@ WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
         ui_state.hardware_editor_world.environment_mode() == EnvironmentMode::UnstructuredGates) {
         WorldMap custom = ui_state.hardware_editor_world;
         custom.finalize_editor_changes();
-        custom.set_gate_behavior(GateBehaviorMode::Static, 0);
-        return custom;
+        return sanitize_hardware_unstructured_world(std::move(custom));
     }
     if (selected_mode == EnvironmentMode::StructuredRoad &&
         selected_structured_preset == StructuredMapPreset::Custom &&
@@ -481,7 +529,8 @@ WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
         return custom;
     }
     WorldMap world = make_world_from_mode(selected_mode, selected_preset, selected_structured_preset, GateBehaviorMode::Static, 0);
-    return apply_hardware_track_scale(ui_state, std::move(world));
+    world = apply_hardware_track_scale(ui_state, std::move(world));
+    return sanitize_hardware_unstructured_world(std::move(world));
 }
 
 WorldMap* active_editor_world(UiState* ui_state) {
@@ -1587,7 +1636,8 @@ void load_hardware_editor_from_selection(UiState* ui_state) {
         static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset),
         GateBehaviorMode::Static,
         0);
-    ui_state->hardware_editor_world = apply_hardware_track_scale(*ui_state, std::move(selected_world));
+    WorldMap world = apply_hardware_track_scale(*ui_state, std::move(selected_world));
+    ui_state->hardware_editor_world = sanitize_hardware_unstructured_world(std::move(world));
     ui_state->hardware_editor_dirty = false;
     reset_editor_interaction(ui_state);
 }
@@ -1617,7 +1667,7 @@ bool queue_current_hardware_world(UiState* ui_state,
     WorldMap streamed_world = hardware_world_from_ui_selection(*ui_state);
     streamed_world.finalize_editor_changes();
     std::string validation_error;
-    if (!validate_hardware_structured_world(streamed_world, &validation_error)) {
+    if (!validate_hardware_world(streamed_world, &validation_error)) {
         hardware_server->clear_pending_world();
         ui_state->hardware_world_sync_pending = false;
         ui_state->hardware_world_sync_ok = false;
@@ -2740,12 +2790,12 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             ImGui::Checkbox("Trails", &ui_state->show_trails);
             ImGui::Checkbox("LiDAR Rays", &ui_state->show_lidar_rays);
             ImGui::SameLine();
-            ImGui::Checkbox("LiDAR Hits", &ui_state->show_lidar_hits);
+            ImGui::Checkbox("LiDAR Hits + Map", &ui_state->show_lidar_hits);
             ImGui::Checkbox("Labels", &ui_state->show_gate_labels);
             ImGui::Checkbox("HUD", &ui_state->show_world_hud);
             ImGui::TextWrapped(
                 show_live_scene
-                    ? "The hardware viewport reuses the same scene diagnostics, but all poses, LiDAR and trajectories now come from the remote robot stream."
+                    ? "The hardware viewport reuses the same scene diagnostics, but all poses, LiDAR, accumulated map points and planner trajectories now come from the remote robot stream."
                     : "No live stream yet: this viewport is previewing the selected hardware map locally, so you can edit it before launching the runner on the Raspberry.");
             ImGui::EndTable();
         }
@@ -2837,30 +2887,31 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         draw_list->AddCircleFilled(world_to_screen(tx, lidar_origin), 4.5f, IM_COL32(170, 255, 208, 220));
     }
 
-    if (show_live_scene) {
-        for (size_t i = 0; i < frame.gates.size(); ++i) {
-            const LiveGateFrame& gate = frame.gates[i];
-            const ImVec2 screen_pos = world_to_screen(tx, gate.spec.position);
-            const bool visible =
-                std::find(frame.visible_gate_indices.begin(), frame.visible_gate_indices.end(), static_cast<int>(i)) !=
+    const size_t rendered_gate_count = show_live_scene ? frame.gates.size() : world.gates().size();
+    for (size_t i = 0; i < rendered_gate_count; ++i) {
+        const GateSpec& spec = show_live_scene ? frame.gates[i].spec : world.gates()[i];
+        const bool passed = show_live_scene && frame.gates[i].passed;
+        const bool visible =
+            show_live_scene &&
+            std::find(frame.visible_gate_indices.begin(), frame.visible_gate_indices.end(), static_cast<int>(i)) !=
                 frame.visible_gate_indices.end();
 
-            ImU32 color = gate.spec.final ? kColorGoal : kColorGate;
-            if (gate.passed) {
-                color = kColorGatePassed;
-            } else if (visible) {
-                color = kColorGateVisible;
-            }
-            if (static_cast<int>(i) == frame.chosen_gate_index) {
-                color = IM_COL32(255, 233, 118, 255);
-            }
+        const ImVec2 screen_pos = world_to_screen(tx, spec.position);
+        ImU32 color = spec.final ? kColorGoal : kColorGate;
+        if (passed) {
+            color = kColorGatePassed;
+        } else if (visible) {
+            color = kColorGateVisible;
+        }
+        if (show_live_scene && static_cast<int>(i) == frame.chosen_gate_index) {
+            color = IM_COL32(255, 233, 118, 255);
+        }
 
-            const float radius = gate.spec.final ? 7.0f : 5.0f;
-            draw_list->AddCircleFilled(screen_pos, radius, color);
-            draw_list->AddCircle(screen_pos, radius + 3.0f, IM_COL32(245, 246, 240, 180), 0, 1.5f);
-            if (ui_state->show_gate_labels) {
-                draw_list->AddText(ImVec2(screen_pos.x + 6.0f, screen_pos.y - 12.0f), IM_COL32(222, 227, 230, 255), gate.spec.name.c_str());
-            }
+        const float radius = spec.final ? 7.0f : 5.0f;
+        draw_list->AddCircleFilled(screen_pos, radius, color);
+        draw_list->AddCircle(screen_pos, radius + 3.0f, IM_COL32(245, 246, 240, 180), 0, 1.5f);
+        if (ui_state->show_gate_labels) {
+            draw_list->AddText(ImVec2(screen_pos.x + 6.0f, screen_pos.y - 12.0f), IM_COL32(222, 227, 230, 255), spec.name.c_str());
         }
     }
 
@@ -3594,8 +3645,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             const bool previous_dirty = ui_state->hardware_editor_dirty;
             WorldMap applied_world = ui_state->hardware_editor_world;
             applied_world.finalize_editor_changes();
+            applied_world = sanitize_hardware_unstructured_world(std::move(applied_world));
             std::string validation_error;
-            if (!validate_hardware_structured_world(applied_world, &validation_error)) {
+            if (!validate_hardware_world(applied_world, &validation_error)) {
                 ui_state->hardware_editor_world = previous_world;
                 ui_state->hardware_editor_dirty = previous_dirty;
                 ui_state->last_hardware_world_error = validation_error;
@@ -3628,8 +3680,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         if (ImGui::Button("Export Custom Map File", ImVec2(-1.0f, 0.0f))) {
             WorldMap export_world = ui_state->hardware_editor_world;
             export_world.finalize_editor_changes();
+            export_world = sanitize_hardware_unstructured_world(std::move(export_world));
             std::string validation_error;
-            if (!validate_hardware_structured_world(export_world, &validation_error)) {
+            if (!validate_hardware_world(export_world, &validation_error)) {
                 ui_state->last_hardware_world_error = validation_error;
                 ui_state->last_hardware_world_sync_status = validation_error;
             } else {

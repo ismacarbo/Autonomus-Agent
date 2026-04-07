@@ -1150,16 +1150,27 @@ bool deserialize_world_blob(const std::vector<std::uint8_t>& data, WorldMap* wor
 LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) {
     const StructuredDisplayRemap remap = make_structured_display_remap(runner.world());
     const bool lidar_enabled = runner.lidar_enabled_for_current_mode();
+    WorldMap scene_world = remap.display_world;
+    if (runner.world().environment_mode() == EnvironmentMode::UnstructuredGates) {
+        scene_world.editable_obstacles().clear();
+        scene_world.editable_gates().clear();
+    }
     LiveSceneSnapshot scene;
     scene.stream_label = "Hardware live stream";
     scene.stream_profile = "planner";
-    scene.world = remap.display_world;
+    scene.world = std::move(scene_world);
     scene.geometry = runner.geometry();
     scene.imu_enabled = true;
     scene.lidar_enabled = lidar_enabled;
-    scene.localization_mode = lidar_enabled ? "EKF (IMU + LiDAR)" : "EKF (IMU + road constraint)";
+    scene.localization_mode =
+        runner.world().environment_mode() == EnvironmentMode::UnstructuredGates
+            ? "EKF (IMU + perception map)"
+            : (lidar_enabled ? "EKF (IMU + LiDAR)" : "EKF (IMU + road constraint)");
     scene.heading_source = "IMU";
-    scene.range_sensor_name = lidar_enabled ? "RPLidar A1" : "LiDAR disabled for structured planner";
+    scene.range_sensor_name =
+        runner.world().environment_mode() == EnvironmentMode::UnstructuredGates
+            ? "RPLidar A1 (perception-driven)"
+            : (lidar_enabled ? "RPLidar A1" : "LiDAR disabled for structured planner");
     scene.vehicle_model_name = "Car-like bicycle";
     scene.tracking_controller_name = "MPC path follower";
     scene.active_lidar_beams = lidar_enabled ? 360 : 0;
