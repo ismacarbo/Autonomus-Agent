@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "hardware_planner_runner.h"
@@ -35,6 +37,7 @@ using thesis_sim::VehicleDynamicsModel;
 using thesis_sim::WorldMap;
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kStreamReconnectRetryMs = 1500;
 
 struct AppOptions {
     std::string controller_port;
@@ -223,9 +226,11 @@ bool setup_stream_client(const AppOptions& options,
     }
 
     if (!streamer->connect_to(options.stream_host, static_cast<std::uint16_t>(options.stream_port))) {
-        std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+        std::cerr << "live_stream_warning=" << streamer->last_error()
+                  << " (continuing without GUI stream; will retry automatically)\n";
         return true;
     }
+    std::cout << "live_stream_status=connected " << options.stream_host << ':' << options.stream_port << '\n';
     return true;
 }
 
@@ -585,6 +590,31 @@ int main(int argc, char** argv) {
             bridge_options,
             planner_config);
         LiveViewStreamClient streamer;
+        auto next_stream_connect_attempt = std::chrono::steady_clock::now();
+        auto ensure_stream_client = [&](bool force_frame_push) {
+            if (!stream_enabled(options) || streamer.connected()) {
+                return true;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now < next_stream_connect_attempt) {
+                return true;
+            }
+            next_stream_connect_attempt = now + std::chrono::milliseconds(kStreamReconnectRetryMs);
+
+            if (!streamer.connect_to(options.stream_host, static_cast<std::uint16_t>(options.stream_port))) {
+                std::cerr << "live_stream_warning=" << streamer.last_error()
+                          << " (GUI unreachable, retrying automatically)\n";
+                return true;
+            }
+
+            std::cout << "live_stream_status=connected " << options.stream_host << ':' << options.stream_port << '\n';
+            if (!send_stream_scene(options, *runner, &streamer)) {
+                return true;
+            }
+            stream_frame_if_due(options, *runner, &streamer, force_frame_push);
+            return true;
+        };
         runner->connect();
         if (!setup_stream_client(options, &streamer)) {
             runner->disconnect();
@@ -603,6 +633,10 @@ int main(int argc, char** argv) {
 
         const int limit = options.max_steps > 0 ? options.max_steps : 1500;
         while (runner->step_count() < limit && !runner->goal_reached()) {
+            if (!ensure_stream_client(true)) {
+                runner->disconnect();
+                return 2;
+            }
             world_applied = false;
             if (!process_stream_control(options, runner.get(), &streamer, &world_applied)) {
                 runner->disconnect();

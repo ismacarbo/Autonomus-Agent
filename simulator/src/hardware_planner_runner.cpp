@@ -1861,6 +1861,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     last_command_.target_curvature = reference_trajectory_.empty() ? estimate_.curvature : reference_trajectory_.front().curvature;
     const bool have_reference_trajectory = reference_trajectory_.size() >= 2;
     diagnostics_.planner_has_reference = have_reference_trajectory;
+    bool use_direct_yaw_rate_command = false;
+    double direct_yaw_rate_command = 0.0;
 
     const VehicleModelState tracking_state = build_tracking_state(
         estimate_.position,
@@ -1905,7 +1907,26 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         !have_reference_trajectory &&
         estimate_.min_lidar_distance > 0.0 &&
         estimate_.min_lidar_distance < config_.localization.obstacle_stop_distance_m;
-    if (lidar_front_blocked || lidar_side_clearance_blocked) {
+    bool use_gap_recovery_turn = false;
+    if (lidar_front_blocked &&
+        use_dynamic_gap_gates_ &&
+        chosen_gate_index_ >= 0 &&
+        chosen_gate_index_ < static_cast<int>(gate_specs_.size()) &&
+        estimate_.min_lidar_distance > std::max(config_.localization.min_valid_range_m, 0.14)) {
+        const Vec2 gate_target = gate_specs_[static_cast<size_t>(chosen_gate_index_)].position;
+        const double heading_error = wrap_angle(angle_to(estimate_.position, gate_target) - estimate_.yaw);
+        if (std::abs(heading_error) > config_.localization.front_sector_half_angle_rad + 0.08) {
+            use_gap_recovery_turn = true;
+            use_direct_yaw_rate_command = true;
+            direct_yaw_rate_command = clamp_value(
+                1.4 * heading_error,
+                -0.85 * config_.drive.max_yaw_rate,
+                0.85 * config_.drive.max_yaw_rate);
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+        }
+    }
+    if (!use_gap_recovery_turn && (lidar_front_blocked || lidar_side_clearance_blocked)) {
         safety_stop_active_ = true;
         last_command_.safety_stop = true;
         last_command_.target_speed = 0.0;
@@ -1931,10 +1952,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_curvature,
         -geometry_.max_curvature,
         geometry_.max_curvature);
-    last_command_.target_yaw_rate = clamp_value(
-        last_command_.target_speed * last_command_.target_curvature,
-        -config_.drive.max_yaw_rate,
-        config_.drive.max_yaw_rate);
+    if (use_direct_yaw_rate_command) {
+        last_command_.target_yaw_rate = clamp_value(
+            direct_yaw_rate_command,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
+    } else {
+        last_command_.target_yaw_rate = clamp_value(
+            last_command_.target_speed * last_command_.target_curvature,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
+    }
 
     const double half_track = config_.drive.track_width * 0.5;
     const double left_wheel_speed = last_command_.target_speed - last_command_.target_yaw_rate * half_track;
