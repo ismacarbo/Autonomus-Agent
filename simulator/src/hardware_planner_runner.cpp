@@ -2008,8 +2008,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         !safety_stop_active_ &&
         (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
     if (commanding_motion) {
-        last_command_.pwm_left = full_scale_motion_pwm(last_command_.pwm_left, config_.pwm.max_pwm);
-        last_command_.pwm_right = full_scale_motion_pwm(last_command_.pwm_right, config_.pwm.max_pwm);
+        last_command_.pwm_left = clamp_motion_pwm_band(
+            last_command_.pwm_left,
+            config_.pwm.min_effective_pwm,
+            config_.pwm.max_pwm);
+        last_command_.pwm_right = clamp_motion_pwm_band(
+            last_command_.pwm_right,
+            config_.pwm.min_effective_pwm,
+            config_.pwm.max_pwm);
     }
 
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
@@ -2241,6 +2247,14 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         estimate_.min_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
         estimate_.front_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
         lidar_hits_.clear();
+        if (dynamic_gap_mode_enabled()) {
+            gates_.clear();
+            gate_specs_.clear();
+            visible_gate_indices_.clear();
+            chosen_gate_index_ = -1;
+            planned_trajectory_.clear();
+            reference_trajectory_.clear();
+        }
         if (!lidar_enabled) {
             lidar_map_points_.clear();
             lidar_map_keys_.clear();

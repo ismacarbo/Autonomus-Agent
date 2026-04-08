@@ -273,19 +273,32 @@ RPLidarA1::Measurement RPLidarA1::read_scan_node() {
     }
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.01, timeout_s_));
+    std::array<std::uint8_t, 5> raw{};
+    std::size_t filled = 0;
     while (std::chrono::steady_clock::now() < deadline) {
-        const std::vector<std::uint8_t> first = serial_.read(1, timeout_s_);
-        if (first.empty()) {
+        const double remaining_s = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+        if (remaining_s <= 0.0) {
+            break;
+        }
+        const std::vector<std::uint8_t> next = serial_.read(1, std::min(timeout_s_, std::max(0.01, remaining_s)));
+        if (next.empty()) {
             continue;
         }
-        const std::vector<std::uint8_t> rest = serial_.read(4, timeout_s_);
-        if (rest.size() != 4) {
+
+        raw[filled] = next.front();
+        if (filled < raw.size()) {
+            ++filled;
+        }
+        if (filled < raw.size()) {
             continue;
         }
-        std::array<std::uint8_t, 5> raw{};
-        raw[0] = first.front();
-        std::copy(rest.begin(), rest.end(), raw.begin() + 1);
-        return process_scan_packet(raw);
+
+        try {
+            return process_scan_packet(raw);
+        } catch (const LidarError&) {
+            std::copy(raw.begin() + 1, raw.end(), raw.begin());
+            filled = raw.size() - 1;
+        }
     }
 
     throw LidarError("Timeout reading scan node");
