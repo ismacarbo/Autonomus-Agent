@@ -2101,6 +2101,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.pwm_right,
             config_.pwm.min_effective_pwm,
             config_.pwm.max_pwm);
+        // Experimental unstructured hardware validation mode:
+        // saturate any active wheel command to full PWM so we can separate
+        // low-torque stalls from wrong gap selection or safety logic.
+        if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
+            last_command_.pwm_left = full_scale_motion_pwm(
+                last_command_.pwm_left,
+                config_.pwm.max_pwm);
+            last_command_.pwm_right = full_scale_motion_pwm(
+                last_command_.pwm_right,
+                config_.pwm.max_pwm);
+        }
     }
 
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
