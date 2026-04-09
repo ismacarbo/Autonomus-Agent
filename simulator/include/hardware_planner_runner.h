@@ -372,6 +372,7 @@ class HardwarePlannerRunner {
     bool encoder_ticks_initialized_ = false;
     int no_motion_command_cycles_ = 0;
     bool use_dynamic_gap_gates_ = false;
+    bool gap_recovery_turn_active_ = false;
     bool stall_boost_active_ = false;
     bool connected_ = false;
     bool telemetry_ready_ = false;

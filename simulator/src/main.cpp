@@ -2917,7 +2917,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
 
     if (show_live_scene) {
         const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
-        draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, 2.60f);
+        draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, 1.45f);
     }
 
     if (ui_state->show_world_hud) {

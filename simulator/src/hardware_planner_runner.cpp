@@ -524,6 +524,19 @@ void HardwarePlannerRunner::connect() {
                              "continuing and relying on the current controller mode\n";
             }
         }
+
+        const int desired_cmd_timeout_ms = std::max(
+            1200,
+            static_cast<int>(std::lround(std::max(config_.nominal_dt, 0.05) * 12.0 * 1000.0)));
+        try {
+            bridge_.config_set(
+                static_cast<std::uint8_t>(ConfigParamId::CmdTimeoutMs),
+                ConfigValueType::Uint16,
+                desired_cmd_timeout_ms);
+        } catch (const std::exception& e) {
+            std::cerr << "hardware_runner_warning=controller CMD_TIMEOUT config failed: "
+                      << e.what() << '\n';
+        }
     }
 
     const double deadline = monotonic_seconds() + 5.0;
@@ -602,6 +615,7 @@ void HardwarePlannerRunner::reset() {
     encoder_ticks_initialized_ = false;
     no_motion_command_cycles_ = 0;
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
+    gap_recovery_turn_active_ = false;
     stall_boost_active_ = false;
     history_.clear();
     trail_.clear();
@@ -1509,6 +1523,18 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return false;
         }
 
+        const double gate_heading_local =
+            wrap_angle(angle_to(lidar_origin, previous_spec.position) - estimate_.yaw);
+        if (std::abs(gate_heading_local) > 0.72 * kPi) {
+            return false;
+        }
+
+        const double goal_distance_now = distance(lidar_origin, world_.goal());
+        const double goal_distance_after = distance(previous_spec.position, world_.goal());
+        if (goal_distance_after > goal_distance_now + 0.12) {
+            return false;
+        }
+
         if (!scan_supports_target(previous_spec.position, scan)) {
             return false;
         }
@@ -1652,6 +1678,22 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
+    if (persisted_spec.has_value()) {
+        for (GapCandidate& candidate : candidates) {
+            const double target_delta = distance(candidate.target, persisted_spec->position);
+            if (target_delta > 0.28) {
+                continue;
+            }
+
+            candidate.target.x = 0.65 * persisted_spec->position.x + 0.35 * candidate.target.x;
+            candidate.target.y = 0.65 * persisted_spec->position.y + 0.35 * candidate.target.y;
+            candidate.center_world_angle = angle_to(lidar_origin, candidate.target);
+            candidate.center_local_angle = wrap_angle(candidate.center_world_angle - estimate_.yaw);
+            candidate.target_distance = distance(lidar_origin, candidate.target);
+            candidate.score += 0.18;
+        }
+    }
+
     std::sort(candidates.begin(), candidates.end(), [](const GapCandidate& a, const GapCandidate& b) {
         if (std::abs(a.score - b.score) > 1e-6) {
             return a.score > b.score;
@@ -1661,7 +1703,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     gates_.clear();
     gate_specs_.clear();
-    if (persisted_spec.has_value() && persisted_gate.has_value()) {
+    if (candidates.empty() && persisted_spec.has_value() && persisted_gate.has_value()) {
         GateSpec spec = *persisted_spec;
         spec.heading_hint = angle_to(spec.position, world_.goal());
         gate_specs_.push_back(spec);
@@ -1908,23 +1950,37 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         estimate_.min_lidar_distance > 0.0 &&
         estimate_.min_lidar_distance < config_.localization.obstacle_stop_distance_m;
     bool use_gap_recovery_turn = false;
+    const double recovery_turn_clearance =
+        std::max(config_.localization.min_valid_range_m + 0.005, 0.10);
+    const double recovery_turn_enter_heading = 0.12;
+    const double recovery_turn_hold_heading = 0.05;
     if (lidar_front_blocked &&
         use_dynamic_gap_gates_ &&
         chosen_gate_index_ >= 0 &&
         chosen_gate_index_ < static_cast<int>(gate_specs_.size()) &&
-        estimate_.min_lidar_distance > std::max(config_.localization.min_valid_range_m, 0.14)) {
+        estimate_.min_lidar_distance > recovery_turn_clearance) {
         const Vec2 gate_target = gate_specs_[static_cast<size_t>(chosen_gate_index_)].position;
         const double heading_error = wrap_angle(angle_to(estimate_.position, gate_target) - estimate_.yaw);
-        if (std::abs(heading_error) > config_.localization.front_sector_half_angle_rad + 0.08) {
+        const double heading_threshold =
+            gap_recovery_turn_active_ ? recovery_turn_hold_heading : recovery_turn_enter_heading;
+        const double goal_distance_now = distance(estimate_.position, world_.goal());
+        const double goal_distance_after = distance(gate_target, world_.goal());
+        const bool gate_makes_progress = goal_distance_after <= goal_distance_now + 0.08;
+        if (std::abs(heading_error) > heading_threshold && gate_makes_progress) {
+            gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
             direct_yaw_rate_command = clamp_value(
-                1.4 * heading_error,
+                1.6 * heading_error,
                 -0.85 * config_.drive.max_yaw_rate,
                 0.85 * config_.drive.max_yaw_rate);
             last_command_.target_speed = 0.0;
             last_command_.target_curvature = 0.0;
+        } else {
+            gap_recovery_turn_active_ = false;
         }
+    } else {
+        gap_recovery_turn_active_ = false;
     }
     if (!use_gap_recovery_turn && (lidar_front_blocked || lidar_side_clearance_blocked)) {
         safety_stop_active_ = true;
@@ -1985,18 +2041,26 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         -config_.pwm.max_pwm,
         config_.pwm.max_pwm));
 
-    const bool demanding_forward_motion =
+    const double max_target_wheel_speed = std::max(std::abs(left_wheel_speed), std::abs(right_wheel_speed));
+    const double measured_left_wheel_speed = estimate_.speed - estimate_.yaw_rate * half_track;
+    const double measured_right_wheel_speed = estimate_.speed + estimate_.yaw_rate * half_track;
+    const double max_measured_wheel_speed =
+        std::max(std::abs(measured_left_wheel_speed), std::abs(measured_right_wheel_speed));
+    const bool demanding_motion =
         !safety_stop_active_ &&
-        last_command_.target_speed >= config_.pwm.stall_target_speed_threshold_mps;
+        max_target_wheel_speed >= std::max(config_.pwm.stall_target_speed_threshold_mps * 0.45, 0.03);
     const bool robot_is_still =
-        std::abs(estimate_.speed) <= config_.pwm.stall_speed_threshold_mps;
-    if (demanding_forward_motion && robot_is_still) {
+        max_measured_wheel_speed <= config_.pwm.stall_speed_threshold_mps;
+    if (demanding_motion && robot_is_still) {
         ++no_motion_command_cycles_;
     } else {
         no_motion_command_cycles_ = 0;
     }
 
-    if (no_motion_command_cycles_ >= config_.pwm.stall_boost_after_cycles) {
+    const int stall_boost_cycles_required =
+        use_dynamic_gap_gates_ ? std::max(1, config_.pwm.stall_boost_after_cycles - 1)
+                               : config_.pwm.stall_boost_after_cycles;
+    if (no_motion_command_cycles_ >= stall_boost_cycles_required) {
         apply_start_motion_boost(
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
             &last_command_.pwm_left,
@@ -2196,6 +2260,14 @@ int HardwarePlannerRunner::wheel_speed_to_pwm(double wheel_speed_mps, double sca
 void HardwarePlannerRunner::step() {
     if (!connected_) {
         throw ProtocolResponseError("HardwarePlannerRunner not connected");
+    }
+
+    if (bridge_.controller_connected()) {
+        bridge_.send_pwm(
+            static_cast<std::int16_t>(last_command_.pwm_left),
+            static_cast<std::int16_t>(last_command_.pwm_right),
+            true,
+            MotorControlMode::SafeDirectPwm);
     }
 
     bridge_.pump(
