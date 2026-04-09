@@ -1279,7 +1279,8 @@ double HardwarePlannerRunner::score_candidate_pose(const Vec2& position,
         const RPLidarA1::ScanPoint& point = scan[i];
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m) {
+            point.distance_m > config_.localization.max_range_m ||
+            scan_point_is_self_hit(point, position, yaw)) {
             continue;
         }
 
@@ -1344,7 +1345,8 @@ double HardwarePlannerRunner::score_candidate_pose_against_perception_map(
         const RPLidarA1::ScanPoint& point = scan[i];
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m) {
+            point.distance_m > config_.localization.max_range_m ||
+            scan_point_is_self_hit(point, position, yaw)) {
             continue;
         }
 
@@ -1393,7 +1395,8 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m) {
+            point.distance_m > config_.localization.max_range_m ||
+            scan_point_is_self_hit(point)) {
             continue;
         }
         ++diagnostics_.valid_lidar_points;
@@ -1468,7 +1471,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m) {
+            point.distance_m > config_.localization.max_range_m ||
+            scan_point_is_self_hit(point)) {
             continue;
         }
         const double local_angle =
@@ -1676,6 +1680,23 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                     }),
                 candidates.end());
         }
+    }
+
+    const bool have_forward_candidate = std::any_of(
+        candidates.begin(),
+        candidates.end(),
+        [](const GapCandidate& candidate) {
+            return std::abs(candidate.center_local_angle) <= (0.5 * kPi + 0.20);
+        });
+    if (have_forward_candidate) {
+        candidates.erase(
+            std::remove_if(
+                candidates.begin(),
+                candidates.end(),
+                [](const GapCandidate& candidate) {
+                    return std::abs(candidate.center_local_angle) > (0.5 * kPi + 0.20);
+                }),
+            candidates.end());
     }
 
     if (persisted_spec.has_value()) {
@@ -2177,7 +2198,8 @@ double HardwarePlannerRunner::compute_min_lidar_distance(const std::vector<RPLid
     double min_range = config_.localization.max_range_m;
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m >= config_.localization.min_valid_range_m &&
-            point.distance_m <= config_.localization.max_range_m) {
+            point.distance_m <= config_.localization.max_range_m &&
+            !scan_point_is_self_hit(point)) {
             min_range = std::min(min_range, point.distance_m);
         }
     }
@@ -2189,7 +2211,8 @@ double HardwarePlannerRunner::compute_front_lidar_distance(const std::vector<RPL
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m) {
+            point.distance_m > config_.localization.max_range_m ||
+            scan_point_is_self_hit(point)) {
             continue;
         }
         const double local_angle = wrap_angle(config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
@@ -2220,7 +2243,8 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m) {
+            point.distance_m > config_.localization.max_range_m ||
+            scan_point_is_self_hit(point)) {
             continue;
         }
 
@@ -2238,6 +2262,47 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     }
 
     return best_range + 0.08 >= target_distance;
+}
+
+Vec2 HardwarePlannerRunner::scan_point_world_hit(const RPLidarA1::ScanPoint& point,
+                                                 const Vec2& position,
+                                                 double yaw) const {
+    const Vec2 origin = lidar_origin_world(position, yaw, config_.localization);
+    const double beam_heading = wrap_angle(
+        yaw + config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+    return {
+        origin.x + std::cos(beam_heading) * point.distance_m,
+        origin.y + std::sin(beam_heading) * point.distance_m,
+    };
+}
+
+bool HardwarePlannerRunner::scan_point_is_self_hit(const RPLidarA1::ScanPoint& point,
+                                                   const Vec2& position,
+                                                   double yaw) const {
+    if (point.distance_m <= 0.0 ||
+        point.distance_m < config_.localization.min_valid_range_m ||
+        point.distance_m > config_.localization.max_range_m) {
+        return false;
+    }
+
+    const Vec2 hit = scan_point_world_hit(point, position, yaw);
+    const Vec2 relative{hit.x - position.x, hit.y - position.y};
+    const Vec2 local = rotate(relative, -yaw);
+    const double half_length = std::max(
+        geometry_.body_length * 0.5,
+        std::max(config_.drive.cg_to_front, config_.drive.cg_to_rear));
+    const double half_width = geometry_.body_width * 0.5;
+    const double front_extent = half_length + 0.03;
+    const double rear_extent = half_length + 0.01;
+    const double lateral_extent = half_width + 0.02;
+
+    return local.x >= -rear_extent &&
+           local.x <= front_extent &&
+           std::abs(local.y) <= lateral_extent;
+}
+
+bool HardwarePlannerRunner::scan_point_is_self_hit(const RPLidarA1::ScanPoint& point) const {
+    return scan_point_is_self_hit(point, estimate_.position, estimate_.yaw);
 }
 
 int HardwarePlannerRunner::wheel_speed_to_pwm(double wheel_speed_mps, double scale) const {

@@ -303,6 +303,9 @@ class HardwarePlannerRunner {
 
     double compute_min_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const;
     double compute_front_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const;
+    Vec2 scan_point_world_hit(const RPLidarA1::ScanPoint& point, const Vec2& position, double yaw) const;
+    bool scan_point_is_self_hit(const RPLidarA1::ScanPoint& point, const Vec2& position, double yaw) const;
+    bool scan_point_is_self_hit(const RPLidarA1::ScanPoint& point) const;
     int wheel_speed_to_pwm(double wheel_speed_mps, double scale) const;
     int planning_interval_steps() const;
     int count_passed_gates() const;
