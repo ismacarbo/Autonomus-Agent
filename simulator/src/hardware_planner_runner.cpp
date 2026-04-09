@@ -120,6 +120,33 @@ int full_scale_motion_pwm(int pwm, int max_pwm) {
     return signum(pwm) * max_pwm;
 }
 
+void scale_motion_pwm_pair_to_full_scale(int max_pwm, int* pwm_left, int* pwm_right) {
+    if (max_pwm <= 0 || pwm_left == nullptr || pwm_right == nullptr) {
+        return;
+    }
+
+    const int dominant_magnitude = std::max(std::abs(*pwm_left), std::abs(*pwm_right));
+    if (dominant_magnitude <= 0) {
+        return;
+    }
+
+    const double scale = static_cast<double>(max_pwm) / static_cast<double>(dominant_magnitude);
+    *pwm_left = std::clamp(
+        static_cast<int>(std::lround(static_cast<double>(*pwm_left) * scale)),
+        -max_pwm,
+        max_pwm);
+    *pwm_right = std::clamp(
+        static_cast<int>(std::lround(static_cast<double>(*pwm_right) * scale)),
+        -max_pwm,
+        max_pwm);
+
+    if (std::abs(*pwm_left) >= std::abs(*pwm_right) && *pwm_left != 0) {
+        *pwm_left = full_scale_motion_pwm(*pwm_left, max_pwm);
+    } else if (*pwm_right != 0) {
+        *pwm_right = full_scale_motion_pwm(*pwm_right, max_pwm);
+    }
+}
+
 int clamp_motion_pwm_band(int pwm, int min_pwm, int max_pwm) {
     if (pwm == 0 || max_pwm <= 0) {
         return 0;
@@ -999,7 +1026,13 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     }
 
     const double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
-    const double measured_yaw_rate = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
+    const double measured_yaw_rate_raw = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
+    // Hardware IMU spikes above the platform's physical yaw-rate envelope are
+    // usually transients; keep them from destabilizing the EKF and controller.
+    const double measured_yaw_rate = clamp_value(
+        measured_yaw_rate_raw,
+        -1.5 * config_.drive.max_yaw_rate,
+        1.5 * config_.drive.max_yaw_rate);
 
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
         update_estimate_from_structured_motion_fallback(telemetry, dt, measured_yaw, measured_yaw_rate);
@@ -1021,15 +1054,43 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         telemetry.enc_dt_ms > 0
             ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
             : std::max(dt, 0.01);
-    const double ticks_to_distance =
-        (2.0 * kPi * geometry_.wheel_radius) /
-        static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-    const double left_dist = static_cast<double>(left_delta_ticks) * ticks_to_distance;
-    const double right_dist = static_cast<double>(right_delta_ticks) * ticks_to_distance;
-    const double odom_delta_yaw =
-        std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
-    const double odom_speed = encoder_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / encoder_dt : 0.0;
-    const double odom_yaw_rate = encoder_dt > 1e-6 ? odom_delta_yaw / encoder_dt : 0.0;
+    const bool encoder_ready = config_.use_encoder_odometry && controller_encoders_ready(telemetry);
+
+    double odom_speed = 0.0;
+    double odom_yaw_rate = 0.0;
+    if (encoder_ready) {
+        const double ticks_to_distance =
+            (2.0 * kPi * geometry_.wheel_radius) /
+            static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
+        const double left_dist = static_cast<double>(left_delta_ticks) * ticks_to_distance;
+        const double right_dist = static_cast<double>(right_delta_ticks) * ticks_to_distance;
+        const double odom_delta_yaw =
+            std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
+        odom_speed = encoder_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / encoder_dt : 0.0;
+        odom_yaw_rate = encoder_dt > 1e-6 ? odom_delta_yaw / encoder_dt : 0.0;
+    } else {
+        const double pwm_speed_estimate = clamp_value(
+            std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
+            0.0,
+            geometry_.max_linear_speed);
+        const bool controller_driving =
+            std::abs(telemetry.pwm_l) >= geometry_.min_effective_pwm ||
+            std::abs(telemetry.pwm_r) >= geometry_.min_effective_pwm ||
+            std::abs(telemetry.target_pwm_l) >= geometry_.min_effective_pwm ||
+            std::abs(telemetry.target_pwm_r) >= geometry_.min_effective_pwm;
+
+        odom_speed = clamp_value(last_command_.target_speed, 0.0, geometry_.max_linear_speed);
+        if (odom_speed <= 1e-4 && controller_driving) {
+            odom_speed = pwm_speed_estimate;
+        } else if (!controller_driving) {
+            odom_speed = 0.0;
+        }
+
+        odom_yaw_rate = clamp_value(
+            std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
+    }
     estimator_.predict(encoder_dt, odom_speed, odom_yaw_rate);
     estimator_.update_imu(measured_yaw, measured_yaw_rate);
     sync_estimate_from_ekf_state();
@@ -1054,7 +1115,7 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         telemetry.enc_dt_ms > 0U
             ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
             : std::max(dt, 0.01);
-    const bool encoder_ready = controller_encoders_ready(telemetry);
+    const bool encoder_ready = config_.use_encoder_odometry && controller_encoders_ready(telemetry);
 
     double odom_speed = 0.0;
     double odom_yaw_rate = 0.0;
@@ -2102,15 +2163,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.pwm.min_effective_pwm,
             config_.pwm.max_pwm);
         // Experimental unstructured hardware validation mode:
-        // saturate any active wheel command to full PWM so we can separate
-        // low-torque stalls from wrong gap selection or safety logic.
+        // push the active wheel pair to full available PWM while preserving
+        // the left/right ratio so steering authority is not lost.
         if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
-            last_command_.pwm_left = full_scale_motion_pwm(
-                last_command_.pwm_left,
-                config_.pwm.max_pwm);
-            last_command_.pwm_right = full_scale_motion_pwm(
-                last_command_.pwm_right,
-                config_.pwm.max_pwm);
+            scale_motion_pwm_pair_to_full_scale(
+                config_.pwm.max_pwm,
+                &last_command_.pwm_left,
+                &last_command_.pwm_right);
         }
     }
 
