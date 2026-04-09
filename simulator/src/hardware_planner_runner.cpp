@@ -1590,7 +1590,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
         const double gate_heading_local =
             wrap_angle(angle_to(lidar_origin, previous_spec.position) - estimate_.yaw);
-        if (std::abs(gate_heading_local) > 0.72 * kPi) {
+        if (std::abs(gate_heading_local) > 0.60 * kPi) {
             return false;
         }
 
@@ -1693,10 +1693,14 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             0.0,
             1.0);
         const double width_score = clamp_value(width_m / std::max(required_gap_width, 1e-3), 0.0, 2.0);
+        const double lateral_penalty = clamp_value(
+            std::abs(center_local_angle) / (0.5 * kPi),
+            0.0,
+            1.0);
 
         candidates.push_back({
-            2.4 * goal_alignment + 1.4 * progress_score + 0.8 * forward_alignment + 0.7 * clearance_score +
-                0.20 * width_score,
+            2.6 * goal_alignment + 1.7 * progress_score + 1.35 * forward_alignment + 0.55 * clearance_score +
+                0.15 * width_score - 0.95 * lateral_penalty * lateral_penalty,
             span_rad,
             min_distance,
             target_distance,
@@ -1743,11 +1747,13 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
+    constexpr double kPreferredForwardAngle = 0.33 * kPi;
+    constexpr double kRetainedForwardAngle = 0.44 * kPi;
     const bool have_forward_candidate = std::any_of(
         candidates.begin(),
         candidates.end(),
         [](const GapCandidate& candidate) {
-            return std::abs(candidate.center_local_angle) <= (0.5 * kPi + 0.20);
+            return std::abs(candidate.center_local_angle) <= kPreferredForwardAngle;
         });
     if (have_forward_candidate) {
         candidates.erase(
@@ -1755,7 +1761,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 candidates.begin(),
                 candidates.end(),
                 [](const GapCandidate& candidate) {
-                    return std::abs(candidate.center_local_angle) > (0.5 * kPi + 0.20);
+                    return std::abs(candidate.center_local_angle) > kRetainedForwardAngle;
                 }),
             candidates.end());
     }
@@ -1763,16 +1769,16 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     if (persisted_spec.has_value()) {
         for (GapCandidate& candidate : candidates) {
             const double target_delta = distance(candidate.target, persisted_spec->position);
-            if (target_delta > 0.28) {
+            if (target_delta > 0.20) {
                 continue;
             }
 
-            candidate.target.x = 0.65 * persisted_spec->position.x + 0.35 * candidate.target.x;
-            candidate.target.y = 0.65 * persisted_spec->position.y + 0.35 * candidate.target.y;
+            candidate.target.x = 0.30 * persisted_spec->position.x + 0.70 * candidate.target.x;
+            candidate.target.y = 0.30 * persisted_spec->position.y + 0.70 * candidate.target.y;
             candidate.center_world_angle = angle_to(lidar_origin, candidate.target);
             candidate.center_local_angle = wrap_angle(candidate.center_world_angle - estimate_.yaw);
             candidate.target_distance = distance(lidar_origin, candidate.target);
-            candidate.score += 0.18;
+            candidate.score += 0.08;
         }
     }
 
@@ -2109,10 +2115,18 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const int ff_left = wheel_speed_to_pwm(left_wheel_speed, config_.pwm.left_scale);
     const int ff_right = wheel_speed_to_pwm(right_wheel_speed, config_.pwm.right_scale);
 
+    const double measured_speed_for_feedback = clamp_value(
+        estimate_.speed,
+        0.0,
+        std::max(config_.cruise_speed_limit * 1.35, 0.28));
+    const double measured_yaw_rate_for_feedback = clamp_value(
+        estimate_.yaw_rate,
+        -config_.drive.max_yaw_rate,
+        config_.drive.max_yaw_rate);
     const int fb_linear = static_cast<int>(std::lround(
-        config_.pwm.linear_feedback_gain * (last_command_.target_speed - estimate_.speed)));
+        config_.pwm.linear_feedback_gain * (last_command_.target_speed - measured_speed_for_feedback)));
     const int fb_yaw = static_cast<int>(std::lround(
-        config_.pwm.yaw_feedback_gain * (last_command_.target_yaw_rate - estimate_.yaw_rate)));
+        config_.pwm.yaw_feedback_gain * (last_command_.target_yaw_rate - measured_yaw_rate_for_feedback)));
 
     last_command_.pwm_left = static_cast<int>(clamp_value(
         static_cast<double>(ff_left + fb_linear - fb_yaw),
@@ -2165,7 +2179,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         // Experimental unstructured hardware validation mode:
         // push the active wheel pair to full available PWM while preserving
         // the left/right ratio so steering authority is not lost.
-        if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        if (world_.environment_mode() == EnvironmentMode::UnstructuredGates && stall_boost_active_) {
             scale_motion_pwm_pair_to_full_scale(
                 config_.pwm.max_pwm,
                 &last_command_.pwm_left,

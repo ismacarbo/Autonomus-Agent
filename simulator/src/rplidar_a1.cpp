@@ -306,6 +306,9 @@ RPLidarA1::Measurement RPLidarA1::read_scan_node() {
 
 std::vector<RPLidarA1::ScanPoint> RPLidarA1::grab_scan(int min_points, std::size_t max_bad_packets) {
     min_points = std::max(min_points, 1);
+    const int partial_scan_min_points = std::max(24, min_points / 2);
+    const auto collection_deadline =
+        std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.12, timeout_s_ * 2.0));
 
     std::vector<ScanPoint> scan;
     std::size_t bad_packets = 0;
@@ -315,6 +318,10 @@ std::vector<RPLidarA1::ScanPoint> RPLidarA1::grab_scan(int min_points, std::size
             const Measurement measurement = read_scan_node();
             if (measurement.new_scan && !scan.empty()) {
                 if (static_cast<int>(scan.size()) >= min_points) {
+                    return scan;
+                }
+                if (std::chrono::steady_clock::now() >= collection_deadline &&
+                    static_cast<int>(scan.size()) >= partial_scan_min_points) {
                     return scan;
                 }
                 scan.clear();
@@ -333,9 +340,17 @@ std::vector<RPLidarA1::ScanPoint> RPLidarA1::grab_scan(int min_points, std::size
                 });
             }
 
+            if (std::chrono::steady_clock::now() >= collection_deadline &&
+                static_cast<int>(scan.size()) >= partial_scan_min_points) {
+                return scan;
+            }
             bad_packets = 0;
         } catch (const LidarError&) {
             ++bad_packets;
+            if (std::chrono::steady_clock::now() >= collection_deadline &&
+                static_cast<int>(scan.size()) >= partial_scan_min_points) {
+                return scan;
+            }
             if (bad_packets > max_bad_packets) {
                 throw;
             }
