@@ -43,6 +43,9 @@ struct MotorPwmMapperConfig {
     double wheel_speed_to_pwm_bias = 28.0;
     double left_scale = 1.00;
     double right_scale = 1.00;
+    double wheel_speed_kp = 95.0;
+    double wheel_speed_ki = 30.0;
+    double wheel_speed_integral_limit = 0.35;
     double linear_feedback_gain = 75.0;
     double yaw_feedback_gain = 35.0;
     int start_motion_pwm = 110;
@@ -363,6 +366,12 @@ class HardwarePlannerRunner {
     double last_raw_imu_yaw_ = 0.0;
     double last_observation_time_ = 0.0;
     double distance_to_goal_ = 0.0;
+    double commanded_speed_ = 0.0;
+    double commanded_steer_angle_ = 0.0;
+    double measured_left_wheel_speed_ = 0.0;
+    double measured_right_wheel_speed_ = 0.0;
+    double wheel_speed_error_integral_left_ = 0.0;
+    double wheel_speed_error_integral_right_ = 0.0;
     std::int32_t last_left_encoder_ticks_ = 0;
     std::int32_t last_right_encoder_ticks_ = 0;
     int chosen_gate_index_ = -1;
@@ -374,6 +383,7 @@ class HardwarePlannerRunner {
     bool yaw_offset_initialized_ = false;
     bool have_raw_imu_yaw_ = false;
     bool encoder_ticks_initialized_ = false;
+    bool measured_wheel_speeds_valid_ = false;
     int no_motion_command_cycles_ = 0;
     bool use_dynamic_gap_gates_ = false;
     bool gap_recovery_turn_active_ = false;

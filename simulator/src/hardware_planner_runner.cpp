@@ -117,6 +117,13 @@ double wheel_speed_from_pwm_estimate(int pwm, double scale, const VehicleGeometr
     return std::copysign(signed_speed, static_cast<double>(pwm));
 }
 
+std::pair<double, double> wheel_speeds_from_body(double speed, double yaw_rate, double half_track) {
+    return {
+        speed - yaw_rate * half_track,
+        speed + yaw_rate * half_track,
+    };
+}
+
 double forward_speed_from_pwm_estimate(const ControllerTelemetry& telemetry, const VehicleGeometry& geometry) {
     const double left_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_l, geometry.left_pwm_scale, geometry);
     const double right_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_r, geometry.right_pwm_scale, geometry);
@@ -645,11 +652,18 @@ void HardwarePlannerRunner::reset() {
     yaw_offset_ = 0.0;
     last_raw_imu_yaw_ = 0.0;
     last_observation_time_ = 0.0;
+    commanded_speed_ = 0.0;
+    commanded_steer_angle_ = 0.0;
+    measured_left_wheel_speed_ = 0.0;
+    measured_right_wheel_speed_ = 0.0;
+    wheel_speed_error_integral_left_ = 0.0;
+    wheel_speed_error_integral_right_ = 0.0;
     last_left_encoder_ticks_ = 0;
     last_right_encoder_ticks_ = 0;
     yaw_offset_initialized_ = false;
     have_raw_imu_yaw_ = false;
     encoder_ticks_initialized_ = false;
+    measured_wheel_speeds_valid_ = false;
     no_motion_command_cycles_ = 0;
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
     gap_recovery_turn_active_ = false;
@@ -686,6 +700,13 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     distance_to_goal_ = distance(position, world_.goal());
     planner_speed_ref_ = 0.0;
     planner_accel_ref_ = 0.0;
+    commanded_speed_ = 0.0;
+    commanded_steer_angle_ = 0.0;
+    measured_left_wheel_speed_ = 0.0;
+    measured_right_wheel_speed_ = 0.0;
+    wheel_speed_error_integral_left_ = 0.0;
+    wheel_speed_error_integral_right_ = 0.0;
+    measured_wheel_speeds_valid_ = false;
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
@@ -1068,6 +1089,7 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
 
     double odom_speed = 0.0;
     double odom_yaw_rate = 0.0;
+    const double half_track = config_.drive.track_width * 0.5;
     if (encoder_ready) {
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
@@ -1082,6 +1104,9 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
             ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
+        measured_left_wheel_speed_ = encoder_dt > 1e-6 ? left_dist / encoder_dt : 0.0;
+        measured_right_wheel_speed_ = encoder_dt > 1e-6 ? right_dist / encoder_dt : 0.0;
+        measured_wheel_speeds_valid_ = true;
         odom_speed = encoder_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / encoder_dt : 0.0;
         odom_yaw_rate = encoder_dt > 1e-6 ? odom_delta_yaw / encoder_dt : 0.0;
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
@@ -1108,6 +1133,11 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
             std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
             -config_.drive.max_yaw_rate,
             config_.drive.max_yaw_rate);
+        const auto [fallback_left_wheel_speed, fallback_right_wheel_speed] =
+            wheel_speeds_from_body(odom_speed, odom_yaw_rate, half_track);
+        measured_left_wheel_speed_ = fallback_left_wheel_speed;
+        measured_right_wheel_speed_ = fallback_right_wheel_speed;
+        measured_wheel_speeds_valid_ = false;
     }
     estimator_.predict(encoder_dt, odom_speed, odom_yaw_rate);
     estimator_.update_imu(measured_yaw, measured_yaw_rate);
@@ -1137,6 +1167,7 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
 
     double odom_speed = 0.0;
     double odom_yaw_rate = 0.0;
+    const double half_track = config_.drive.track_width * 0.5;
     if (encoder_ready) {
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
@@ -1151,6 +1182,9 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
             ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
+        measured_left_wheel_speed_ = effective_dt > 1e-6 ? left_dist / effective_dt : 0.0;
+        measured_right_wheel_speed_ = effective_dt > 1e-6 ? right_dist / effective_dt : 0.0;
+        measured_wheel_speeds_valid_ = true;
         odom_speed = effective_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / effective_dt : 0.0;
         odom_yaw_rate = effective_dt > 1e-6 ? odom_delta_yaw / effective_dt : 0.0;
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
@@ -1177,6 +1211,11 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
             std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
             -config_.drive.max_yaw_rate,
             config_.drive.max_yaw_rate);
+        const auto [fallback_left_wheel_speed, fallback_right_wheel_speed] =
+            wheel_speeds_from_body(odom_speed, odom_yaw_rate, half_track);
+        measured_left_wheel_speed_ = fallback_left_wheel_speed;
+        measured_right_wheel_speed_ = fallback_right_wheel_speed;
+        measured_wheel_speeds_valid_ = false;
     }
 
     estimator_.predict(effective_dt, odom_speed, odom_yaw_rate);
@@ -1703,15 +1742,25 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             lidar_origin.x + std::cos(center_world_angle) * target_distance,
             lidar_origin.y + std::sin(center_world_angle) * target_distance,
         };
+        if (!is_inside_bounds(world_, target) || !scan_supports_target(target, scan)) {
+            return;
+        }
 
+        const double goal_delta = std::abs(wrap_angle(center_world_angle - goal_heading));
         const double goal_alignment =
-            0.5 * (1.0 + std::cos(wrap_angle(center_world_angle - goal_heading)));
+            0.5 * (1.0 + std::cos(goal_delta));
         const double goal_distance_now = distance(lidar_origin, world_.goal());
         const double goal_distance_after = distance(target, world_.goal());
         const double progress_score =
             goal_distance_now > 1e-6
                 ? clamp_value((goal_distance_now - goal_distance_after) / goal_distance_now, 0.0, 1.0)
                 : 0.0;
+        const bool goal_roughly_ahead = std::abs(goal_local_angle) <= 20.0 * kPi / 180.0;
+        if (goal_roughly_ahead &&
+            goal_delta > 35.0 * kPi / 180.0 &&
+            progress_score < 0.18) {
+            return;
+        }
         const double forward_alignment =
             0.5 * (1.0 + std::cos(center_local_angle));
         const double clearance_score = clamp_value(
@@ -1723,10 +1772,15 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             std::abs(center_local_angle) / (0.5 * kPi),
             0.0,
             1.0);
+        const double goal_delta_penalty = clamp_value(
+            goal_delta / (0.5 * kPi),
+            0.0,
+            1.0);
 
         candidates.push_back({
             2.6 * goal_alignment + 1.7 * progress_score + 1.35 * forward_alignment + 0.55 * clearance_score +
-                0.15 * width_score - 0.95 * lateral_penalty * lateral_penalty,
+                0.15 * width_score - 0.95 * lateral_penalty * lateral_penalty -
+                1.20 * goal_delta_penalty * goal_delta_penalty,
             span_rad,
             min_distance,
             target_distance,
@@ -2013,21 +2067,38 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
 
-    last_command_.target_speed = planner_speed_ref_;
-    last_command_.target_curvature = reference_trajectory_.empty() ? estimate_.curvature : reference_trajectory_.front().curvature;
+    const double safe_dt = std::max(dt, 1e-3);
+    const double speed_limit =
+        std::min(config_.cruise_speed_limit, geometry_.max_linear_speed);
+    const double measured_equivalent_steer =
+        steer_from_curvature(geometry_, estimate_.curvature);
+    if (std::abs(estimate_.speed) > 0.02 || std::abs(estimate_.yaw_rate) > 0.04) {
+        // On hardware we do not sense steering angle directly, so keep a
+        // bicycle-equivalent steering state lightly anchored to the observed motion.
+        commanded_steer_angle_ = clamp_value(
+            0.85 * commanded_steer_angle_ + 0.15 * measured_equivalent_steer,
+            -geometry_.max_steer_angle,
+            geometry_.max_steer_angle);
+    }
+
+    last_command_.target_speed = commanded_speed_;
+    last_command_.target_curvature =
+        curvature_from_steer(geometry_, commanded_steer_angle_);
     const bool have_reference_trajectory = reference_trajectory_.size() >= 2;
     diagnostics_.planner_has_reference = have_reference_trajectory;
     bool use_direct_yaw_rate_command = false;
     double direct_yaw_rate_command = 0.0;
 
-    const VehicleModelState tracking_state = build_tracking_state(
+    VehicleModelState tracking_state = build_tracking_state(
         estimate_.position,
         estimate_.yaw,
         estimate_.speed,
         estimate_.accel,
         estimate_.curvature,
         estimate_.yaw_rate,
-        steer_from_curvature(geometry_, estimate_.curvature));
+        commanded_steer_angle_);
+    tracking_state.target_speed = commanded_speed_;
+    tracking_state.target_steer_angle = commanded_steer_angle_;
 
     if (have_reference_trajectory) {
         const MpcCommand mpc_command = mpc_follower_.solve(
@@ -2037,19 +2108,39 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             planner_speed_ref_,
             0);
         if (mpc_command.valid) {
-            last_command_.target_speed = clamp_value(
-                mpc_command.target_speed,
+            const double predicted_speed = clamp_value(
+                estimate_.speed + mpc_command.accel_cmd * safe_dt,
                 0.0,
-                std::min(config_.cruise_speed_limit, geometry_.max_linear_speed));
-            last_command_.target_curvature = curvature_from_steer(geometry_, mpc_command.target_steer_angle);
+                speed_limit);
+            const double integrated_steer = clamp_value(
+                commanded_steer_angle_ + mpc_command.steer_rate_cmd * safe_dt,
+                -geometry_.max_steer_angle,
+                geometry_.max_steer_angle);
+            commanded_speed_ = predicted_speed;
+            commanded_steer_angle_ = clamp_value(
+                0.65 * integrated_steer + 0.35 * mpc_command.target_steer_angle,
+                -geometry_.max_steer_angle,
+                geometry_.max_steer_angle);
+            last_command_.target_speed = commanded_speed_;
+            last_command_.target_curvature =
+                curvature_from_steer(geometry_, commanded_steer_angle_);
             tracker_cross_track_error_ = std::abs(mpc_command.cross_track_error);
             tracker_heading_error_deg_ =
                 std::abs(mpc_command.heading_error) * 180.0 / kPi;
             last_mpc_command_ = mpc_command;
         } else {
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = clamp_value(
+                0.60 * commanded_steer_angle_ + 0.40 * measured_equivalent_steer,
+                -geometry_.max_steer_angle,
+                geometry_.max_steer_angle);
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
             last_mpc_command_.reset();
         }
     } else {
+        commanded_speed_ = 0.0;
+        commanded_steer_angle_ = 0.0;
         last_command_.target_speed = 0.0;
         last_command_.target_curvature = 0.0;
         last_mpc_command_.reset();
@@ -2088,6 +2179,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 1.6 * heading_error,
                 -0.85 * config_.drive.max_yaw_rate,
                 0.85 * config_.drive.max_yaw_rate);
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
             last_command_.target_curvature = 0.0;
         } else {
@@ -2099,7 +2192,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (!use_gap_recovery_turn && (lidar_front_blocked || lidar_side_clearance_blocked)) {
         safety_stop_active_ = true;
         last_command_.safety_stop = true;
+        commanded_speed_ = 0.0;
+        commanded_steer_angle_ = 0.0;
         last_command_.target_speed = 0.0;
+        last_command_.target_curvature = 0.0;
     }
 
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad && !safety_stop_active_) {
@@ -2112,16 +2208,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.target_curvature,
             geometry_);
         last_command_.target_speed *= speed_scale;
+        commanded_speed_ = last_command_.target_speed;
     }
 
     last_command_.target_speed = clamp_value(
         last_command_.target_speed,
         0.0,
         geometry_.max_linear_speed);
+    commanded_speed_ = last_command_.target_speed;
     last_command_.target_curvature = clamp_value(
         last_command_.target_curvature,
         -geometry_.max_curvature,
         geometry_.max_curvature);
+    if (!use_direct_yaw_rate_command) {
+        commanded_steer_angle_ = steer_from_curvature(geometry_, last_command_.target_curvature);
+        last_command_.target_curvature = curvature_from_steer(geometry_, commanded_steer_angle_);
+    } else {
+        commanded_steer_angle_ = 0.0;
+    }
     if (use_direct_yaw_rate_command) {
         last_command_.target_yaw_rate = clamp_value(
             direct_yaw_rate_command,
@@ -2135,37 +2239,86 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
 
     const double half_track = config_.drive.track_width * 0.5;
-    const double left_wheel_speed = last_command_.target_speed - last_command_.target_yaw_rate * half_track;
-    const double right_wheel_speed = last_command_.target_speed + last_command_.target_yaw_rate * half_track;
+    const auto [left_wheel_speed, right_wheel_speed] =
+        wheel_speeds_from_body(last_command_.target_speed, last_command_.target_yaw_rate, half_track);
 
     const int ff_left = wheel_speed_to_pwm(left_wheel_speed, config_.pwm.left_scale);
     const int ff_right = wheel_speed_to_pwm(right_wheel_speed, config_.pwm.right_scale);
+    const bool commanding_motion =
+        !safety_stop_active_ &&
+        (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
 
-    const double measured_speed_for_feedback = clamp_value(
-        estimate_.speed,
-        0.0,
-        std::max(config_.cruise_speed_limit * 1.35, 0.28));
-    const double measured_yaw_rate_for_feedback = clamp_value(
-        estimate_.yaw_rate,
-        -config_.drive.max_yaw_rate,
-        config_.drive.max_yaw_rate);
-    const int fb_linear = static_cast<int>(std::lround(
-        config_.pwm.linear_feedback_gain * (last_command_.target_speed - measured_speed_for_feedback)));
-    const int fb_yaw = static_cast<int>(std::lround(
-        config_.pwm.yaw_feedback_gain * (last_command_.target_yaw_rate - measured_yaw_rate_for_feedback)));
+    if (!commanding_motion) {
+        wheel_speed_error_integral_left_ = 0.0;
+        wheel_speed_error_integral_right_ = 0.0;
+    }
 
-    last_command_.pwm_left = static_cast<int>(clamp_value(
-        static_cast<double>(ff_left + fb_linear - fb_yaw),
-        -config_.pwm.max_pwm,
-        config_.pwm.max_pwm));
-    last_command_.pwm_right = static_cast<int>(clamp_value(
-        static_cast<double>(ff_right + fb_linear + fb_yaw),
-        -config_.pwm.max_pwm,
-        config_.pwm.max_pwm));
+    double measured_left_wheel_speed = measured_left_wheel_speed_;
+    double measured_right_wheel_speed = measured_right_wheel_speed_;
+    if (!measured_wheel_speeds_valid_) {
+        const auto fallback_wheel_speeds =
+            wheel_speeds_from_body(estimate_.speed, estimate_.yaw_rate, half_track);
+        measured_left_wheel_speed = fallback_wheel_speeds.first;
+        measured_right_wheel_speed = fallback_wheel_speeds.second;
+    }
+
+    if (measured_wheel_speeds_valid_ && commanding_motion) {
+        wheel_speed_error_integral_left_ += (left_wheel_speed - measured_left_wheel_speed) * safe_dt;
+        wheel_speed_error_integral_right_ += (right_wheel_speed - measured_right_wheel_speed) * safe_dt;
+        wheel_speed_error_integral_left_ = clamp_value(
+            wheel_speed_error_integral_left_,
+            -config_.pwm.wheel_speed_integral_limit,
+            config_.pwm.wheel_speed_integral_limit);
+        wheel_speed_error_integral_right_ = clamp_value(
+            wheel_speed_error_integral_right_,
+            -config_.pwm.wheel_speed_integral_limit,
+            config_.pwm.wheel_speed_integral_limit);
+
+        const int fb_left = static_cast<int>(std::lround(
+            config_.pwm.wheel_speed_kp * (left_wheel_speed - measured_left_wheel_speed) +
+            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_left_));
+        const int fb_right = static_cast<int>(std::lround(
+            config_.pwm.wheel_speed_kp * (right_wheel_speed - measured_right_wheel_speed) +
+            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_right_));
+
+        last_command_.pwm_left = static_cast<int>(clamp_value(
+            static_cast<double>(ff_left + fb_left),
+            -config_.pwm.max_pwm,
+            config_.pwm.max_pwm));
+        last_command_.pwm_right = static_cast<int>(clamp_value(
+            static_cast<double>(ff_right + fb_right),
+            -config_.pwm.max_pwm,
+            config_.pwm.max_pwm));
+    } else {
+        if (!measured_wheel_speeds_valid_) {
+            wheel_speed_error_integral_left_ = 0.0;
+            wheel_speed_error_integral_right_ = 0.0;
+        }
+
+        const double measured_speed_for_feedback = clamp_value(
+            estimate_.speed,
+            0.0,
+            std::max(config_.cruise_speed_limit * 1.35, 0.28));
+        const double measured_yaw_rate_for_feedback = clamp_value(
+            estimate_.yaw_rate,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
+        const int fb_linear = static_cast<int>(std::lround(
+            config_.pwm.linear_feedback_gain * (last_command_.target_speed - measured_speed_for_feedback)));
+        const int fb_yaw = static_cast<int>(std::lround(
+            config_.pwm.yaw_feedback_gain * (last_command_.target_yaw_rate - measured_yaw_rate_for_feedback)));
+
+        last_command_.pwm_left = static_cast<int>(clamp_value(
+            static_cast<double>(ff_left + fb_linear - fb_yaw),
+            -config_.pwm.max_pwm,
+            config_.pwm.max_pwm));
+        last_command_.pwm_right = static_cast<int>(clamp_value(
+            static_cast<double>(ff_right + fb_linear + fb_yaw),
+            -config_.pwm.max_pwm,
+            config_.pwm.max_pwm));
+    }
 
     const double max_target_wheel_speed = std::max(std::abs(left_wheel_speed), std::abs(right_wheel_speed));
-    const double measured_left_wheel_speed = estimate_.speed - estimate_.yaw_rate * half_track;
-    const double measured_right_wheel_speed = estimate_.speed + estimate_.yaw_rate * half_track;
     const double max_measured_wheel_speed =
         std::max(std::abs(measured_left_wheel_speed), std::abs(measured_right_wheel_speed));
     const bool demanding_motion =
@@ -2190,9 +2343,6 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         stall_boost_active_ = true;
     }
 
-    const bool commanding_motion =
-        !safety_stop_active_ &&
-        (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
     if (commanding_motion) {
         last_command_.pwm_left = clamp_motion_pwm_band(
             last_command_.pwm_left,
