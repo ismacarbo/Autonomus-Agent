@@ -580,6 +580,7 @@ int main(int argc, char** argv) {
         planner_config.nominal_dt = options.dt;
         planner_config.auto_set_autonomous_mode = options.auto_mode;
         planner_config.auto_gyro_zero = options.gyro_zero;
+        planner_config.use_encoder_odometry = true;
 
         if (options.simulate) {
             return run_simulated(options, world, std::move(bridge_options), planner_config);

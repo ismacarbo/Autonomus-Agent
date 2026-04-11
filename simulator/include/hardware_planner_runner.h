@@ -90,7 +90,7 @@ struct HardwarePlannerConfig {
     double goal_slowdown_radius_m = 0.90;
     bool auto_set_autonomous_mode = true;
     bool auto_gyro_zero = true;
-    bool use_encoder_odometry = false;
+    bool use_encoder_odometry = true;
     DifferentialDriveGeometry drive{};
     MotorPwmMapperConfig pwm{};
     LidarLocalizationConfig localization{};
