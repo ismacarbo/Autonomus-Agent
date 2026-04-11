@@ -88,6 +88,24 @@ double planning_lidar_range(const HardwarePlannerConfig& config) {
         config.localization.max_range_m);
 }
 
+double sector_max_clearance(const std::vector<LidarHit>& hits,
+                            double yaw,
+                            double center_local_angle,
+                            double half_angle_width) {
+    double best = 0.0;
+    for (const LidarHit& hit : hits) {
+        if (!hit.hit || !(hit.distance > 0.0)) {
+            continue;
+        }
+        const double local_angle = wrap_angle(hit.angle - yaw);
+        const double sector_delta = std::abs(wrap_angle(local_angle - center_local_angle));
+        if (sector_delta <= half_angle_width) {
+            best = std::max(best, hit.distance);
+        }
+    }
+    return best;
+}
+
 int signum(int value) {
     return (value > 0) - (value < 0);
 }
@@ -2159,11 +2177,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool lidar_front_blocked =
         estimate_.front_lidar_distance > 0.0 &&
         estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m;
+    const double lateral_stop_distance = std::max(
+        config_.localization.min_valid_range_m + 0.02,
+        config_.localization.obstacle_stop_distance_m - 0.07);
     const bool lidar_side_clearance_blocked =
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
         estimate_.min_lidar_distance > 0.0 &&
-        estimate_.min_lidar_distance < config_.localization.obstacle_stop_distance_m;
+        estimate_.min_lidar_distance < lateral_stop_distance &&
+        estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m + 0.18;
     bool use_gap_recovery_turn = false;
     const double recovery_turn_clearance =
         std::max(config_.localization.min_valid_range_m + 0.005, 0.10);
@@ -2189,6 +2211,28 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 1.6 * heading_error,
                 -0.85 * config_.drive.max_yaw_rate,
                 0.85 * config_.drive.max_yaw_rate);
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+        } else {
+            gap_recovery_turn_active_ = false;
+        }
+    } else if (lidar_front_blocked &&
+               use_dynamic_gap_gates_ &&
+               !have_reference_trajectory) {
+        const double left_clearance =
+            sector_max_clearance(lidar_hits_, estimate_.yaw, 0.90, 0.55);
+        const double right_clearance =
+            sector_max_clearance(lidar_hits_, estimate_.yaw, -0.90, 0.55);
+        const double better_clearance = std::max(left_clearance, right_clearance);
+        if (better_clearance > config_.localization.obstacle_stop_distance_m + 0.05) {
+            gap_recovery_turn_active_ = true;
+            use_gap_recovery_turn = true;
+            use_direct_yaw_rate_command = true;
+            direct_yaw_rate_command =
+                (left_clearance >= right_clearance ? 1.0 : -1.0) *
+                0.55 * config_.drive.max_yaw_rate;
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
