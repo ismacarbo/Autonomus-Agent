@@ -500,6 +500,29 @@ std::uint64_t quantized_point_key(const Vec2& point, double resolution_m) {
            static_cast<std::uint32_t>(qy);
 }
 
+Vec2 quantized_point_center(const Vec2& point, double resolution_m) {
+    const double safe_resolution = std::max(resolution_m, 1e-3);
+    const double qx = std::round(point.x / safe_resolution) * safe_resolution;
+    const double qy = std::round(point.y / safe_resolution) * safe_resolution;
+    return {qx, qy};
+}
+
+double point_segment_distance_sq(const Vec2& point, const Vec2& a, const Vec2& b) {
+    const double dx = b.x - a.x;
+    const double dy = b.y - a.y;
+    const double segment_length_sq = dx * dx + dy * dy;
+    if (segment_length_sq <= 1e-12) {
+        return distance_sq(point, a);
+    }
+
+    const double t = clamp_value(
+        ((point.x - a.x) * dx + (point.y - a.y) * dy) / segment_length_sq,
+        0.0,
+        1.0);
+    const Vec2 projection{a.x + dx * t, a.y + dy * t};
+    return distance_sq(point, projection);
+}
+
 }  // namespace
 
 HardwarePlannerRunner::HardwarePlannerRunner(WorldMap world,
@@ -700,6 +723,7 @@ void HardwarePlannerRunner::reset() {
     visible_gate_indices_.clear();
     lidar_hits_.clear();
     lidar_map_points_.clear();
+    lidar_occupancy_cells_.clear();
     lidar_map_keys_.clear();
     gate_specs_.clear();
     diagnostics_ = {};
@@ -1536,6 +1560,8 @@ double HardwarePlannerRunner::score_candidate_pose_against_perception_map(
 void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1::ScanPoint>& scan) {
     lidar_hits_.clear();
     lidar_hits_.reserve(scan.size());
+    lidar_map_points_.clear();
+    lidar_map_keys_.clear();
 
     diagnostics_.valid_lidar_points = 0;
     diagnostics_.close_lidar_points = 0;
@@ -1543,6 +1569,14 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
     diagnostics_.lidar_front_blocked = false;
 
     const Vec2 origin = lidar_origin_world(estimate_.position, estimate_.yaw, config_.localization);
+    const double map_resolution = std::max(config_.gap_extraction.map_point_resolution_m, 1e-3);
+    const int confirm_hits = std::max(config_.gap_extraction.occupancy_confirm_hits, 1);
+    const int decay_steps = std::max(config_.gap_extraction.occupancy_decay_steps, 1);
+    const int decay_stride = std::max(decay_steps / confirm_hits, 1);
+    const int max_cells = std::max(config_.gap_extraction.max_persistent_points, 1);
+    std::unordered_set<std::uint64_t> scan_keys;
+    scan_keys.reserve(scan.size());
+
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
@@ -1565,13 +1599,44 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
         };
         lidar_hits_.push_back({angle_world, point.distance_m, hit, true});
 
-        if (lidar_map_points_.size() < static_cast<size_t>(std::max(config_.gap_extraction.max_persistent_points, 1))) {
-            const std::uint64_t key =
-                quantized_point_key(hit, config_.gap_extraction.map_point_resolution_m);
-            if (lidar_map_keys_.insert(key).second) {
-                lidar_map_points_.push_back(hit);
-            }
+        const std::uint64_t key = quantized_point_key(hit, map_resolution);
+        if (!scan_keys.insert(key).second) {
+            continue;
         }
+
+        auto occupancy_it = lidar_occupancy_cells_.find(key);
+        if (occupancy_it == lidar_occupancy_cells_.end()) {
+            if (static_cast<int>(lidar_occupancy_cells_.size()) >= max_cells) {
+                continue;
+            }
+            PerceptionOccupancyCell cell{};
+            cell.center = quantized_point_center(hit, map_resolution);
+            cell.hit_count = 1;
+            cell.last_seen_step = step_count_;
+            lidar_occupancy_cells_.emplace(key, cell);
+        } else {
+            const int age_steps = std::max(0, step_count_ - occupancy_it->second.last_seen_step);
+            const int effective_hits =
+                std::max(0, occupancy_it->second.hit_count - age_steps / decay_stride);
+            occupancy_it->second.center = quantized_point_center(hit, map_resolution);
+            occupancy_it->second.hit_count = std::min(effective_hits + 1, confirm_hits + 6);
+            occupancy_it->second.last_seen_step = step_count_;
+        }
+    }
+
+    for (auto it = lidar_occupancy_cells_.begin(); it != lidar_occupancy_cells_.end();) {
+        const int age_steps = std::max(0, step_count_ - it->second.last_seen_step);
+        const int effective_hits = std::max(0, it->second.hit_count - age_steps / decay_stride);
+        if (age_steps > decay_steps || effective_hits <= 0) {
+            it = lidar_occupancy_cells_.erase(it);
+            continue;
+        }
+
+        if (effective_hits >= confirm_hits) {
+            lidar_map_keys_.insert(it->first);
+            lidar_map_points_.push_back(it->second.center);
+        }
+        ++it;
     }
 
     estimate_.min_lidar_distance = compute_min_lidar_distance(scan);
@@ -2512,6 +2577,36 @@ double HardwarePlannerRunner::compute_front_lidar_distance(const std::vector<RPL
     return min_range;
 }
 
+bool HardwarePlannerRunner::perception_map_supports_target(const Vec2& origin, const Vec2& target) const {
+    if (lidar_map_points_.empty()) {
+        return true;
+    }
+
+    const double target_clearance_radius = std::max(
+        config_.gap_extraction.target_clearance_radius_m,
+        geometry_.body_width * 0.45);
+    const double path_clearance_radius = std::max(
+        config_.gap_extraction.path_clearance_radius_m,
+        geometry_.body_width * 0.32);
+    const double target_clearance_sq = target_clearance_radius * target_clearance_radius;
+    const double path_clearance_sq = path_clearance_radius * path_clearance_radius;
+
+    int path_blocking_points = 0;
+    for (const Vec2& point : lidar_map_points_) {
+        if (distance_sq(point, target) <= target_clearance_sq) {
+            return false;
+        }
+        if (point_segment_distance_sq(point, origin, target) <= path_clearance_sq) {
+            ++path_blocking_points;
+            if (path_blocking_points >= 2) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
                                                  const std::vector<RPLidarA1::ScanPoint>& scan) const {
     if (scan.empty()) {
@@ -2529,6 +2624,8 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     const double target_angle_local = wrap_angle(target_angle_world - estimate_.yaw - config_.localization.lidar_yaw_offset);
     double best_angle_delta = std::numeric_limits<double>::infinity();
     double best_range = 0.0;
+    int support_beams = 0;
+    int free_support_beams = 0;
 
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
@@ -2544,6 +2641,16 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
             best_angle_delta = angle_delta;
             best_range = point.distance_m;
         }
+
+        const double support_tolerance = std::max(
+            config_.gap_extraction.min_gap_angle_rad * 0.35,
+            6.0 * kPi / 180.0);
+        if (angle_delta <= support_tolerance) {
+            ++support_beams;
+            if (point.distance_m + 0.08 >= target_distance) {
+                ++free_support_beams;
+            }
+        }
     }
 
     const double angular_tolerance = std::max(config_.gap_extraction.min_gap_angle_rad * 0.5, 10.0 * kPi / 180.0);
@@ -2551,7 +2658,15 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
         return false;
     }
 
-    return best_range + 0.08 >= target_distance;
+    if (!(best_range + 0.08 >= target_distance)) {
+        return false;
+    }
+
+    if (support_beams >= 2 && free_support_beams * 2 < support_beams + 1) {
+        return false;
+    }
+
+    return perception_map_supports_target(lidar_origin, target);
 }
 
 Vec2 HardwarePlannerRunner::scan_point_world_hit(const RPLidarA1::ScanPoint& point,
@@ -2684,6 +2799,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         }
         if (!lidar_enabled) {
             lidar_map_points_.clear();
+            lidar_occupancy_cells_.clear();
             lidar_map_keys_.clear();
         }
         diagnostics_.valid_lidar_points = 0;

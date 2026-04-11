@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -82,6 +83,16 @@ struct GapExtractionConfig {
     int max_candidate_gates = 5;
     double map_point_resolution_m = 0.03;
     int max_persistent_points = 6000;
+    int occupancy_confirm_hits = 2;
+    int occupancy_decay_steps = 36;
+    double target_clearance_radius_m = 0.14;
+    double path_clearance_radius_m = 0.09;
+};
+
+struct PerceptionOccupancyCell {
+    Vec2 center;
+    int hit_count = 0;
+    int last_seen_step = -1;
 };
 
 struct HardwarePlannerConfig {
@@ -318,6 +329,7 @@ class HardwarePlannerRunner {
     bool perception_map_ready() const;
     bool unstructured_perception_only_mode() const;
     bool scan_supports_target(const Vec2& target, const std::vector<RPLidarA1::ScanPoint>& scan) const;
+    bool perception_map_supports_target(const Vec2& origin, const Vec2& target) const;
 
     WorldMap world_;
     HardwarePlannerConfig config_;
@@ -336,6 +348,7 @@ class HardwarePlannerRunner {
     std::vector<GateSpec> gate_specs_;
     std::vector<LidarHit> lidar_hits_;
     std::vector<Vec2> lidar_map_points_;
+    std::unordered_map<std::uint64_t, PerceptionOccupancyCell> lidar_occupancy_cells_;
     std::unordered_set<std::uint64_t> lidar_map_keys_;
     std::vector<HardwareTelemetrySample> history_;
     std::vector<Vec2> trail_;
