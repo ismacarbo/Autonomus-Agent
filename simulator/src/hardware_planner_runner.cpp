@@ -1654,10 +1654,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             config_.localization.obstacle_stop_distance_m + 0.03),
         gate_depth_threshold,
         planning_range * 0.75);
-    const double required_gap_width =
-        std::max(config_.gap_extraction.min_gap_width_m, geometry_.body_width + 0.08);
     const double goal_heading = angle_to(lidar_origin, world_.goal());
-    const double goal_local_angle = wrap_angle(goal_heading - estimate_.yaw);
     std::vector<GapCandidate> candidates;
     std::optional<GateSpec> persisted_spec;
     std::optional<gate> persisted_gate;
@@ -1710,168 +1707,74 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
-    auto add_gap_candidate = [&](size_t first, size_t last) {
-        if (last < first || last - first + 1 < 3) {
-            return;
+    for (size_t i = 0; i < beams.size(); ++i) {
+        const GapBeam& beam = beams[i];
+        if (beam.distance < gate_depth_threshold ||
+            beam.distance < free_threshold ||
+            std::abs(beam.local_angle) > 0.85 * kPi) {
+            continue;
         }
 
-        const double start_angle = beams[first].local_angle;
-        const double end_angle = beams[last].local_angle;
-        const double span_rad = std::max(end_angle - start_angle, 0.0);
-        if (span_rad < config_.gap_extraction.min_gap_angle_rad) {
-            return;
+        double support_distance = beam.distance;
+        double support_sum = 0.0;
+        int support_count = 0;
+        const size_t support_first = i > 0 ? i - 1 : i;
+        const size_t support_last = std::min(i + 1, beams.size() - 1);
+        for (size_t j = support_first; j <= support_last; ++j) {
+            support_distance = std::min(support_distance, beams[j].distance);
+            support_sum += beams[j].distance;
+            ++support_count;
+        }
+        support_distance = std::min(
+            support_distance,
+            support_sum / static_cast<double>(std::max(support_count, 1)));
+        if (support_distance < gate_depth_threshold) {
+            continue;
         }
 
-        double min_distance = std::numeric_limits<double>::infinity();
-        double max_distance = 0.0;
-        double sum_distance = 0.0;
-        for (size_t i = first; i <= last; ++i) {
-            min_distance = std::min(min_distance, beams[i].distance);
-            max_distance = std::max(max_distance, beams[i].distance);
-            sum_distance += beams[i].distance;
-        }
-        if (!std::isfinite(min_distance)) {
-            return;
-        }
-
-        const double width_span_rad = std::clamp(span_rad, 1e-4, kPi - 1e-3);
-        const double width_m =
-            2.0 * std::max(min_distance, 1e-3) * std::sin(width_span_rad * 0.5);
-        if (width_m < required_gap_width) {
-            return;
-        }
-
-        size_t center_index = first + (last - first) / 2;
-        if (goal_local_angle >= start_angle - 1e-6 && goal_local_angle <= end_angle + 1e-6) {
-            double best_goal_delta = std::numeric_limits<double>::infinity();
-            for (size_t i = first; i <= last; ++i) {
-                const double goal_delta = std::abs(beams[i].local_angle - goal_local_angle);
-                if (goal_delta < best_goal_delta) {
-                    best_goal_delta = goal_delta;
-                    center_index = i;
-                }
-            }
-        }
-        const double center_local_angle = beams[center_index].local_angle;
-        const double center_world_angle = beams[center_index].world_angle;
-        const double representative_distance =
-            sum_distance / static_cast<double>(last - first + 1);
-        const double safe_target_depth =
-            std::min(representative_distance * config_.gap_extraction.target_distance_scale, min_distance + 0.35);
+        const double target_hi = std::min(
+            config_.gap_extraction.max_target_distance_m,
+            std::max(config_.gap_extraction.min_target_distance_m, support_distance - 0.04));
         const double target_distance = clamp_value(
-            safe_target_depth,
+            support_distance * config_.gap_extraction.target_distance_scale,
             config_.gap_extraction.min_target_distance_m,
-            std::min(config_.gap_extraction.max_target_distance_m, max_distance * 0.92));
+            target_hi);
         if (!(target_distance > 0.0)) {
-            return;
+            continue;
         }
 
-        Vec2 target{
-            lidar_origin.x + std::cos(center_world_angle) * target_distance,
-            lidar_origin.y + std::sin(center_world_angle) * target_distance,
+        const Vec2 target{
+            lidar_origin.x + std::cos(beam.world_angle) * target_distance,
+            lidar_origin.y + std::sin(beam.world_angle) * target_distance,
         };
-        if (!is_inside_bounds(world_, target) || !scan_supports_target(target, scan)) {
-            return;
+        if (!is_inside_bounds(world_, target)) {
+            continue;
         }
 
-        const double goal_delta = std::abs(wrap_angle(center_world_angle - goal_heading));
-        const double goal_alignment =
-            0.5 * (1.0 + std::cos(goal_delta));
+        const double goal_delta = std::abs(wrap_angle(beam.world_angle - goal_heading));
+        const double goal_alignment = 0.5 * (1.0 + std::cos(goal_delta));
+        const double forward_alignment = 0.5 * (1.0 + std::cos(beam.local_angle));
+        const double clearance_score = clamp_value(
+            support_distance / std::max(planning_range, 1e-3),
+            0.0,
+            1.0);
         const double goal_distance_now = distance(lidar_origin, world_.goal());
         const double goal_distance_after = distance(target, world_.goal());
         const double progress_score =
             goal_distance_now > 1e-6
                 ? clamp_value((goal_distance_now - goal_distance_after) / goal_distance_now, 0.0, 1.0)
                 : 0.0;
-        const bool goal_roughly_ahead = std::abs(goal_local_angle) <= 20.0 * kPi / 180.0;
-        if (goal_roughly_ahead &&
-            goal_delta > 35.0 * kPi / 180.0 &&
-            progress_score < 0.18) {
-            return;
-        }
-        const double forward_alignment =
-            0.5 * (1.0 + std::cos(center_local_angle));
-        const double clearance_score = clamp_value(
-            min_distance / std::max(planning_range, 1e-3),
-            0.0,
-            1.0);
-        const double width_score = clamp_value(width_m / std::max(required_gap_width, 1e-3), 0.0, 2.0);
-        const double lateral_penalty = clamp_value(
-            std::abs(center_local_angle) / (0.5 * kPi),
-            0.0,
-            1.0);
-        const double goal_delta_penalty = clamp_value(
-            goal_delta / (0.5 * kPi),
-            0.0,
-            1.0);
 
         candidates.push_back({
-            2.6 * goal_alignment + 1.7 * progress_score + 1.35 * forward_alignment + 0.55 * clearance_score +
-                0.15 * width_score - 0.95 * lateral_penalty * lateral_penalty -
-                1.20 * goal_delta_penalty * goal_delta_penalty,
-            span_rad,
-            min_distance,
+            2.4 * clearance_score + 1.1 * goal_alignment + 0.8 * progress_score + 0.45 * forward_alignment,
+            0.0,
+            support_distance,
             target_distance,
-            width_m,
-            center_local_angle,
-            center_world_angle,
+            0.0,
+            beam.local_angle,
+            beam.world_angle,
             target,
         });
-    };
-
-    bool gap_open = false;
-    size_t gap_start = 0;
-    for (size_t i = 0; i < beams.size(); ++i) {
-        const bool free_beam = beams[i].distance >= free_threshold;
-        if (free_beam && !gap_open) {
-            gap_open = true;
-            gap_start = i;
-        } else if (!free_beam && gap_open) {
-            add_gap_candidate(gap_start, i - 1);
-            gap_open = false;
-        }
-    }
-    if (gap_open) {
-        add_gap_candidate(gap_start, beams.size() - 1);
-    }
-
-    if (std::abs(goal_local_angle) > 0.10) {
-        const double preferred_sign = goal_local_angle > 0.0 ? 1.0 : -1.0;
-        const bool have_goal_side_candidate = std::any_of(
-            candidates.begin(),
-            candidates.end(),
-            [preferred_sign](const GapCandidate& candidate) {
-                return preferred_sign * candidate.center_local_angle >= -0.02;
-            });
-        if (have_goal_side_candidate) {
-            candidates.erase(
-                std::remove_if(
-                    candidates.begin(),
-                    candidates.end(),
-                    [preferred_sign](const GapCandidate& candidate) {
-                        return preferred_sign * candidate.center_local_angle < -0.02;
-                    }),
-                candidates.end());
-        }
-    }
-
-    constexpr double kPreferredForwardAngle = 0.33 * kPi;
-    constexpr double kRetainedForwardAngle = 0.44 * kPi;
-    const bool have_forward_candidate = std::any_of(
-        candidates.begin(),
-        candidates.end(),
-        [](const GapCandidate& candidate) {
-            return std::abs(candidate.center_local_angle) <= kPreferredForwardAngle;
-        });
-    if (have_forward_candidate) {
-        candidates.erase(
-            std::remove_if(
-                candidates.begin(),
-                candidates.end(),
-                [](const GapCandidate& candidate) {
-                    return std::abs(candidate.center_local_angle) > kRetainedForwardAngle;
-                }),
-            candidates.end());
     }
 
     if (persisted_spec.has_value()) {
