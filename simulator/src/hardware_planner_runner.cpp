@@ -95,6 +95,16 @@ bool controller_encoders_ready(const ControllerTelemetry& telemetry) {
     return telemetry.have_encoder && status_ready && left_valid && right_valid && telemetry.enc_dt_ms > 0U;
 }
 
+bool encoder_flag_set(std::uint16_t flags, EncoderFlag flag) {
+    return (flags & static_cast<std::uint16_t>(flag)) != 0U;
+}
+
+double signed_encoder_distance(std::int32_t delta_ticks, bool dir_negative, double ticks_to_distance) {
+    const double tick_magnitude = static_cast<double>(std::abs(delta_ticks));
+    const double signed_tick_magnitude = dir_negative ? -tick_magnitude : tick_magnitude;
+    return signed_tick_magnitude * ticks_to_distance;
+}
+
 double wheel_speed_from_pwm_estimate(int pwm, double scale, const VehicleGeometry& geometry) {
     const double effective_pwm = std::abs(static_cast<double>(pwm));
     if (effective_pwm < static_cast<double>(geometry.min_effective_pwm) || geometry.speed_estimate_per_pwm <= 0.0) {
@@ -1062,12 +1072,20 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
             static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-        const double left_dist = static_cast<double>(left_delta_ticks) * ticks_to_distance;
-        const double right_dist = static_cast<double>(right_delta_ticks) * ticks_to_distance;
+        const double left_dist = signed_encoder_distance(
+            left_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::LeftDirNeg),
+            ticks_to_distance);
+        const double right_dist = signed_encoder_distance(
+            right_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::RightDirNeg),
+            ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
         odom_speed = encoder_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / encoder_dt : 0.0;
         odom_yaw_rate = encoder_dt > 1e-6 ? odom_delta_yaw / encoder_dt : 0.0;
+        odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
+        odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {
         const double pwm_speed_estimate = clamp_value(
             std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
@@ -1123,12 +1141,20 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
             static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-        const double left_dist = static_cast<double>(left_delta_ticks) * ticks_to_distance;
-        const double right_dist = static_cast<double>(right_delta_ticks) * ticks_to_distance;
+        const double left_dist = signed_encoder_distance(
+            left_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::LeftDirNeg),
+            ticks_to_distance);
+        const double right_dist = signed_encoder_distance(
+            right_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::RightDirNeg),
+            ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
         odom_speed = effective_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / effective_dt : 0.0;
         odom_yaw_rate = effective_dt > 1e-6 ? odom_delta_yaw / effective_dt : 0.0;
+        odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
+        odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {
         const double pwm_speed_estimate = clamp_value(
             std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
