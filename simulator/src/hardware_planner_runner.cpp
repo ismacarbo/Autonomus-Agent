@@ -1626,14 +1626,16 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         return a.local_angle < b.local_angle;
     });
 
-    const double gate_depth_threshold = std::min(
-        config_.gap_extraction.min_target_distance_m + geometry_.body_length,
-        planning_range * 0.85);
-    const double free_threshold = std::max(
+    const double gate_depth_threshold = clamp_value(
+        config_.gap_extraction.min_target_distance_m,
+        config_.localization.obstacle_stop_distance_m + 0.02,
+        planning_range * 0.70);
+    const double free_threshold = clamp_value(
         std::max(
             config_.gap_extraction.free_distance_threshold_m,
-            config_.localization.obstacle_stop_distance_m + 0.10),
-        gate_depth_threshold);
+            config_.localization.obstacle_stop_distance_m + 0.03),
+        gate_depth_threshold,
+        planning_range * 0.75);
     const double required_gap_width =
         std::max(config_.gap_extraction.min_gap_width_m, geometry_.body_width + 0.08);
     const double goal_heading = angle_to(lidar_origin, world_.goal());
@@ -2159,7 +2161,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m;
     const bool lidar_side_clearance_blocked =
         use_dynamic_gap_gates_ &&
-        !have_reference_trajectory &&
+        have_reference_trajectory &&
         estimate_.min_lidar_distance > 0.0 &&
         estimate_.min_lidar_distance < config_.localization.obstacle_stop_distance_m;
     bool use_gap_recovery_turn = false;

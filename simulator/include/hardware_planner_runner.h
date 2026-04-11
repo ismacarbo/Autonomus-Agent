@@ -72,12 +72,12 @@ struct LidarLocalizationConfig {
 
 struct GapExtractionConfig {
     bool enabled = true;
-    double free_distance_threshold_m = 0.55;
+    double free_distance_threshold_m = 0.34;
     double min_gap_width_m = 0.38;
     double min_gap_angle_rad = 0.16;
     double planning_max_range_m = 1.75;
     double target_distance_scale = 0.72;
-    double min_target_distance_m = 0.45;
+    double min_target_distance_m = 0.28;
     double max_target_distance_m = 0.95;
     int max_candidate_gates = 5;
     double map_point_resolution_m = 0.03;
