@@ -523,6 +523,208 @@ double point_segment_distance_sq(const Vec2& point, const Vec2& a, const Vec2& b
     return distance_sq(point, projection);
 }
 
+struct LocalOccupancyGrid {
+    double resolution_m = 0.05;
+    int width = 0;
+    int height = 0;
+    Vec2 origin{};
+    std::vector<std::uint16_t> free_votes;
+    std::vector<std::uint16_t> occupied_votes;
+    std::vector<std::uint8_t> inflated_mask;
+    std::vector<std::uint8_t> free_mask;
+
+    int index(int x, int y) const {
+        return y * width + x;
+    }
+
+    bool valid_cell(int x, int y) const {
+        return x >= 0 && x < width && y >= 0 && y < height;
+    }
+
+    bool world_to_cell(const Vec2& point, int* cell_x, int* cell_y) const {
+        const int x = static_cast<int>(std::floor((point.x - origin.x) / resolution_m));
+        const int y = static_cast<int>(std::floor((point.y - origin.y) / resolution_m));
+        if (!valid_cell(x, y)) {
+            return false;
+        }
+        if (cell_x != nullptr) {
+            *cell_x = x;
+        }
+        if (cell_y != nullptr) {
+            *cell_y = y;
+        }
+        return true;
+    }
+
+    Vec2 cell_center(int x, int y) const {
+        return {
+            origin.x + (static_cast<double>(x) + 0.5) * resolution_m,
+            origin.y + (static_cast<double>(y) + 0.5) * resolution_m,
+        };
+    }
+
+    void add_free_sample(const Vec2& point) {
+        int x = 0;
+        int y = 0;
+        if (!world_to_cell(point, &x, &y)) {
+            return;
+        }
+        std::uint16_t& value = free_votes[static_cast<size_t>(index(x, y))];
+        value = static_cast<std::uint16_t>(std::min<int>(value + 1, std::numeric_limits<std::uint16_t>::max()));
+    }
+
+    void add_occupied_sample(const Vec2& point) {
+        int x = 0;
+        int y = 0;
+        if (!world_to_cell(point, &x, &y)) {
+            return;
+        }
+        std::uint16_t& value = occupied_votes[static_cast<size_t>(index(x, y))];
+        value = static_cast<std::uint16_t>(std::min<int>(value + 3, std::numeric_limits<std::uint16_t>::max()));
+    }
+
+    bool is_inflated(const Vec2& point) const {
+        int x = 0;
+        int y = 0;
+        if (!world_to_cell(point, &x, &y)) {
+            return true;
+        }
+        return inflated_mask[static_cast<size_t>(index(x, y))] != 0U;
+    }
+
+    bool is_free(const Vec2& point) const {
+        int x = 0;
+        int y = 0;
+        if (!world_to_cell(point, &x, &y)) {
+            return false;
+        }
+        return free_mask[static_cast<size_t>(index(x, y))] != 0U;
+    }
+
+    void finalize(double inflate_radius_m) {
+        inflated_mask.assign(free_votes.size(), 0U);
+        free_mask.assign(free_votes.size(), 0U);
+
+        const int inflation_cells = std::max(1, static_cast<int>(std::ceil(inflate_radius_m / std::max(resolution_m, 1e-3))));
+        const int inflation_cells_sq = inflation_cells * inflation_cells;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                if (occupied_votes[static_cast<size_t>(index(x, y))] == 0U) {
+                    continue;
+                }
+                for (int dy = -inflation_cells; dy <= inflation_cells; ++dy) {
+                    for (int dx = -inflation_cells; dx <= inflation_cells; ++dx) {
+                        if (dx * dx + dy * dy > inflation_cells_sq) {
+                            continue;
+                        }
+                        const int nx = x + dx;
+                        const int ny = y + dy;
+                        if (!valid_cell(nx, ny)) {
+                            continue;
+                        }
+                        inflated_mask[static_cast<size_t>(index(nx, ny))] = 1U;
+                    }
+                }
+            }
+        }
+
+        for (size_t i = 0; i < free_votes.size(); ++i) {
+            free_mask[i] = free_votes[i] > 0U && inflated_mask[i] == 0U ? 1U : 0U;
+        }
+    }
+};
+
+template <typename Fn>
+void sample_segment_points(const Vec2& start,
+                           const Vec2& end,
+                           double step_m,
+                           bool include_endpoint,
+                           Fn&& fn) {
+    const double length = distance(start, end);
+    if (!(length > 1e-6)) {
+        if (include_endpoint) {
+            fn(end);
+        }
+        return;
+    }
+
+    const int steps = std::max(1, static_cast<int>(std::ceil(length / std::max(step_m, 1e-3))));
+    const int last_step = include_endpoint ? steps : steps - 1;
+    for (int i = 0; i <= last_step; ++i) {
+        const double alpha = clamp_value(
+            static_cast<double>(i) / static_cast<double>(steps),
+            0.0,
+            1.0);
+        fn({
+            start.x + (end.x - start.x) * alpha,
+            start.y + (end.y - start.y) * alpha,
+        });
+    }
+}
+
+bool grid_segment_is_clear(const LocalOccupancyGrid& grid, const Vec2& start, const Vec2& end) {
+    const double length = distance(start, end);
+    if (!(length > 1e-6)) {
+        return true;
+    }
+
+    int unsupported_samples = 0;
+    const double step_m = std::max(grid.resolution_m * 0.6, 0.025);
+    const int steps = std::max(1, static_cast<int>(std::ceil(length / step_m)));
+    for (int i = 1; i <= steps; ++i) {
+        const double alpha = static_cast<double>(i) / static_cast<double>(steps);
+        const Vec2 point{
+            start.x + (end.x - start.x) * alpha,
+            start.y + (end.y - start.y) * alpha,
+        };
+        if (grid.is_inflated(point)) {
+            return false;
+        }
+        const double traveled = alpha * length;
+        if (traveled > 0.12 && !grid.is_free(point)) {
+            ++unsupported_samples;
+            if (unsupported_samples > 2) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+double grid_local_clearance_score(const LocalOccupancyGrid& grid,
+                                  int cell_x,
+                                  int cell_y,
+                                  int radius_cells) {
+    int considered = 0;
+    int free_cells = 0;
+    for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+        for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+            if (dx * dx + dy * dy > radius_cells * radius_cells) {
+                continue;
+            }
+            const int nx = cell_x + dx;
+            const int ny = cell_y + dy;
+            if (!grid.valid_cell(nx, ny)) {
+                continue;
+            }
+            const size_t idx = static_cast<size_t>(grid.index(nx, ny));
+            if (grid.inflated_mask[idx] != 0U) {
+                continue;
+            }
+            ++considered;
+            if (grid.free_mask[idx] != 0U) {
+                ++free_cells;
+            }
+        }
+    }
+
+    if (considered <= 0) {
+        return 0.0;
+    }
+    return static_cast<double>(free_cells) / static_cast<double>(considered);
+}
+
 }  // namespace
 
 HardwarePlannerRunner::HardwarePlannerRunner(WorldMap world,
@@ -1660,20 +1862,19 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const std::vector<GateSpec> previous_gate_specs = gate_specs_;
     const int previous_chosen_gate_index = chosen_gate_index_;
 
-    struct GapBeam {
+    struct ScanBeam {
         double local_angle = 0.0;
         double world_angle = 0.0;
         double distance = 0.0;
+        Vec2 hit;
     };
 
-    struct GapCandidate {
+    struct TargetCandidate {
         double score = 0.0;
-        double span_rad = 0.0;
-        double min_distance = 0.0;
         double target_distance = 0.0;
-        double width_m = 0.0;
         double center_local_angle = 0.0;
         double center_world_angle = 0.0;
+        double progress_score = 0.0;
         Vec2 target;
     };
 
@@ -1683,7 +1884,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     const Vec2 lidar_origin = lidar_origin_world(estimate_.position, estimate_.yaw, config_.localization);
     const double planning_range = planning_lidar_range(config_);
-    std::vector<GapBeam> beams;
+    std::vector<ScanBeam> beams;
     beams.reserve(scan.size());
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
@@ -1694,10 +1895,15 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
         const double local_angle =
             wrap_angle(config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+        const double world_angle = wrap_angle(estimate_.yaw + local_angle);
         beams.push_back({
             local_angle,
-            wrap_angle(estimate_.yaw + local_angle),
+            world_angle,
             point.distance_m,
+            {
+                lidar_origin.x + std::cos(world_angle) * point.distance_m,
+                lidar_origin.y + std::sin(world_angle) * point.distance_m,
+            },
         });
     }
 
@@ -1705,23 +1911,25 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         return;
     }
 
-    std::sort(beams.begin(), beams.end(), [](const GapBeam& a, const GapBeam& b) {
+    std::sort(beams.begin(), beams.end(), [](const ScanBeam& a, const ScanBeam& b) {
         return a.local_angle < b.local_angle;
     });
 
-    const double gate_depth_threshold = clamp_value(
+    const double min_target_distance = clamp_value(
         config_.gap_extraction.min_target_distance_m,
         config_.localization.obstacle_stop_distance_m + 0.02,
-        planning_range * 0.70);
-    const double free_threshold = clamp_value(
-        std::max(
-            config_.gap_extraction.free_distance_threshold_m,
-            config_.localization.obstacle_stop_distance_m + 0.03),
-        gate_depth_threshold,
-        planning_range * 0.75);
+        planning_range * 0.68);
+    const double max_target_distance = clamp_value(
+        config_.gap_extraction.max_target_distance_m,
+        min_target_distance + 0.05,
+        planning_range * 0.92);
+    const double free_threshold = std::max(
+        config_.gap_extraction.free_distance_threshold_m,
+        config_.localization.obstacle_stop_distance_m + 0.03);
     const double goal_heading = angle_to(lidar_origin, world_.goal());
     const double goal_local_angle = wrap_angle(goal_heading - estimate_.yaw);
-    std::vector<GapCandidate> candidates;
+    const double goal_distance_now = distance(lidar_origin, world_.goal());
+    std::vector<TargetCandidate> candidates;
     std::optional<GateSpec> persisted_spec;
     std::optional<gate> persisted_gate;
 
@@ -1750,13 +1958,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return false;
         }
 
-        const double goal_distance_now = distance(lidar_origin, world_.goal());
         const double goal_distance_after = distance(previous_spec.position, world_.goal());
         if (goal_distance_after > goal_distance_now + 0.12) {
             return false;
         }
 
-        if (!scan_supports_target(previous_spec.position, scan)) {
+        if (!perception_map_supports_target(lidar_origin, previous_spec.position)) {
             return false;
         }
 
@@ -1773,72 +1980,135 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
-    auto support_distance_for_index = [&](size_t index) {
-        double support_distance = beams[index].distance;
-        double support_sum = 0.0;
-        int support_count = 0;
-        const size_t support_first = index > 0 ? index - 1 : index;
-        const size_t support_last = std::min(index + 1, beams.size() - 1);
-        for (size_t j = support_first; j <= support_last; ++j) {
-            support_distance = std::min(support_distance, beams[j].distance);
-            support_sum += beams[j].distance;
-            ++support_count;
-        }
-        return std::min(
-            support_distance,
-            support_sum / static_cast<double>(std::max(support_count, 1)));
-    };
-
     auto continuity_bonus_for_target = [&](const Vec2& target) {
         if (!persisted_spec.has_value()) {
             return 0.0;
         }
         const double target_delta = distance(target, persisted_spec->position);
-        if (target_delta > 0.30) {
+        if (target_delta > 0.36) {
             return 0.0;
         }
-        return 0.45 * (1.0 - clamp_value(target_delta / 0.30, 0.0, 1.0));
+        return 0.85 * (1.0 - clamp_value(target_delta / 0.36, 0.0, 1.0));
     };
 
-    auto try_add_candidate = [&](double candidate_world_angle,
-                                 double candidate_local_angle,
-                                 double support_distance,
-                                 double base_score,
-                                 bool goal_direct) {
-        if (support_distance < gate_depth_threshold) {
-            return;
+    const double grid_resolution = clamp_value(
+        config_.gap_extraction.map_point_resolution_m * 1.5,
+        0.04,
+        0.07);
+    const double inflate_radius = std::max(
+        config_.gap_extraction.target_clearance_radius_m,
+        geometry_.body_width * 0.55);
+    const int half_cells = std::max(
+        6,
+        static_cast<int>(std::ceil((planning_range + inflate_radius + grid_resolution) / grid_resolution)));
+    LocalOccupancyGrid local_grid;
+    local_grid.resolution_m = grid_resolution;
+    local_grid.width = 2 * half_cells + 1;
+    local_grid.height = 2 * half_cells + 1;
+    local_grid.origin = {
+        lidar_origin.x - static_cast<double>(half_cells) * grid_resolution,
+        lidar_origin.y - static_cast<double>(half_cells) * grid_resolution,
+    };
+    local_grid.free_votes.assign(
+        static_cast<size_t>(local_grid.width * local_grid.height),
+        0U);
+    local_grid.occupied_votes.assign(
+        static_cast<size_t>(local_grid.width * local_grid.height),
+        0U);
+
+    int free_beam_count = 0;
+    for (const ScanBeam& beam : beams) {
+        if (beam.distance >= free_threshold) {
+            ++free_beam_count;
         }
 
-        const double goal_distance_now = distance(lidar_origin, world_.goal());
-        const double target_hi = std::min(
-            config_.gap_extraction.max_target_distance_m,
-            std::max(config_.gap_extraction.min_target_distance_m, support_distance - 0.04));
-        double target_distance = clamp_value(
-            support_distance * config_.gap_extraction.target_distance_scale,
-            config_.gap_extraction.min_target_distance_m,
-            target_hi);
-        if (goal_direct) {
-            target_distance = std::min(target_distance, goal_distance_now);
-        }
-        if (!(target_distance > 0.0)) {
-            return;
-        }
-
-        const Vec2 target{
-            lidar_origin.x + std::cos(candidate_world_angle) * target_distance,
-            lidar_origin.y + std::sin(candidate_world_angle) * target_distance,
+        const bool obstacle_endpoint =
+            beam.distance < planning_range - 0.03 &&
+            beam.distance < config_.localization.max_range_m - 0.03;
+        const double free_distance = obstacle_endpoint
+            ? std::max(0.04, beam.distance - inflate_radius * 0.60)
+            : beam.distance;
+        const Vec2 free_endpoint{
+            lidar_origin.x + std::cos(beam.world_angle) * free_distance,
+            lidar_origin.y + std::sin(beam.world_angle) * free_distance,
         };
+        sample_segment_points(
+            lidar_origin,
+            free_endpoint,
+            grid_resolution * 0.65,
+            true,
+            [&](const Vec2& sample) {
+                local_grid.add_free_sample(sample);
+            });
+
+        if (obstacle_endpoint) {
+            local_grid.add_occupied_sample(beam.hit);
+        }
+    }
+
+    sample_segment_points(
+        {lidar_origin.x - 0.04, lidar_origin.y},
+        {lidar_origin.x + 0.04, lidar_origin.y},
+        grid_resolution * 0.5,
+        true,
+        [&](const Vec2& sample) {
+            local_grid.add_free_sample(sample);
+        });
+    sample_segment_points(
+        {lidar_origin.x, lidar_origin.y - 0.04},
+        {lidar_origin.x, lidar_origin.y + 0.04},
+        grid_resolution * 0.5,
+        true,
+        [&](const Vec2& sample) {
+            local_grid.add_free_sample(sample);
+        });
+
+    const double map_overlay_radius_sq =
+        (planning_range + inflate_radius) * (planning_range + inflate_radius);
+    for (const Vec2& map_point : lidar_map_points_) {
+        if (distance_sq(map_point, lidar_origin) <= map_overlay_radius_sq) {
+            local_grid.add_occupied_sample(map_point);
+        }
+    }
+    local_grid.finalize(inflate_radius);
+
+    auto try_add_candidate = [&](const Vec2& target, double base_score) {
         if (!is_inside_bounds(world_, target)) {
             return;
         }
 
+        const double target_distance = distance(lidar_origin, target);
+        if (target_distance < min_target_distance || target_distance > max_target_distance) {
+            return;
+        }
+
+        if (!grid_segment_is_clear(local_grid, lidar_origin, target)) {
+            return;
+        }
+
+        if (!perception_map_supports_target(lidar_origin, target)) {
+            return;
+        }
+
+        int cell_x = 0;
+        int cell_y = 0;
+        if (!local_grid.world_to_cell(target, &cell_x, &cell_y)) {
+            return;
+        }
+        if (local_grid.free_mask[static_cast<size_t>(local_grid.index(cell_x, cell_y))] == 0U) {
+            return;
+        }
+
+        const double candidate_world_angle = angle_to(lidar_origin, target);
+        const double candidate_local_angle = wrap_angle(candidate_world_angle - estimate_.yaw);
         const double goal_delta = std::abs(wrap_angle(candidate_world_angle - goal_heading));
         const double goal_alignment = 0.5 * (1.0 + std::cos(goal_delta));
         const double forward_alignment = 0.5 * (1.0 + std::cos(candidate_local_angle));
-        const double clearance_score = clamp_value(
-            support_distance / std::max(planning_range, 1e-3),
-            0.0,
-            1.0);
+        const double clearance_score = grid_local_clearance_score(
+            local_grid,
+            cell_x,
+            cell_y,
+            std::max(1, static_cast<int>(std::ceil(inflate_radius / grid_resolution))));
         const double goal_distance_after = distance(target, world_.goal());
         const double progress_score =
             goal_distance_now > 1e-6
@@ -1846,120 +2116,125 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 : 0.0;
 
         candidates.push_back({
-            base_score + 2.2 * clearance_score + 1.35 * goal_alignment +
-                1.05 * progress_score + 0.55 * forward_alignment +
+            base_score + 2.10 * progress_score + 1.45 * goal_alignment +
+                0.75 * forward_alignment + 1.10 * clearance_score +
                 continuity_bonus_for_target(target),
-            0.0,
-            support_distance,
             target_distance,
-            0.0,
             candidate_local_angle,
             candidate_world_angle,
+            progress_score,
             target,
         });
     };
 
-    int best_goal_beam_index = -1;
-    double best_goal_beam_delta = std::numeric_limits<double>::infinity();
-    int free_beam_count = 0;
-    for (size_t i = 0; i < beams.size(); ++i) {
-        if (beams[i].distance >= free_threshold) {
-            ++free_beam_count;
-        }
-        const double goal_delta = std::abs(wrap_angle(beams[i].local_angle - goal_local_angle));
-        if (goal_delta < best_goal_beam_delta) {
-            best_goal_beam_delta = goal_delta;
-            best_goal_beam_index = static_cast<int>(i);
+    if (persisted_spec.has_value()) {
+        const Vec2 target = persisted_spec->position;
+        const double persisted_distance = distance(lidar_origin, target);
+        if (persisted_distance >= 0.10 &&
+            persisted_distance <= std::max(max_target_distance * 1.2, 1.1) &&
+            grid_segment_is_clear(local_grid, lidar_origin, target) &&
+            scan_supports_target(target, scan)) {
+            try_add_candidate(target, 1.40);
         }
     }
 
     const double open_space_ratio =
         beams.empty() ? 0.0 : static_cast<double>(free_beam_count) / static_cast<double>(beams.size());
-
-    if (best_goal_beam_index >= 0) {
-        const size_t goal_index = static_cast<size_t>(best_goal_beam_index);
-        const double goal_support_distance = support_distance_for_index(goal_index);
-        const bool goal_beam_usable =
-            goal_support_distance >= gate_depth_threshold &&
-            best_goal_beam_delta <= 20.0 * kPi / 180.0;
-        if (goal_beam_usable) {
-            const bool open_space_direct = open_space_ratio >= 0.58;
-            try_add_candidate(
-                open_space_direct ? goal_heading : beams[goal_index].world_angle,
-                open_space_direct ? goal_local_angle : beams[goal_index].local_angle,
-                goal_support_distance,
-                open_space_direct ? 2.4 : 1.6,
-                open_space_direct);
+    const std::array<double, 4> goal_lookahead_scales{1.0, 0.86, 0.72, 0.58};
+    for (double scale : goal_lookahead_scales) {
+        const double lookahead = clamp_value(goal_distance_now * scale, min_target_distance, max_target_distance);
+        const Vec2 direct_target{
+            lidar_origin.x + std::cos(goal_heading) * lookahead,
+            lidar_origin.y + std::sin(goal_heading) * lookahead,
+        };
+        if (grid_segment_is_clear(local_grid, lidar_origin, direct_target)) {
+            try_add_candidate(direct_target, open_space_ratio >= 0.55 ? 1.55 : 1.05);
+            break;
         }
     }
 
-    for (size_t i = 0; i < beams.size(); ++i) {
-        const GapBeam& beam = beams[i];
-        if (beam.distance < gate_depth_threshold ||
-            beam.distance < free_threshold ||
-            std::abs(beam.local_angle) > 0.85 * kPi) {
-            continue;
-        }
-
-        const double support_distance = support_distance_for_index(i);
-        if (support_distance < gate_depth_threshold) {
-            continue;
-        }
-
-        try_add_candidate(
-            beam.world_angle,
-            beam.local_angle,
-            support_distance,
-            0.0,
-            false);
-    }
-
-    if (persisted_spec.has_value()) {
-        for (GapCandidate& candidate : candidates) {
-            const double target_delta = distance(candidate.target, persisted_spec->position);
-            if (target_delta > 0.20) {
+    for (int y = 0; y < local_grid.height; ++y) {
+        for (int x = 0; x < local_grid.width; ++x) {
+            const size_t idx = static_cast<size_t>(local_grid.index(x, y));
+            if (local_grid.free_mask[idx] == 0U) {
                 continue;
             }
 
-            candidate.target.x = 0.30 * persisted_spec->position.x + 0.70 * candidate.target.x;
-            candidate.target.y = 0.30 * persisted_spec->position.y + 0.70 * candidate.target.y;
-            candidate.center_world_angle = angle_to(lidar_origin, candidate.target);
-            candidate.center_local_angle = wrap_angle(candidate.center_world_angle - estimate_.yaw);
-            candidate.target_distance = distance(lidar_origin, candidate.target);
-            candidate.score += 0.08;
+            const Vec2 target = local_grid.cell_center(x, y);
+            const double target_distance = distance(lidar_origin, target);
+            if (target_distance < min_target_distance || target_distance > max_target_distance) {
+                continue;
+            }
+
+            const double candidate_world_angle = angle_to(lidar_origin, target);
+            const double candidate_local_angle = wrap_angle(candidate_world_angle - estimate_.yaw);
+            if (std::abs(candidate_local_angle) > 0.88 * kPi) {
+                continue;
+            }
+
+            const double goal_alignment_bonus =
+                std::abs(wrap_angle(candidate_local_angle - goal_local_angle)) <= 12.0 * kPi / 180.0
+                    ? 0.30
+                    : 0.0;
+            try_add_candidate(target, goal_alignment_bonus);
         }
     }
 
-    std::sort(candidates.begin(), candidates.end(), [](const GapCandidate& a, const GapCandidate& b) {
+    if (candidates.empty()) {
+        gates_.clear();
+        gate_specs_.clear();
+        if (persisted_spec.has_value() && persisted_gate.has_value()) {
+            GateSpec spec = *persisted_spec;
+            spec.heading_hint = angle_to(spec.position, world_.goal());
+            gate_specs_.push_back(spec);
+
+            gate g = *persisted_gate;
+            g.x_pos = spec.position.x;
+            g.y_pos = spec.position.y;
+            g.road = cl_;
+            g.road.PSI_end = spec.heading_hint;
+            g.choose = false;
+            g.too_far = false;
+            gates_.push_back(g);
+        }
+        diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
+        return;
+    }
+
+    if (persisted_spec.has_value()) {
+        for (TargetCandidate& candidate : candidates) {
+            const double target_delta = distance(candidate.target, persisted_spec->position);
+            if (target_delta > 0.22) {
+                continue;
+            }
+
+            candidate.target.x = 0.35 * persisted_spec->position.x + 0.65 * candidate.target.x;
+            candidate.target.y = 0.35 * persisted_spec->position.y + 0.65 * candidate.target.y;
+            candidate.center_world_angle = angle_to(lidar_origin, candidate.target);
+            candidate.center_local_angle = wrap_angle(candidate.center_world_angle - estimate_.yaw);
+            candidate.target_distance = distance(lidar_origin, candidate.target);
+            candidate.score += 0.12;
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const TargetCandidate& a, const TargetCandidate& b) {
         if (std::abs(a.score - b.score) > 1e-6) {
             return a.score > b.score;
         }
-        return a.min_distance > b.min_distance;
+        if (std::abs(a.progress_score - b.progress_score) > 1e-6) {
+            return a.progress_score > b.progress_score;
+        }
+        return a.target_distance < b.target_distance;
     });
 
     gates_.clear();
     gate_specs_.clear();
-    if (candidates.empty() && persisted_spec.has_value() && persisted_gate.has_value()) {
-        GateSpec spec = *persisted_spec;
-        spec.heading_hint = angle_to(spec.position, world_.goal());
-        gate_specs_.push_back(spec);
-
-        gate g = *persisted_gate;
-        g.x_pos = spec.position.x;
-        g.y_pos = spec.position.y;
-        g.road = cl_;
-        g.road.PSI_end = spec.heading_hint;
-        g.choose = false;
-        g.too_far = false;
-        gates_.push_back(g);
-    }
-
-    const int gate_limit = 1;
+    const int gate_limit = std::max(1, config_.gap_extraction.max_candidate_gates);
     for (size_t i = 0; i < candidates.size() && static_cast<int>(gate_specs_.size()) < gate_limit; ++i) {
-        const GapCandidate& candidate = candidates[i];
+        const TargetCandidate& candidate = candidates[i];
         bool duplicate_target = false;
         for (const GateSpec& existing : gate_specs_) {
-            if (distance(existing.position, candidate.target) < 0.12) {
+            if (distance(existing.position, candidate.target) < 0.14) {
                 duplicate_target = true;
                 break;
             }
