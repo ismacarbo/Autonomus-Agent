@@ -14,6 +14,8 @@ namespace {
 
 constexpr int kMotorWarmupMs = 350;
 constexpr int kStartScanRetryCount = 3;
+constexpr double kMinScanCollectionWindowS = 0.45;
+constexpr double kMinPartialScanCoverageDeg = 240.0;
 
 std::string bytes_to_hex(const std::vector<std::uint8_t>& data) {
     std::ostringstream oss;
@@ -26,6 +28,34 @@ std::string bytes_to_hex(const std::vector<std::uint8_t>& data) {
 
 double deg_to_rad(double angle_deg) {
     return angle_deg * 3.14159265358979323846 / 180.0;
+}
+
+double scan_angular_coverage_deg(const std::vector<RPLidarA1::ScanPoint>& scan) {
+    if (scan.size() < 2) {
+        return 0.0;
+    }
+
+    double previous_angle = scan.front().angle_deg;
+    double unwrapped_angle = previous_angle;
+    double min_unwrapped = unwrapped_angle;
+    double max_unwrapped = unwrapped_angle;
+
+    for (std::size_t i = 1; i < scan.size(); ++i) {
+        double delta = scan[i].angle_deg - previous_angle;
+        while (delta <= -180.0) {
+            delta += 360.0;
+        }
+        while (delta > 180.0) {
+            delta -= 360.0;
+        }
+
+        unwrapped_angle += delta;
+        min_unwrapped = std::min(min_unwrapped, unwrapped_angle);
+        max_unwrapped = std::max(max_unwrapped, unwrapped_angle);
+        previous_angle = scan[i].angle_deg;
+    }
+
+    return std::max(0.0, max_unwrapped - min_unwrapped);
 }
 
 }  // namespace
@@ -306,9 +336,8 @@ RPLidarA1::Measurement RPLidarA1::read_scan_node() {
 
 std::vector<RPLidarA1::ScanPoint> RPLidarA1::grab_scan(int min_points, std::size_t max_bad_packets) {
     min_points = std::max(min_points, 1);
-    const int partial_scan_min_points = std::max(24, min_points / 2);
     const auto collection_deadline =
-        std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(0.12, timeout_s_ * 2.0));
+        std::chrono::steady_clock::now() + std::chrono::duration<double>(std::max(kMinScanCollectionWindowS, timeout_s_ * 4.0));
 
     std::vector<ScanPoint> scan;
     std::size_t bad_packets = 0;
@@ -321,7 +350,8 @@ std::vector<RPLidarA1::ScanPoint> RPLidarA1::grab_scan(int min_points, std::size
                     return scan;
                 }
                 if (std::chrono::steady_clock::now() >= collection_deadline &&
-                    static_cast<int>(scan.size()) >= partial_scan_min_points) {
+                    static_cast<int>(scan.size()) >= min_points &&
+                    scan_angular_coverage_deg(scan) >= kMinPartialScanCoverageDeg) {
                     return scan;
                 }
                 scan.clear();
@@ -341,14 +371,16 @@ std::vector<RPLidarA1::ScanPoint> RPLidarA1::grab_scan(int min_points, std::size
             }
 
             if (std::chrono::steady_clock::now() >= collection_deadline &&
-                static_cast<int>(scan.size()) >= partial_scan_min_points) {
+                static_cast<int>(scan.size()) >= min_points &&
+                scan_angular_coverage_deg(scan) >= kMinPartialScanCoverageDeg) {
                 return scan;
             }
             bad_packets = 0;
         } catch (const LidarError&) {
             ++bad_packets;
             if (std::chrono::steady_clock::now() >= collection_deadline &&
-                static_cast<int>(scan.size()) >= partial_scan_min_points) {
+                static_cast<int>(scan.size()) >= min_points &&
+                scan_angular_coverage_deg(scan) >= kMinPartialScanCoverageDeg) {
                 return scan;
             }
             if (bad_packets > max_bad_packets) {
