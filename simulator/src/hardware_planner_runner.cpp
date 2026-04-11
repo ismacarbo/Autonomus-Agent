@@ -81,6 +81,13 @@ Vec2 lidar_origin_world(const Vec2& base_position, double base_yaw, const LidarL
     return {base_position.x + rotated.x, base_position.y + rotated.y};
 }
 
+double planning_lidar_range(const HardwarePlannerConfig& config) {
+    return clamp_value(
+        config.gap_extraction.planning_max_range_m,
+        config.localization.min_valid_range_m + 0.05,
+        config.localization.max_range_m);
+}
+
 int signum(int value) {
     return (value > 0) - (value < 0);
 }
@@ -1592,12 +1599,13 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     }
 
     const Vec2 lidar_origin = lidar_origin_world(estimate_.position, estimate_.yaw, config_.localization);
+    const double planning_range = planning_lidar_range(config_);
     std::vector<GapBeam> beams;
     beams.reserve(scan.size());
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m ||
+            point.distance_m > planning_range ||
             scan_point_is_self_hit(point)) {
             continue;
         }
@@ -1620,7 +1628,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     const double gate_depth_threshold = std::min(
         config_.gap_extraction.min_target_distance_m + geometry_.body_length,
-        config_.localization.max_range_m * 0.85);
+        planning_range * 0.85);
     const double free_threshold = std::max(
         std::max(
             config_.gap_extraction.free_distance_threshold_m,
@@ -1764,7 +1772,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const double forward_alignment =
             0.5 * (1.0 + std::cos(center_local_angle));
         const double clearance_score = clamp_value(
-            min_distance / std::max(config_.localization.max_range_m, 1e-3),
+            min_distance / std::max(planning_range, 1e-3),
             0.0,
             1.0);
         const double width_score = clamp_value(width_m / std::max(required_gap_width, 1e-3), 0.0, 2.0);
@@ -2490,8 +2498,9 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     }
 
     const Vec2 lidar_origin = lidar_origin_world(estimate_.position, estimate_.yaw, config_.localization);
+    const double planning_range = planning_lidar_range(config_);
     const double target_distance = distance(lidar_origin, target);
-    if (!(target_distance > 0.05) || target_distance > config_.localization.max_range_m) {
+    if (!(target_distance > 0.05) || target_distance > planning_range) {
         return false;
     }
 
@@ -2503,7 +2512,7 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
-            point.distance_m > config_.localization.max_range_m ||
+            point.distance_m > planning_range ||
             scan_point_is_self_hit(point)) {
             continue;
         }
