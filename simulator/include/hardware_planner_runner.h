@@ -84,6 +84,7 @@ struct GapExtractionConfig {
     double startup_scan_duration_s = 1.6;
     double startup_scan_yaw_rate = 0.70;
     double gap_goal_tolerance_m = 0.18;
+    double gap_crossing_margin_m = 0.02;
     double gap_goal_cruise_speed_mps = 0.16;
     double straight_path_sample_spacing_m = 0.06;
     double map_point_resolution_m = 0.03;
@@ -317,6 +318,10 @@ class HardwarePlannerRunner {
     void update_lidar_hits_world(const std::vector<RPLidarA1::ScanPoint>& scan);
     void rebuild_dynamic_gap_gates(const std::vector<RPLidarA1::ScanPoint>& scan);
     void update_unstructured_gap_workflow(double dt);
+    void clear_locked_gap_goal();
+    void set_locked_gap_goal(const Vec2& target);
+    double locked_gap_longitudinal_progress(const Vec2& position) const;
+    double locked_gap_lateral_offset(const Vec2& position) const;
     void publish_locked_gap_goal();
     bool startup_scan_active() const;
 
@@ -402,10 +407,13 @@ class HardwarePlannerRunner {
     double structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
     Vec2 structured_goal_position_{};
     std::optional<Vec2> locked_gap_goal_;
+    Vec2 locked_gap_approach_direction_{1.0, 0.0};
+    double locked_gap_corridor_half_width_m_ = 0.0;
     double startup_scan_elapsed_s_ = 0.0;
     double startup_scan_direction_ = 1.0;
     bool structured_goal_ready_ = false;
     bool startup_scan_complete_ = false;
+    bool locked_gap_crossed_ = false;
     bool yaw_offset_initialized_ = false;
     bool have_raw_imu_yaw_ = false;
     bool encoder_ticks_initialized_ = false;
