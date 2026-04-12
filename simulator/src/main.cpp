@@ -917,6 +917,11 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"controller_pwm_right\":" << sample.controller_pwm_right
         << ",\"controller_target_pwm_left\":" << sample.controller_target_pwm_left
         << ",\"controller_target_pwm_right\":" << sample.controller_target_pwm_right
+        << ",\"controller_left_encoder_ticks\":" << sample.controller_left_encoder_ticks
+        << ",\"controller_right_encoder_ticks\":" << sample.controller_right_encoder_ticks
+        << ",\"controller_left_encoder_delta\":" << sample.controller_left_encoder_delta
+        << ",\"controller_right_encoder_delta\":" << sample.controller_right_encoder_delta
+        << ",\"controller_encoder_dt_ms\":" << sample.controller_encoder_dt_ms
         << ",\"controller_safety_flags\":" << sample.controller_safety_flags
         << ",\"controller_motor_flags\":" << sample.controller_motor_flags
         << ",\"controller_status_flags\":" << sample.controller_status_flags
@@ -3106,6 +3111,15 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
     std::vector<double> target_yaw_rate;
     std::vector<double> left_pwm;
     std::vector<double> right_pwm;
+    std::vector<double> controller_left_pwm;
+    std::vector<double> controller_right_pwm;
+    std::vector<double> controller_target_pwm_left;
+    std::vector<double> controller_target_pwm_right;
+    std::vector<double> controller_left_encoder_ticks;
+    std::vector<double> controller_right_encoder_ticks;
+    std::vector<double> controller_left_encoder_delta;
+    std::vector<double> controller_right_encoder_delta;
+    std::vector<double> controller_encoder_dt_ms;
     std::vector<double> dist_goal;
     std::vector<double> min_lidar;
     std::vector<double> front_lidar;
@@ -3129,6 +3143,15 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
     target_yaw_rate.reserve(hardware.history.size());
     left_pwm.reserve(hardware.history.size());
     right_pwm.reserve(hardware.history.size());
+    controller_left_pwm.reserve(hardware.history.size());
+    controller_right_pwm.reserve(hardware.history.size());
+    controller_target_pwm_left.reserve(hardware.history.size());
+    controller_target_pwm_right.reserve(hardware.history.size());
+    controller_left_encoder_ticks.reserve(hardware.history.size());
+    controller_right_encoder_ticks.reserve(hardware.history.size());
+    controller_left_encoder_delta.reserve(hardware.history.size());
+    controller_right_encoder_delta.reserve(hardware.history.size());
+    controller_encoder_dt_ms.reserve(hardware.history.size());
     dist_goal.reserve(hardware.history.size());
     min_lidar.reserve(hardware.history.size());
     front_lidar.reserve(hardware.history.size());
@@ -3155,6 +3178,15 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
         target_yaw_rate.push_back(sample.target_yaw_rate * 180.0 / 3.14159265358979323846);
         left_pwm.push_back(static_cast<double>(sample.pwm_left));
         right_pwm.push_back(static_cast<double>(sample.pwm_right));
+        controller_left_pwm.push_back(static_cast<double>(sample.controller_pwm_left));
+        controller_right_pwm.push_back(static_cast<double>(sample.controller_pwm_right));
+        controller_target_pwm_left.push_back(static_cast<double>(sample.controller_target_pwm_left));
+        controller_target_pwm_right.push_back(static_cast<double>(sample.controller_target_pwm_right));
+        controller_left_encoder_ticks.push_back(static_cast<double>(sample.controller_left_encoder_ticks));
+        controller_right_encoder_ticks.push_back(static_cast<double>(sample.controller_right_encoder_ticks));
+        controller_left_encoder_delta.push_back(static_cast<double>(sample.controller_left_encoder_delta));
+        controller_right_encoder_delta.push_back(static_cast<double>(sample.controller_right_encoder_delta));
+        controller_encoder_dt_ms.push_back(sample.controller_encoder_dt_ms);
         dist_goal.push_back(sample.distance_to_goal);
         min_lidar.push_back(sample.min_lidar);
         front_lidar.push_back(sample.front_lidar);
@@ -3180,6 +3212,15 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
         target_yaw_rate.push_back(sample.target_yaw_rate * 180.0 / 3.14159265358979323846);
         left_pwm.push_back(static_cast<double>(sample.pwm_left));
         right_pwm.push_back(static_cast<double>(sample.pwm_right));
+        controller_left_pwm.push_back(static_cast<double>(sample.controller_pwm_left));
+        controller_right_pwm.push_back(static_cast<double>(sample.controller_right_pwm));
+        controller_target_pwm_left.push_back(static_cast<double>(sample.controller_target_pwm_left));
+        controller_target_pwm_right.push_back(static_cast<double>(sample.controller_target_pwm_right));
+        controller_left_encoder_ticks.push_back(static_cast<double>(sample.controller_left_encoder_ticks));
+        controller_right_encoder_ticks.push_back(static_cast<double>(sample.controller_right_encoder_ticks));
+        controller_left_encoder_delta.push_back(static_cast<double>(sample.controller_left_encoder_delta));
+        controller_right_encoder_delta.push_back(static_cast<double>(sample.controller_right_encoder_delta));
+        controller_encoder_dt_ms.push_back(sample.controller_encoder_dt_ms);
         dist_goal.push_back(sample.distance_to_goal);
         min_lidar.push_back(sample.min_lidar);
         front_lidar.push_back(sample.front_lidar);
@@ -3290,6 +3331,57 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
                                                                           {&left_pwm, "PWM left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
                                                                           {&right_pwm, "PWM right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
                                                                       });
+                    ImPlot::EndPlot();
+                }
+                ImPlot::EndSubplots();
+            }
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Drivetrain")) {
+            if (ImPlot::BeginSubplots("HardwareDrivetrainSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+                if (ImPlot::BeginPlot("Controller PWM Echo")) {
+                    setup_time_plot_axes(time, "PWM");
+                    plot_series(time, controller_target_pwm_left, "target PWM left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, controller_target_pwm_right, "target PWM right", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
+                    plot_series(time, controller_left_pwm, "PWM left", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, controller_right_pwm, "PWM right", ImVec4(0.93f, 0.43f, 0.62f, 1.0f));
+                    render_plot_hover_overlay("Controller PWM Echo", time, {
+                                                                                {&controller_target_pwm_left, "target PWM left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                                {&controller_target_pwm_right, "target PWM right", ImVec4(0.48f, 0.87f, 0.60f, 1.0f)},
+                                                                                {&controller_left_pwm, "PWM left", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                                {&controller_right_pwm, "PWM right", ImVec4(0.93f, 0.43f, 0.62f, 1.0f)},
+                                                                            });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Controller Encoder Delta")) {
+                    setup_time_plot_axes(time, "ticks / sample");
+                    plot_series(time, controller_left_encoder_delta, "dTicks left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, controller_right_encoder_delta, "dTicks right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Controller Encoder Delta", time, {
+                                                                                   {&controller_left_encoder_delta, "dTicks left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                                   {&controller_right_encoder_delta, "dTicks right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                               });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Controller Encoder Ticks")) {
+                    setup_time_plot_axes(time, "ticks total");
+                    plot_series(time, controller_left_encoder_ticks, "ticks left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    plot_series(time, controller_right_encoder_ticks, "ticks right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    render_plot_hover_overlay("Controller Encoder Ticks", time, {
+                                                                                   {&controller_left_encoder_ticks, "ticks left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                                   {&controller_right_encoder_ticks, "ticks right", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                               });
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("Encoder dt / Speed")) {
+                    setup_time_plot_axes(time, "mixed");
+                    plot_series(time, controller_encoder_dt_ms, "enc dt [ms]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
+                    plot_series(time, speed, "speed [m/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
+                    render_plot_hover_overlay("Encoder dt / Speed", time, {
+                                                                              {&controller_encoder_dt_ms, "enc dt [ms]", ImVec4(0.96f, 0.66f, 0.28f, 1.0f)},
+                                                                              {&speed, "speed [m/s]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f)},
+                                                                          });
                     ImPlot::EndPlot();
                 }
                 ImPlot::EndSubplots();
@@ -3889,6 +3981,17 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::Text("goal distance = %s",
                     hardware_goal_distance_label(hardware.frame, hardware.scene.world.environment_mode()).c_str());
         ImGui::Text("tracking: cte %.2f m   hdg %.2f deg", hardware.frame.tracker_cross_track_error, hardware.frame.tracker_heading_error_deg);
+        ImGui::Text("controller pwm = %d / %d   target = %d / %d",
+                    hardware.frame.has_latest_sample ? static_cast<int>(hardware.frame.latest_sample.controller_pwm_left) : 0,
+                    hardware.frame.has_latest_sample ? static_cast<int>(hardware.frame.latest_sample.controller_pwm_right) : 0,
+                    hardware.frame.has_latest_sample ? static_cast<int>(hardware.frame.latest_sample.controller_target_pwm_left) : 0,
+                    hardware.frame.has_latest_sample ? static_cast<int>(hardware.frame.latest_sample.controller_target_pwm_right) : 0);
+        ImGui::Text("enc ticks = %d / %d   dTicks = %d / %d   dt = %.0f ms",
+                    hardware.frame.vehicle.left_encoder_ticks,
+                    hardware.frame.vehicle.right_encoder_ticks,
+                    hardware.frame.vehicle.left_encoder_delta,
+                    hardware.frame.vehicle.right_encoder_delta,
+                    hardware.frame.vehicle.encoder_dt_ms);
         ImGui::Text("planner ref = %s   dynamic gaps = %s   stall boost = %s",
                     hardware.frame.planner_has_reference ? "yes" : "no",
                     hardware.frame.dynamic_gap_gates ? "yes" : "no",

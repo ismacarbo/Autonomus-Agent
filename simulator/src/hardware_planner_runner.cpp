@@ -980,6 +980,11 @@ void HardwarePlannerRunner::reset() {
     wheel_speed_error_integral_right_ = 0.0;
     last_left_encoder_ticks_ = 0;
     last_right_encoder_ticks_ = 0;
+    latest_controller_left_encoder_ticks_ = 0;
+    latest_controller_right_encoder_ticks_ = 0;
+    latest_controller_left_encoder_delta_ = 0;
+    latest_controller_right_encoder_delta_ = 0;
+    latest_controller_encoder_dt_ms_ = 0.0;
     yaw_offset_initialized_ = false;
     have_raw_imu_yaw_ = false;
     encoder_ticks_initialized_ = false;
@@ -1406,16 +1411,9 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         return;
     }
 
-    if (!encoder_ticks_initialized_) {
-        last_left_encoder_ticks_ = telemetry.ticks_left;
-        last_right_encoder_ticks_ = telemetry.ticks_right;
-        encoder_ticks_initialized_ = true;
-    }
-
-    const std::int32_t left_delta_ticks = telemetry.ticks_left - last_left_encoder_ticks_;
-    const std::int32_t right_delta_ticks = telemetry.ticks_right - last_right_encoder_ticks_;
-    last_left_encoder_ticks_ = telemetry.ticks_left;
-    last_right_encoder_ticks_ = telemetry.ticks_right;
+    std::int32_t left_delta_ticks = 0;
+    std::int32_t right_delta_ticks = 0;
+    update_controller_encoder_snapshot(telemetry, &left_delta_ticks, &right_delta_ticks);
 
     const double encoder_dt =
         telemetry.enc_dt_ms > 0
@@ -1480,20 +1478,41 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     sync_estimate_from_ekf_state();
 }
 
-void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
-                                                                            double dt,
-                                                                            double measured_yaw,
-                                                                            double measured_yaw_rate) {
+void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerTelemetry& telemetry,
+                                                               std::int32_t* left_delta_ticks,
+                                                               std::int32_t* right_delta_ticks) {
     if (!encoder_ticks_initialized_) {
         last_left_encoder_ticks_ = telemetry.ticks_left;
         last_right_encoder_ticks_ = telemetry.ticks_right;
         encoder_ticks_initialized_ = true;
     }
 
-    const std::int32_t left_delta_ticks = telemetry.ticks_left - last_left_encoder_ticks_;
-    const std::int32_t right_delta_ticks = telemetry.ticks_right - last_right_encoder_ticks_;
+    const std::int32_t left_delta = telemetry.ticks_left - last_left_encoder_ticks_;
+    const std::int32_t right_delta = telemetry.ticks_right - last_right_encoder_ticks_;
     last_left_encoder_ticks_ = telemetry.ticks_left;
     last_right_encoder_ticks_ = telemetry.ticks_right;
+
+    latest_controller_left_encoder_ticks_ = telemetry.ticks_left;
+    latest_controller_right_encoder_ticks_ = telemetry.ticks_right;
+    latest_controller_left_encoder_delta_ = left_delta;
+    latest_controller_right_encoder_delta_ = right_delta;
+    latest_controller_encoder_dt_ms_ = static_cast<double>(telemetry.enc_dt_ms);
+
+    if (left_delta_ticks != nullptr) {
+        *left_delta_ticks = left_delta;
+    }
+    if (right_delta_ticks != nullptr) {
+        *right_delta_ticks = right_delta;
+    }
+}
+
+void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
+                                                                            double dt,
+                                                                            double measured_yaw,
+                                                                            double measured_yaw_rate) {
+    std::int32_t left_delta_ticks = 0;
+    std::int32_t right_delta_ticks = 0;
+    update_controller_encoder_snapshot(telemetry, &left_delta_ticks, &right_delta_ticks);
 
     const double effective_dt =
         telemetry.enc_dt_ms > 0U
@@ -3250,6 +3269,21 @@ void HardwarePlannerRunner::push_history() {
     const std::uint16_t controller_error_code = observation.have_controller_telemetry
                                                     ? observation.controller.error_code
                                                     : static_cast<std::uint16_t>(0);
+    const std::int32_t controller_left_encoder_ticks = observation.have_controller_telemetry
+                                                           ? latest_controller_left_encoder_ticks_
+                                                           : static_cast<std::int32_t>(0);
+    const std::int32_t controller_right_encoder_ticks = observation.have_controller_telemetry
+                                                            ? latest_controller_right_encoder_ticks_
+                                                            : static_cast<std::int32_t>(0);
+    const std::int32_t controller_left_encoder_delta = observation.have_controller_telemetry
+                                                           ? latest_controller_left_encoder_delta_
+                                                           : static_cast<std::int32_t>(0);
+    const std::int32_t controller_right_encoder_delta = observation.have_controller_telemetry
+                                                            ? latest_controller_right_encoder_delta_
+                                                            : static_cast<std::int32_t>(0);
+    const double controller_encoder_dt_ms = observation.have_controller_telemetry
+                                                ? latest_controller_encoder_dt_ms_
+                                                : 0.0;
 
     history_.push_back({
         sim_time_,
@@ -3295,6 +3329,11 @@ void HardwarePlannerRunner::push_history() {
         controller_pwm_right,
         controller_target_pwm_left,
         controller_target_pwm_right,
+        controller_left_encoder_ticks,
+        controller_right_encoder_ticks,
+        controller_left_encoder_delta,
+        controller_right_encoder_delta,
+        controller_encoder_dt_ms,
         controller_safety_flags,
         controller_motor_flags,
         controller_status_flags,

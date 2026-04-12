@@ -184,6 +184,11 @@ struct HardwareTelemetrySample {
     std::int16_t controller_pwm_right = 0;
     std::int16_t controller_target_pwm_left = 0;
     std::int16_t controller_target_pwm_right = 0;
+    std::int32_t controller_left_encoder_ticks = 0;
+    std::int32_t controller_right_encoder_ticks = 0;
+    std::int32_t controller_left_encoder_delta = 0;
+    std::int32_t controller_right_encoder_delta = 0;
+    double controller_encoder_dt_ms = 0.0;
     std::uint16_t controller_safety_flags = 0;
     std::uint16_t controller_motor_flags = 0;
     std::uint16_t controller_status_flags = 0;
@@ -307,6 +312,9 @@ class HardwarePlannerRunner {
                                                          double dt,
                                                          double measured_yaw,
                                                          double measured_yaw_rate);
+    void update_controller_encoder_snapshot(const ControllerTelemetry& telemetry,
+                                           std::int32_t* left_delta_ticks,
+                                           std::int32_t* right_delta_ticks);
     double stabilize_structured_track_s(double candidate_s,
                                         double max_forward_step,
                                         bool closed_loop,
@@ -402,6 +410,11 @@ class HardwarePlannerRunner {
     double wheel_speed_error_integral_right_ = 0.0;
     std::int32_t last_left_encoder_ticks_ = 0;
     std::int32_t last_right_encoder_ticks_ = 0;
+    std::int32_t latest_controller_left_encoder_ticks_ = 0;
+    std::int32_t latest_controller_right_encoder_ticks_ = 0;
+    std::int32_t latest_controller_left_encoder_delta_ = 0;
+    std::int32_t latest_controller_right_encoder_delta_ = 0;
+    double latest_controller_encoder_dt_ms_ = 0.0;
     int chosen_gate_index_ = -1;
     double structured_goal_progress_target_ = 0.0;
     double structured_progress_s_ = 0.0;

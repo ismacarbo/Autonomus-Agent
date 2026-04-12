@@ -466,6 +466,11 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.controller_pwm_right);
     write_pod(out, sample.controller_target_pwm_left);
     write_pod(out, sample.controller_target_pwm_right);
+    write_pod(out, sample.controller_left_encoder_ticks);
+    write_pod(out, sample.controller_right_encoder_ticks);
+    write_pod(out, sample.controller_left_encoder_delta);
+    write_pod(out, sample.controller_right_encoder_delta);
+    write_pod(out, sample.controller_encoder_dt_ms);
     write_pod(out, sample.controller_safety_flags);
     write_pod(out, sample.controller_motor_flags);
     write_pod(out, sample.controller_status_flags);
@@ -517,6 +522,11 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->controller_pwm_right) &&
            read_pod(data, offset, &sample->controller_target_pwm_left) &&
            read_pod(data, offset, &sample->controller_target_pwm_right) &&
+           read_pod(data, offset, &sample->controller_left_encoder_ticks) &&
+           read_pod(data, offset, &sample->controller_right_encoder_ticks) &&
+           read_pod(data, offset, &sample->controller_left_encoder_delta) &&
+           read_pod(data, offset, &sample->controller_right_encoder_delta) &&
+           read_pod(data, offset, &sample->controller_encoder_dt_ms) &&
            read_pod(data, offset, &sample->controller_safety_flags) &&
            read_pod(data, offset, &sample->controller_motor_flags) &&
            read_pod(data, offset, &sample->controller_status_flags) &&
@@ -1195,6 +1205,7 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
 
 LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) {
     const StructuredDisplayRemap remap = make_structured_display_remap(runner.world());
+    const RealRobotObservation& observation = runner.bridge().observation();
     LiveFrameSnapshot frame;
     frame.sim_time = runner.sim_time();
     frame.step_count = runner.step_count();
@@ -1260,6 +1271,11 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
         geometry.max_steer_angle);
     frame.vehicle.left_pwm = command.pwm_left;
     frame.vehicle.right_pwm = command.pwm_right;
+    if (observation.have_controller_telemetry) {
+        frame.vehicle.left_encoder_ticks = observation.controller.ticks_left;
+        frame.vehicle.right_encoder_ticks = observation.controller.ticks_right;
+        frame.vehicle.encoder_dt_ms = static_cast<double>(observation.controller.enc_dt_ms);
+    }
 
     const auto& runtime_gate_specs = runner.gate_specs();
     const auto& planner_gates = runner.gates();
@@ -1282,6 +1298,11 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     if (!runner.history().empty()) {
         frame.has_latest_sample = true;
         frame.latest_sample = runner.history().back();
+        frame.vehicle.left_encoder_ticks = frame.latest_sample.controller_left_encoder_ticks;
+        frame.vehicle.right_encoder_ticks = frame.latest_sample.controller_right_encoder_ticks;
+        frame.vehicle.left_encoder_delta = frame.latest_sample.controller_left_encoder_delta;
+        frame.vehicle.right_encoder_delta = frame.latest_sample.controller_right_encoder_delta;
+        frame.vehicle.encoder_dt_ms = frame.latest_sample.controller_encoder_dt_ms;
     }
 
     apply_structured_display_remap(remap, &frame);
