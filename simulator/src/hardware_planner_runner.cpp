@@ -97,6 +97,18 @@ bool is_inside_bounds(const WorldMap& world, const Vec2& position) {
            position.y >= bounds.min_y && position.y <= bounds.max_y;
 }
 
+Vec2 clamp_point_to_bounds(const WorldMap& world, const Vec2& position, double margin = 0.0) {
+    const Rect& bounds = world.bounds();
+    const double min_x = bounds.min_x + margin;
+    const double max_x = bounds.max_x - margin;
+    const double min_y = bounds.min_y + margin;
+    const double max_y = bounds.max_y - margin;
+    return {
+        clamp_value(position.x, std::min(min_x, max_x), std::max(min_x, max_x)),
+        clamp_value(position.y, std::min(min_y, max_y), std::max(min_y, max_y)),
+    };
+}
+
 Vec2 lidar_origin_world(const Vec2& base_position, double base_yaw, const LidarLocalizationConfig& cfg) {
     const Vec2 local_offset{cfg.lidar_x_offset, cfg.lidar_y_offset};
     const Vec2 rotated = rotate(local_offset, base_yaw);
@@ -1644,6 +1656,23 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
         return;
     }
 
+    const bool unstructured_perception_mode = unstructured_perception_only_mode();
+    const double motion_speed =
+        std::max(std::abs(estimate_.speed), std::abs(last_command_.target_speed));
+    const double motion_yaw_rate =
+        std::max(std::abs(estimate_.yaw_rate), std::abs(last_command_.target_yaw_rate));
+
+    if (unstructured_perception_mode) {
+        // In unstructured mode the "map" is a local LiDAR accumulation built from the
+        // robot's own estimated frame. Allowing broad scan-matching updates here can
+        // make the estimate slide or jump during near in-place turns. Keep LiDAR as a
+        // perception source for gap extraction, and only accept small translation
+        // corrections while the robot is actually making forward progress.
+        if (motion_speed < 0.05 || motion_yaw_rate > 0.45) {
+            return;
+        }
+    }
+
     const double base_score = score_candidate_pose(estimate_.position, estimate_.yaw, scan);
     if (!std::isfinite(base_score)) {
         return;
@@ -1683,8 +1712,35 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
     }
 
     if (std::isfinite(best_score)) {
-        estimator_.update_lidar_pose(best_position, best_yaw, !yaw_offset_initialized_);
+        Vec2 corrected_position = best_position;
+        if (unstructured_perception_mode) {
+            const Vec2 correction_delta{
+                best_position.x - estimate_.position.x,
+                best_position.y - estimate_.position.y,
+            };
+            const double correction_norm = vector_norm(correction_delta);
+            double max_correction = clamp_value(0.03 + 0.45 * motion_speed, 0.03, 0.08);
+            if (motion_yaw_rate > 0.25) {
+                max_correction = std::min(max_correction, 0.04);
+            }
+            if (correction_norm > max_correction && correction_norm > 1e-6) {
+                const double scale = max_correction / correction_norm;
+                corrected_position = {
+                    estimate_.position.x + correction_delta.x * scale,
+                    estimate_.position.y + correction_delta.y * scale,
+                };
+            }
+            corrected_position = clamp_point_to_bounds(world_, corrected_position);
+        }
+
+        estimator_.update_lidar_pose(corrected_position, best_yaw, !yaw_offset_initialized_);
         sync_estimate_from_ekf_state();
+        if (unstructured_perception_mode && !is_inside_bounds(world_, estimate_.position)) {
+            estimator_.update_lidar_pose(clamp_point_to_bounds(world_, estimate_.position),
+                                         estimate_.yaw,
+                                         false);
+            sync_estimate_from_ekf_state();
+        }
         if (have_raw_imu_yaw_) {
             yaw_offset_ = wrap_angle(estimate_.yaw - last_raw_imu_yaw_);
             yaw_offset_initialized_ = true;
@@ -1756,7 +1812,14 @@ double HardwarePlannerRunner::score_candidate_pose_against_perception_map(
         return std::numeric_limits<double>::infinity();
     }
 
+    if (!is_inside_bounds(world_, position)) {
+        return std::numeric_limits<double>::infinity();
+    }
+
     const Vec2 origin = lidar_origin_world(position, yaw, config_.localization);
+    if (!is_inside_bounds(world_, origin)) {
+        return std::numeric_limits<double>::infinity();
+    }
     const double local_radius = config_.localization.max_range_m + 0.40;
     const double local_radius_sq = local_radius * local_radius;
 
