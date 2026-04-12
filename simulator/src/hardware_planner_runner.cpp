@@ -252,6 +252,19 @@ int clamp_motion_pwm_band(int pwm, int min_pwm, int max_pwm) {
     return signum(pwm) * magnitude;
 }
 
+int slew_limit_pwm(int previous_pwm, int target_pwm, int max_delta) {
+    if (max_delta <= 0) {
+        return target_pwm;
+    }
+    if (target_pwm > previous_pwm + max_delta) {
+        return previous_pwm + max_delta;
+    }
+    if (target_pwm < previous_pwm - max_delta) {
+        return previous_pwm - max_delta;
+    }
+    return target_pwm;
+}
+
 double structured_tracking_speed_scale(double distance_to_goal,
                                        double slowdown_radius,
                                        double heading_error_deg,
@@ -2561,6 +2574,31 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     startup_scan_complete_ =
         startup_scan_elapsed_s_ >= std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
 
+    if (!startup_scan_complete_ &&
+        perception_map_ready() &&
+        !gate_specs_.empty()) {
+        const double front_open_threshold = std::max(
+            config_.gap_extraction.free_distance_threshold_m,
+            config_.localization.obstacle_stop_distance_m + 0.08);
+        const bool front_is_open =
+            estimate_.front_lidar_distance <= 0.0 ||
+            estimate_.front_lidar_distance >= front_open_threshold;
+
+        bool have_forward_candidate = false;
+        for (const GateSpec& spec : gate_specs_) {
+            const double heading_error = std::abs(
+                wrap_angle(angle_to(estimate_.position, spec.position) - estimate_.yaw));
+            if (heading_error <= 28.0 * kPi / 180.0) {
+                have_forward_candidate = true;
+                break;
+            }
+        }
+
+        if (front_is_open || have_forward_candidate) {
+            startup_scan_complete_ = true;
+        }
+    }
+
     if (!startup_scan_complete_) {
         gates_.clear();
         gate_specs_.clear();
@@ -2583,18 +2621,41 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     }
 
     size_t preferred_gate_index = 0;
+    int best_bucket = std::numeric_limits<int>::max();
+    double best_forward_progress = -std::numeric_limits<double>::infinity();
     double best_heading_error = std::numeric_limits<double>::infinity();
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const Vec2& target = gate_specs_[i].position;
         const double heading_error = std::abs(
             wrap_angle(angle_to(estimate_.position, target) - estimate_.yaw));
-        if (heading_error <= 0.55 * kPi) {
-            preferred_gate_index = i;
-            best_heading_error = heading_error;
-            break;
+        const double gate_distance = distance(estimate_.position, target);
+        const double forward_progress =
+            std::max(std::cos(heading_error), 0.0) * gate_distance;
+        int heading_bucket = 3;
+        if (heading_error <= 18.0 * kPi / 180.0) {
+            heading_bucket = 0;
+        } else if (heading_error <= 35.0 * kPi / 180.0) {
+            heading_bucket = 1;
+        } else if (heading_error <= 60.0 * kPi / 180.0) {
+            heading_bucket = 2;
         }
-        if (heading_error < best_heading_error) {
+
+        const bool better_bucket = heading_bucket < best_bucket;
+        const bool better_forward =
+            heading_bucket == best_bucket &&
+            heading_bucket < 3 &&
+            (forward_progress > best_forward_progress + 1e-6 ||
+             (std::abs(forward_progress - best_forward_progress) <= 1e-6 &&
+              heading_error < best_heading_error));
+        const bool better_heading_only =
+            heading_bucket == best_bucket &&
+            heading_bucket >= 3 &&
+            heading_error < best_heading_error;
+
+        if (better_bucket || better_forward || better_heading_only) {
             preferred_gate_index = i;
+            best_bucket = heading_bucket;
+            best_forward_progress = forward_progress;
             best_heading_error = heading_error;
         }
     }
@@ -2777,6 +2838,8 @@ void HardwarePlannerRunner::update_selected_trajectory() {
 }
 
 void HardwarePlannerRunner::compute_control_command(double dt) {
+    const int previous_pwm_left = last_command_.pwm_left;
+    const int previous_pwm_right = last_command_.pwm_right;
     last_command_ = {};
     safety_stop_active_ = false;
     stall_boost_active_ = false;
@@ -3142,15 +3205,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.pwm_right,
             config_.pwm.min_effective_pwm,
             config_.pwm.max_pwm);
-        // Experimental unstructured hardware validation mode:
-        // push the active wheel pair to full available PWM while preserving
-        // the left/right ratio so steering authority is not lost.
-        if (world_.environment_mode() == EnvironmentMode::UnstructuredGates && stall_boost_active_) {
-            scale_motion_pwm_pair_to_full_scale(
-                config_.pwm.max_pwm,
-                &last_command_.pwm_left,
-                &last_command_.pwm_right);
-        }
+    }
+
+    const int pwm_slew_limit =
+        commanding_motion
+            ? (stall_boost_active_ ? 70 : 42)
+            : 110;
+    last_command_.pwm_left = slew_limit_pwm(previous_pwm_left, last_command_.pwm_left, pwm_slew_limit);
+    last_command_.pwm_right = slew_limit_pwm(previous_pwm_right, last_command_.pwm_right, pwm_slew_limit);
+    if (!commanding_motion && std::abs(last_command_.pwm_left) < 4) {
+        last_command_.pwm_left = 0;
+    }
+    if (!commanding_motion && std::abs(last_command_.pwm_right) < 4) {
+        last_command_.pwm_right = 0;
     }
 
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
