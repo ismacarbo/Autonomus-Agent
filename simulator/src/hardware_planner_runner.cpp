@@ -2505,7 +2505,24 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         return;
     }
 
-    set_locked_gap_goal(gate_specs_.front().position);
+    size_t preferred_gate_index = 0;
+    double best_heading_error = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < gate_specs_.size(); ++i) {
+        const Vec2& target = gate_specs_[i].position;
+        const double heading_error = std::abs(
+            wrap_angle(angle_to(estimate_.position, target) - estimate_.yaw));
+        if (heading_error <= 0.55 * kPi) {
+            preferred_gate_index = i;
+            best_heading_error = heading_error;
+            break;
+        }
+        if (heading_error < best_heading_error) {
+            preferred_gate_index = i;
+            best_heading_error = heading_error;
+        }
+    }
+
+    set_locked_gap_goal(gate_specs_[preferred_gate_index].position);
     publish_locked_gap_goal();
 }
 
@@ -2810,10 +2827,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const double heading_error = wrap_angle(angle_to(estimate_.position, gate_target) - estimate_.yaw);
         const double heading_threshold =
             gap_recovery_turn_active_ ? recovery_turn_hold_heading : recovery_turn_enter_heading;
-        const double goal_distance_now = distance(estimate_.position, world_.goal());
-        const double goal_distance_after = distance(gate_target, world_.goal());
-        const bool gate_makes_progress = goal_distance_after <= goal_distance_now + 0.08;
-        if (std::abs(heading_error) > heading_threshold && gate_makes_progress) {
+        const double gate_distance = distance(estimate_.position, gate_target);
+        const bool gate_is_reachable =
+            gate_distance <= std::max(config_.gap_extraction.max_target_distance_m * 1.35, 0.45);
+        if (std::abs(heading_error) > heading_threshold && gate_is_reachable) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
