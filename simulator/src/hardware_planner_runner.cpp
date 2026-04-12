@@ -3339,9 +3339,11 @@ void HardwarePlannerRunner::step() {
             MotorControlMode::SafeDirectPwm);
     }
 
+    const int lidar_acquisition_min_points =
+        std::max(18, std::max(config_.localization.min_scan_points, 1) / 4);
     bridge_.pump(
         std::min(0.05, config_.nominal_dt * 0.5),
-        config_.localization.min_scan_points,
+        lidar_acquisition_min_points,
         lidar_enabled_for_current_mode());
     telemetry_ready_ = bridge_.observation().have_controller_telemetry;
     if (!telemetry_ready_) {
@@ -3409,7 +3411,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         diagnostics_.close_lidar_points = 0;
         diagnostics_.front_close_lidar_points = 0;
         diagnostics_.lidar_front_blocked = false;
-        diagnostics_.accumulated_lidar_points = 0;
+        diagnostics_.accumulated_lidar_points = static_cast<int>(lidar_map_points_.size());
         diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
     }
     lidar_compute_ms_ = elapsed_ms(lidar_start, std::chrono::steady_clock::now());

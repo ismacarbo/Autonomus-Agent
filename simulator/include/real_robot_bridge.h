@@ -76,12 +76,15 @@ class RealRobotBridge {
     void refresh_observation_timestamp();
     void refresh_controller_snapshot();
     void refresh_lidar_snapshot(std::vector<RPLidarA1::ScanPoint> scan);
+    std::vector<RPLidarA1::ScanPoint> recent_lidar_scan_or_empty(double max_age_s) const;
 
     Options options_;
     RSPSerialBridge controller_;
     RPLidarA1 lidar_;
     std::string last_lidar_error_;
     double next_lidar_reconnect_time_s_ = 0.0;
+    std::vector<RPLidarA1::ScanPoint> last_good_lidar_scan_;
+    double last_good_lidar_scan_time_s_ = 0.0;
     RealRobotObservation observation_{};
 };
 

@@ -125,23 +125,68 @@ void RealRobotBridge::poll_controller(double timeout_s) {
     refresh_observation_timestamp();
 }
 
+std::vector<RPLidarA1::ScanPoint> RealRobotBridge::recent_lidar_scan_or_empty(double max_age_s) const {
+    if (last_good_lidar_scan_.empty()) {
+        return {};
+    }
+
+    const double age_s = monotonic_seconds() - last_good_lidar_scan_time_s_;
+    if (age_s > std::max(max_age_s, 0.0)) {
+        return {};
+    }
+
+    return last_good_lidar_scan_;
+}
+
 std::vector<RPLidarA1::ScanPoint> RealRobotBridge::read_lidar_scan(int min_points) {
+    const int strict_min_points = std::max(min_points, 1);
+    const int fallback_min_points = std::max(18, strict_min_points / 4);
+
     if (!lidar_.is_connected() || !lidar_.scanning()) {
         reconnect_lidar(false);
     }
     if (!lidar_.is_connected() || !lidar_.scanning()) {
-        refresh_lidar_snapshot({});
-        return {};
+        std::vector<RPLidarA1::ScanPoint> cached_scan = recent_lidar_scan_or_empty(0.30);
+        refresh_lidar_snapshot(cached_scan);
+        return observation_.lidar_scan;
     }
+
     try {
-        std::vector<RPLidarA1::ScanPoint> scan = lidar_.grab_scan(min_points);
+        std::vector<RPLidarA1::ScanPoint> scan = lidar_.grab_scan(strict_min_points);
+        if (scan.empty() && fallback_min_points < strict_min_points) {
+            scan = lidar_.grab_scan(fallback_min_points);
+        }
         last_lidar_error_.clear();
+        if (!scan.empty()) {
+            last_good_lidar_scan_ = scan;
+            last_good_lidar_scan_time_s_ = monotonic_seconds();
+        }
         refresh_lidar_snapshot(scan);
         refresh_observation_timestamp();
         return scan;
     } catch (const LidarError& e) {
+        if (fallback_min_points < strict_min_points) {
+            try {
+                std::vector<RPLidarA1::ScanPoint> fallback_scan = lidar_.grab_scan(fallback_min_points);
+                last_lidar_error_.clear();
+                if (!fallback_scan.empty()) {
+                    last_good_lidar_scan_ = fallback_scan;
+                    last_good_lidar_scan_time_s_ = monotonic_seconds();
+                }
+                refresh_lidar_snapshot(fallback_scan);
+                refresh_observation_timestamp();
+                return fallback_scan;
+            } catch (const LidarError&) {
+            }
+        }
+
         last_lidar_error_ = e.what();
-        refresh_lidar_snapshot({});
+        std::vector<RPLidarA1::ScanPoint> cached_scan = recent_lidar_scan_or_empty(0.30);
+        refresh_lidar_snapshot(cached_scan);
+        if (!cached_scan.empty()) {
+            refresh_observation_timestamp();
+            return observation_.lidar_scan;
+        }
         if (lidar_.is_connected()) {
             try {
                 lidar_.stop_scan(true);
