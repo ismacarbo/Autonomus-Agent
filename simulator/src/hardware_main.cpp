@@ -48,6 +48,7 @@ struct AppOptions {
     double dt = 0.10;
     bool auto_mode = true;
     bool gyro_zero = true;
+    bool planner_safety_stop_enabled = false;
     bool controller_reset_on_connect = false;
     bool simulate = false;
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
@@ -157,6 +158,7 @@ void print_usage(const char* argv0) {
         << "  --stream-every N          send one frame every N planner steps (default 1)\n"
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
         << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n"
+        << "  --enable-planner-safety   enable planner-side LiDAR safety stop logic\n"
         << "  --controller-reset-on-connect  pulse DTR/RTS when opening the controller serial port\n";
 }
 
@@ -204,6 +206,8 @@ AppOptions parse_args(int argc, char** argv) {
             options.auto_mode = false;
         } else if (arg == "--no-gyro-zero") {
             options.gyro_zero = false;
+        } else if (arg == "--enable-planner-safety") {
+            options.planner_safety_stop_enabled = true;
         } else if (arg == "--controller-reset-on-connect") {
             options.controller_reset_on_connect = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -581,6 +585,7 @@ int main(int argc, char** argv) {
         planner_config.auto_set_autonomous_mode = options.auto_mode;
         planner_config.auto_gyro_zero = options.gyro_zero;
         planner_config.use_encoder_odometry = true;
+        planner_config.planner_safety_stop_enabled = options.planner_safety_stop_enabled;
 
         if (options.simulate) {
             return run_simulated(options, world, std::move(bridge_options), planner_config);

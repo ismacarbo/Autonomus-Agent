@@ -112,6 +112,7 @@ struct HardwarePlannerConfig {
     bool auto_set_autonomous_mode = true;
     bool auto_gyro_zero = true;
     bool use_encoder_odometry = true;
+    bool planner_safety_stop_enabled = false;
     DifferentialDriveGeometry drive{};
     MotorPwmMapperConfig pwm{};
     LidarLocalizationConfig localization{};

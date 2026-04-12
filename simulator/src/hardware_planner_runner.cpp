@@ -128,6 +128,25 @@ double sector_max_clearance(const std::vector<LidarHit>& hits,
     return best;
 }
 
+double sector_min_clearance(const std::vector<LidarHit>& hits,
+                            double yaw,
+                            double center_local_angle,
+                            double half_angle_width,
+                            double fallback_clearance) {
+    double best = std::numeric_limits<double>::infinity();
+    for (const LidarHit& hit : hits) {
+        if (!hit.hit || !(hit.distance > 0.0)) {
+            continue;
+        }
+        const double local_angle = wrap_angle(hit.angle - yaw);
+        const double sector_delta = std::abs(wrap_angle(local_angle - center_local_angle));
+        if (sector_delta <= half_angle_width) {
+            best = std::min(best, hit.distance);
+        }
+    }
+    return std::isfinite(best) ? best : fallback_clearance;
+}
+
 int signum(int value) {
     return (value > 0) - (value < 0);
 }
@@ -2798,22 +2817,50 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool lidar_front_blocked =
         estimate_.front_lidar_distance > 0.0 &&
         estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m;
+    const bool lidar_front_blocked_for_recovery =
+        estimate_.front_lidar_distance > 0.0 &&
+        estimate_.front_lidar_distance <
+            (gap_recovery_turn_active_
+                 ? config_.localization.obstacle_stop_distance_m + 0.03
+                 : config_.localization.obstacle_stop_distance_m);
     const double lateral_stop_distance = std::max(
         config_.localization.min_valid_range_m + 0.02,
         config_.localization.obstacle_stop_distance_m - 0.07);
+    double motion_heading_local = 0.0;
+    bool have_motion_heading = false;
+    if (locked_gap_goal_.has_value()) {
+        motion_heading_local =
+            wrap_angle(angle_to(estimate_.position, *locked_gap_goal_) - estimate_.yaw);
+        have_motion_heading = true;
+    } else if (chosen_gate_index_ >= 0 &&
+               chosen_gate_index_ < static_cast<int>(gate_specs_.size())) {
+        motion_heading_local = wrap_angle(
+            angle_to(estimate_.position, gate_specs_[static_cast<size_t>(chosen_gate_index_)].position) -
+            estimate_.yaw);
+        have_motion_heading = true;
+    }
+    const double motion_sector_clearance =
+        have_motion_heading
+            ? sector_min_clearance(
+                  lidar_hits_,
+                  estimate_.yaw,
+                  motion_heading_local,
+                  0.50,
+                  config_.localization.max_range_m)
+            : estimate_.front_lidar_distance;
     const bool lidar_side_clearance_blocked =
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
-        estimate_.min_lidar_distance > 0.0 &&
-        estimate_.min_lidar_distance < lateral_stop_distance &&
-        estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m + 0.18;
+        last_command_.target_speed > 0.02 &&
+        motion_sector_clearance > 0.0 &&
+        motion_sector_clearance < lateral_stop_distance;
     bool use_gap_recovery_turn = false;
     const double recovery_turn_clearance =
         std::max(config_.localization.min_valid_range_m + 0.005, 0.10);
     const double recovery_turn_enter_heading = 0.12;
     const double recovery_turn_hold_heading = 0.05;
     if (!scanning_startup &&
-        lidar_front_blocked &&
+        lidar_front_blocked_for_recovery &&
         use_dynamic_gap_gates_ &&
         chosen_gate_index_ >= 0 &&
         chosen_gate_index_ < static_cast<int>(gate_specs_.size()) &&
@@ -2841,7 +2888,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = false;
         }
     } else if (!scanning_startup &&
-               lidar_front_blocked &&
+               lidar_front_blocked_for_recovery &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
         const double left_clearance =
@@ -2866,7 +2913,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     } else {
         gap_recovery_turn_active_ = false;
     }
-    if (!scanning_startup &&
+    if (config_.planner_safety_stop_enabled &&
+        !scanning_startup &&
         !use_gap_recovery_turn &&
         (lidar_front_blocked || lidar_side_clearance_blocked)) {
         safety_stop_active_ = true;
