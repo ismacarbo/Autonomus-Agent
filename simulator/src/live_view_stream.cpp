@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstring>
+#include <new>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -31,6 +32,8 @@ constexpr std::uint16_t kPacketWorld = 3U;
 constexpr std::uint16_t kPacketControlAck = 4U;
 constexpr std::size_t kPacketHeaderSize = sizeof(std::uint32_t) + sizeof(std::uint16_t) + sizeof(std::uint16_t) + sizeof(std::uint32_t);
 constexpr std::uint32_t kMaxPacketBytes = 32U * 1024U * 1024U;
+constexpr std::uint32_t kMaxVectorElements = 200000U;
+constexpr std::uint32_t kMaxStringBytes = 1U * 1024U * 1024U;
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr int kHelloTimeoutMs = 5000;
 
@@ -80,7 +83,10 @@ void write_string(std::vector<std::uint8_t>* out, const std::string& value) {
 
 bool read_string(const std::vector<std::uint8_t>& data, std::size_t* offset, std::string* value) {
     std::uint32_t size = 0U;
-    if (!read_pod(data, offset, &size) || value == nullptr || *offset + size > data.size()) {
+    if (!read_pod(data, offset, &size) ||
+        value == nullptr ||
+        size > kMaxStringBytes ||
+        *offset + size > data.size()) {
         return false;
     }
     value->assign(reinterpret_cast<const char*>(data.data() + *offset), size);
@@ -255,8 +261,16 @@ bool read_vector(const std::vector<std::uint8_t>& data, std::size_t* offset, std
     if (!read_pod(data, offset, &count)) {
         return false;
     }
+    const std::size_t remaining_bytes = data.size() - *offset;
+    if (count > kMaxVectorElements || static_cast<std::size_t>(count) > remaining_bytes) {
+        return false;
+    }
     values->clear();
-    values->reserve(count);
+    try {
+        values->reserve(count);
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
     for (std::uint32_t i = 0; i < count; ++i) {
         T value{};
         if (!read_fn(data, offset, &value)) {
@@ -584,7 +598,6 @@ std::vector<std::uint8_t> serialize_frame(const LiveFrameSnapshot& frame) {
     write_pod(&out, frame.accumulated_lidar_points);
     write_pod(&out, frame.no_motion_command_cycles);
     write_pod(&out, frame.chosen_gate_index);
-    write_pod(&out, frame.occupancy_cell_size_m);
     write_vehicle_state(&out, frame.vehicle);
     write_vec2(&out, frame.navigation_position);
     write_pod(&out, frame.navigation_yaw);
@@ -642,7 +655,6 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
         !read_pod(data, &offset, &parsed.accumulated_lidar_points) ||
         !read_pod(data, &offset, &parsed.no_motion_command_cycles) ||
         !read_pod(data, &offset, &parsed.chosen_gate_index) ||
-        !read_pod(data, &offset, &parsed.occupancy_cell_size_m) ||
         !read_vehicle_state(data, &offset, &parsed.vehicle) ||
         !read_vec2(data, &offset, &parsed.navigation_position) ||
         !read_pod(data, &offset, &parsed.navigation_yaw) ||
