@@ -2010,9 +2010,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const double free_threshold = std::max(
         config_.gap_extraction.free_distance_threshold_m,
         config_.localization.obstacle_stop_distance_m + 0.03);
-    const double goal_heading = angle_to(lidar_origin, world_.goal());
-    const double goal_local_angle = wrap_angle(goal_heading - estimate_.yaw);
-    const double goal_distance_now = distance(lidar_origin, world_.goal());
+    const double preferred_heading = estimate_.yaw;
     std::vector<TargetCandidate> candidates;
     std::optional<GateSpec> persisted_spec;
     std::optional<gate> persisted_gate;
@@ -2038,12 +2036,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
         const double gate_heading_local =
             wrap_angle(angle_to(lidar_origin, previous_spec.position) - estimate_.yaw);
-        if (std::abs(gate_heading_local) > 0.60 * kPi) {
-            return false;
-        }
-
-        const double goal_distance_after = distance(previous_spec.position, world_.goal());
-        if (goal_distance_after > goal_distance_now + 0.12) {
+        if (std::abs(gate_heading_local) > 0.45 * kPi) {
             return false;
         }
 
@@ -2185,23 +2178,23 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
         const double candidate_world_angle = angle_to(lidar_origin, target);
         const double candidate_local_angle = wrap_angle(candidate_world_angle - estimate_.yaw);
-        const double goal_delta = std::abs(wrap_angle(candidate_world_angle - goal_heading));
-        const double goal_alignment = 0.5 * (1.0 + std::cos(goal_delta));
+        const double distance_score = clamp_value(
+            (target_distance - min_target_distance) /
+                std::max(max_target_distance - min_target_distance, 0.05),
+            0.0,
+            1.0);
         const double forward_alignment = 0.5 * (1.0 + std::cos(candidate_local_angle));
         const double clearance_score = grid_local_clearance_score(
             local_grid,
             cell_x,
             cell_y,
             std::max(1, static_cast<int>(std::ceil(inflate_radius / grid_resolution))));
-        const double goal_distance_after = distance(target, world_.goal());
         const double progress_score =
-            goal_distance_now > 1e-6
-                ? clamp_value((goal_distance_now - goal_distance_after) / goal_distance_now, 0.0, 1.0)
-                : 0.0;
+            clamp_value(std::cos(candidate_local_angle), 0.0, 1.0) * distance_score;
 
         candidates.push_back({
-            base_score + 2.10 * progress_score + 1.45 * goal_alignment +
-                0.75 * forward_alignment + 1.10 * clearance_score +
+            base_score + 1.95 * progress_score + 1.55 * distance_score +
+                1.35 * forward_alignment + 1.10 * clearance_score +
                 continuity_bonus_for_target(target),
             target_distance,
             candidate_local_angle,
@@ -2225,15 +2218,19 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const double open_space_ratio =
         beams.empty() ? 0.0 : static_cast<double>(free_beam_count) / static_cast<double>(beams.size());
     const std::array<double, 4> goal_lookahead_scales{1.0, 0.86, 0.72, 0.58};
-    for (double scale : goal_lookahead_scales) {
-        const double lookahead = clamp_value(goal_distance_now * scale, min_target_distance, max_target_distance);
-        const Vec2 direct_target{
-            lidar_origin.x + std::cos(goal_heading) * lookahead,
-            lidar_origin.y + std::sin(goal_heading) * lookahead,
-        };
-        if (grid_segment_is_clear(local_grid, lidar_origin, direct_target)) {
-            try_add_candidate(direct_target, open_space_ratio >= 0.55 ? 1.55 : 1.05);
-            break;
+    const std::array<double, 3> preferred_heading_offsets{0.0, 12.0 * kPi / 180.0, -12.0 * kPi / 180.0};
+    for (double heading_offset : preferred_heading_offsets) {
+        for (double scale : goal_lookahead_scales) {
+            const double lookahead = clamp_value(scale * max_target_distance, min_target_distance, max_target_distance);
+            const double target_heading = preferred_heading + heading_offset;
+            const Vec2 direct_target{
+                lidar_origin.x + std::cos(target_heading) * lookahead,
+                lidar_origin.y + std::sin(target_heading) * lookahead,
+            };
+            if (grid_segment_is_clear(local_grid, lidar_origin, direct_target)) {
+                try_add_candidate(direct_target, open_space_ratio >= 0.55 ? 1.55 : 1.05);
+                break;
+            }
         }
     }
 
@@ -2256,11 +2253,9 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 continue;
             }
 
-            const double goal_alignment_bonus =
-                std::abs(wrap_angle(candidate_local_angle - goal_local_angle)) <= 12.0 * kPi / 180.0
-                    ? 0.30
-                    : 0.0;
-            try_add_candidate(target, goal_alignment_bonus);
+            const double forward_bonus =
+                std::abs(candidate_local_angle) <= 12.0 * kPi / 180.0 ? 0.30 : 0.0;
+            try_add_candidate(target, forward_bonus);
         }
     }
 
@@ -2272,7 +2267,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             grid_segment_is_clear(local_grid, lidar_origin, persisted_spec->position) &&
             scan_supports_target(persisted_spec->position, scan)) {
             GateSpec spec = *persisted_spec;
-            spec.heading_hint = angle_to(spec.position, world_.goal());
+            spec.heading_hint = angle_to(lidar_origin, spec.position);
             gate_specs_.push_back(spec);
 
             gate g = *persisted_gate;
@@ -2340,7 +2335,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         spec.motion_amplitude = {0.0, 0.0};
         spec.motion_frequency_hz = 0.0;
         spec.motion_phase_rad = 0.0;
-        spec.heading_hint = angle_to(candidate.target, world_.goal());
+        spec.heading_hint = candidate.center_world_angle;
         spec.final = false;
         gate_specs_.push_back(spec);
 
