@@ -3213,7 +3213,7 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
         left_pwm.push_back(static_cast<double>(sample.pwm_left));
         right_pwm.push_back(static_cast<double>(sample.pwm_right));
         controller_left_pwm.push_back(static_cast<double>(sample.controller_pwm_left));
-        controller_right_pwm.push_back(static_cast<double>(sample.controller_right_pwm));
+        controller_right_pwm.push_back(static_cast<double>(sample.controller_pwm_right));
         controller_target_pwm_left.push_back(static_cast<double>(sample.controller_target_pwm_left));
         controller_target_pwm_right.push_back(static_cast<double>(sample.controller_target_pwm_right));
         controller_left_encoder_ticks.push_back(static_cast<double>(sample.controller_left_encoder_ticks));
