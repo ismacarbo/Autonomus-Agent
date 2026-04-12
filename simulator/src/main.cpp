@@ -1595,6 +1595,20 @@ std::string stream_profile_label(const std::string& stream_profile, int workspac
     return workspace_source_expects_slam(workspace_source) ? "SLAM" : "Planner";
 }
 
+std::string hardware_goal_distance_label(const LiveFrameSnapshot& frame, EnvironmentMode mode) {
+    char goal_buf[32];
+    if (mode == EnvironmentMode::UnstructuredGates &&
+        (frame.distance_to_goal < 0.0 || frame.chosen_gate_index < 0 || !frame.planner_has_reference)) {
+        if (frame.goal_reached) {
+            return "done";
+        }
+        return frame.dynamic_gap_gates ? "n/a" : "idle";
+    }
+
+    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", frame.distance_to_goal);
+    return goal_buf;
+}
+
 std::string hardware_launch_hint(const UiState& ui_state) {
     std::ostringstream cmd;
     const bool structured =
@@ -2752,8 +2766,9 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
     char goal_buf[32];
     char tracking_buf[32];
     char target_buf[48];
+    const std::string goal_label = hardware_goal_distance_label(frame, world.environment_mode());
     std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", frame.vehicle.speed);
-    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", frame.distance_to_goal);
+    std::snprintf(goal_buf, sizeof(goal_buf), "%s", goal_label.c_str());
     std::snprintf(tracking_buf, sizeof(tracking_buf), "%.2f m / %.1f deg", frame.tracker_cross_track_error, frame.tracker_heading_error_deg);
     std::snprintf(target_buf, sizeof(target_buf), "%s", active_target);
 
@@ -2968,7 +2983,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
                  : IM_COL32(132, 214, 255, 255)},
             {hud_line, IM_COL32(240, 243, 235, 255)},
         };
-        std::snprintf(hud_line, sizeof(hud_line), "goal %.2f m", frame.distance_to_goal);
+        std::snprintf(hud_line, sizeof(hud_line), "goal %s", goal_label.c_str());
         top_right.push_back({hud_line, IM_COL32(170, 179, 185, 255)});
         if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
             if (show_live_scene && hardware.scene.stream_profile == "slam") {
@@ -3009,7 +3024,8 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             legend.push_back({"lime/cyan: LiDAR collision points", kColorLidarHit});
         }
         if (show_live_scene && !frame.slam_points.empty() && ui_state->show_lidar_hits) {
-            legend.push_back({"mint: accumulated LiDAR map", IM_COL32(132, 255, 196, 200)});
+            legend.push_back({"mint: occupied LiDAR map cells", IM_COL32(132, 255, 196, 200)});
+            legend.push_back({"empty canvas can still be free space", IM_COL32(170, 179, 185, 255)});
         }
         if (!show_live_scene && ui_state->map_editor_enabled) {
             legend.push_back({"blue: editable preview road", kColorEditorOverlay});
@@ -3058,8 +3074,10 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
     char goal_buf[32];
     char lidar_buf[32];
     char err_buf[32];
+    const std::string goal_label =
+        hardware_goal_distance_label(hardware.frame, hardware.scene.world.environment_mode());
     std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", latest.speed);
-    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", latest.distance_to_goal);
+    std::snprintf(goal_buf, sizeof(goal_buf), "%s", goal_label.c_str());
     std::snprintf(lidar_buf, sizeof(lidar_buf), "%.2f / %.2f m", latest.min_lidar, latest.front_lidar);
     std::snprintf(err_buf, sizeof(err_buf), "%.2f / %.2f", latest.tracker_cross_track, latest.tracker_heading_error_deg);
 
@@ -3371,8 +3389,10 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     char goal_buf[32];
     char speed_buf[32];
     char tracking_buf[48];
+    const std::string goal_label =
+        hardware_goal_distance_label(hardware.frame, hardware.scene.world.environment_mode());
     std::snprintf(time_buf, sizeof(time_buf), "%.1f s", hardware.frame.sim_time);
-    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", hardware.frame.distance_to_goal);
+    std::snprintf(goal_buf, sizeof(goal_buf), "%s", goal_label.c_str());
     std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", hardware.frame.vehicle.speed);
     std::snprintf(tracking_buf, sizeof(tracking_buf), "%.2f m", hardware.frame.tracker_cross_track_error);
 
@@ -3866,7 +3886,8 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::Text("t = %.2f s   step = %d", hardware.frame.sim_time, hardware.frame.step_count);
         ImGui::Text("pos = (%.2f, %.2f) m", hardware.frame.navigation_position.x, hardware.frame.navigation_position.y);
         ImGui::Text("yaw = %.1f deg   v = %.2f m/s", hardware.frame.navigation_yaw * 180.0 / 3.14159265358979323846, hardware.frame.navigation_speed);
-        ImGui::Text("goal distance = %.2f m", hardware.frame.distance_to_goal);
+        ImGui::Text("goal distance = %s",
+                    hardware_goal_distance_label(hardware.frame, hardware.scene.world.environment_mode()).c_str());
         ImGui::Text("tracking: cte %.2f m   hdg %.2f deg", hardware.frame.tracker_cross_track_error, hardware.frame.tracker_heading_error_deg);
         ImGui::Text("planner ref = %s   dynamic gaps = %s   stall boost = %s",
                     hardware.frame.planner_has_reference ? "yes" : "no",
