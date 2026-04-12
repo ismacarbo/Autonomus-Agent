@@ -584,6 +584,7 @@ std::vector<std::uint8_t> serialize_frame(const LiveFrameSnapshot& frame) {
     write_pod(&out, frame.accumulated_lidar_points);
     write_pod(&out, frame.no_motion_command_cycles);
     write_pod(&out, frame.chosen_gate_index);
+    write_pod(&out, frame.occupancy_cell_size_m);
     write_vehicle_state(&out, frame.vehicle);
     write_vec2(&out, frame.navigation_position);
     write_pod(&out, frame.navigation_yaw);
@@ -641,6 +642,7 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
         !read_pod(data, &offset, &parsed.accumulated_lidar_points) ||
         !read_pod(data, &offset, &parsed.no_motion_command_cycles) ||
         !read_pod(data, &offset, &parsed.chosen_gate_index) ||
+        !read_pod(data, &offset, &parsed.occupancy_cell_size_m) ||
         !read_vehicle_state(data, &offset, &parsed.vehicle) ||
         !read_vec2(data, &offset, &parsed.navigation_position) ||
         !read_pod(data, &offset, &parsed.navigation_yaw) ||
@@ -1208,6 +1210,7 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     frame.accumulated_lidar_points = runner.diagnostics().accumulated_lidar_points;
     frame.no_motion_command_cycles = runner.diagnostics().no_motion_command_cycles;
     frame.chosen_gate_index = runner.chosen_gate_index();
+    frame.occupancy_cell_size_m = runner.config().gap_extraction.map_point_resolution_m;
     frame.navigation_position = runner.estimate().position;
     frame.navigation_yaw = runner.estimate().yaw;
     frame.navigation_yaw_rate = runner.estimate().yaw_rate;

@@ -1958,8 +1958,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     }
 
     if (locked_gap_goal_.has_value()) {
-        publish_locked_gap_goal();
-        return;
+        if (!scan_supports_target(*locked_gap_goal_, scan)) {
+            clear_locked_gap_goal();
+        } else {
+            publish_locked_gap_goal();
+            return;
+        }
     }
 
     const Vec2 lidar_origin = lidar_origin_world(estimate_.position, estimate_.yaw, config_.localization);
@@ -2263,7 +2267,10 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     if (candidates.empty()) {
         gates_.clear();
         gate_specs_.clear();
-        if (persisted_spec.has_value() && persisted_gate.has_value()) {
+        if (persisted_spec.has_value() &&
+            persisted_gate.has_value() &&
+            grid_segment_is_clear(local_grid, lidar_origin, persisted_spec->position) &&
+            scan_supports_target(persisted_spec->position, scan)) {
             GateSpec spec = *persisted_spec;
             spec.heading_hint = angle_to(spec.position, world_.goal());
             gate_specs_.push_back(spec);
@@ -2312,6 +2319,9 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const int gate_limit = std::max(1, config_.gap_extraction.max_candidate_gates);
     for (size_t i = 0; i < candidates.size() && static_cast<int>(gate_specs_.size()) < gate_limit; ++i) {
         const TargetCandidate& candidate = candidates[i];
+        if (!scan_supports_target(candidate.target, scan)) {
+            continue;
+        }
         bool duplicate_target = false;
         for (const GateSpec& existing : gate_specs_) {
             if (distance(existing.position, candidate.target) < 0.14) {
@@ -2350,7 +2360,10 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 }
 
 bool HardwarePlannerRunner::startup_scan_active() const {
-    return use_dynamic_gap_gates_ && !goal_reached_ && !locked_gap_goal_.has_value();
+    return use_dynamic_gap_gates_ &&
+           !goal_reached_ &&
+           !locked_gap_goal_.has_value() &&
+           !startup_scan_complete_;
 }
 
 void HardwarePlannerRunner::clear_locked_gap_goal() {
@@ -2456,12 +2469,6 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         return;
     }
 
-    const double left_clearance =
-        sector_max_clearance(lidar_hits_, estimate_.yaw, 0.90, 0.65);
-    const double right_clearance =
-        sector_max_clearance(lidar_hits_, estimate_.yaw, -0.90, 0.65);
-    startup_scan_direction_ = left_clearance >= right_clearance ? 1.0 : -1.0;
-
     if (locked_gap_goal_.has_value()) {
         if (!is_inside_bounds(world_, *locked_gap_goal_)) {
             clear_locked_gap_goal();
@@ -2476,6 +2483,16 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     startup_scan_elapsed_s_ += std::max(dt, 0.0);
     startup_scan_complete_ =
         startup_scan_elapsed_s_ >= std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
+
+    if (!startup_scan_complete_) {
+        gates_.clear();
+        gate_specs_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+        return;
+    }
 
     for (gate& candidate : gates_) {
         candidate.choose = false;
@@ -2712,8 +2729,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_speed = 0.0;
         last_command_.target_curvature = 0.0;
         use_direct_yaw_rate_command = true;
-        direct_yaw_rate_command = startup_scan_direction_ *
-                                  std::max(config_.gap_extraction.startup_scan_yaw_rate, 0.20);
+        direct_yaw_rate_command = 0.0;
         last_mpc_command_.reset();
     } else if (have_reference_trajectory) {
         const MpcCommand mpc_command = mpc_follower_.solve(
@@ -3179,6 +3195,10 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
 
     const double target_angle_world = angle_to(lidar_origin, target);
     const double target_angle_local = wrap_angle(target_angle_world - estimate_.yaw - config_.localization.lidar_yaw_offset);
+    const double target_clearance_radius = std::max(
+        config_.gap_extraction.target_clearance_radius_m,
+        geometry_.body_width * 0.45);
+    const double target_clearance_sq = target_clearance_radius * target_clearance_radius;
     double best_angle_delta = std::numeric_limits<double>::infinity();
     double best_range = 0.0;
     int support_beams = 0;
@@ -3190,6 +3210,16 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
             point.distance_m > planning_range ||
             scan_point_is_self_hit(point)) {
             continue;
+        }
+
+        const bool obstacle_endpoint =
+            point.distance_m < planning_range - 0.03 &&
+            point.distance_m < config_.localization.max_range_m - 0.03;
+        if (obstacle_endpoint) {
+            const Vec2 hit = scan_point_world_hit(point, estimate_.position, estimate_.yaw);
+            if (distance_sq(hit, target) <= target_clearance_sq) {
+                return false;
+            }
         }
 
         const double beam_angle_local = wrap_angle(deg_to_rad(point.angle_deg));

@@ -1008,6 +1008,7 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "    \"accumulated_lidar_points\": " << hardware.frame.accumulated_lidar_points << ",\n";
     out << "    \"no_motion_command_cycles\": " << hardware.frame.no_motion_command_cycles << ",\n";
     out << "    \"chosen_gate_index\": " << hardware.frame.chosen_gate_index << ",\n";
+    out << "    \"occupancy_cell_size_m\": " << hardware.frame.occupancy_cell_size_m << ",\n";
     out << "    \"vehicle\": ";
     write_live_vehicle_state_json(out, hardware.frame.vehicle);
     out << ",\n";
@@ -2852,6 +2853,20 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         draw_polyline(draw_list, tx, hardware.frame.planned_trajectory, kColorTrajectory, 3.0f);
     }
 
+    if (show_live_scene && !frame.slam_points.empty()) {
+        const float occupancy_half_extent = std::max(
+            1.5f,
+            static_cast<float>(std::max(frame.occupancy_cell_size_m, 0.01) * tx.scale * 0.5));
+        const size_t slam_stride = frame.slam_points.size() > 3200 ? (frame.slam_points.size() / 3200) + 1 : 1;
+        for (size_t i = 0; i < frame.slam_points.size(); i += slam_stride) {
+            const ImVec2 point_screen = world_to_screen(tx, frame.slam_points[i]);
+            draw_list->AddRectFilled(
+                ImVec2(point_screen.x - occupancy_half_extent, point_screen.y - occupancy_half_extent),
+                ImVec2(point_screen.x + occupancy_half_extent, point_screen.y + occupancy_half_extent),
+                IM_COL32(132, 255, 196, 44));
+        }
+    }
+
     if (show_live_scene && ui_state->show_lidar_hits && !frame.slam_points.empty()) {
         const size_t slam_stride = frame.slam_points.size() > 2800 ? (frame.slam_points.size() / 2800) + 1 : 1;
         for (size_t i = 0; i < frame.slam_points.size(); i += slam_stride) {
@@ -2958,6 +2973,15 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
             if (show_live_scene && hardware.scene.stream_profile == "slam") {
                 std::snprintf(hud_line, sizeof(hud_line), "context %s | map pts %d", active_target, static_cast<int>(frame.slam_points.size()));
+            } else if (show_live_scene &&
+                       frame.dynamic_gap_gates &&
+                       !frame.goal_reached &&
+                       frame.chosen_gate_index < 0 &&
+                       !frame.planner_has_reference) {
+                std::snprintf(hud_line,
+                              sizeof(hud_line),
+                              "sensing | map %d",
+                              static_cast<int>(frame.slam_points.size()));
             } else if (show_live_scene) {
                 std::snprintf(hud_line,
                               sizeof(hud_line),

@@ -85,6 +85,7 @@ struct LiveFrameSnapshot {
     int accumulated_lidar_points = 0;
     int no_motion_command_cycles = 0;
     int chosen_gate_index = -1;
+    double occupancy_cell_size_m = 0.03;
     LiveVehicleState vehicle{};
     Vec2 navigation_position;
     double navigation_yaw = 0.0;

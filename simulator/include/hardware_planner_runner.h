@@ -81,7 +81,7 @@ struct GapExtractionConfig {
     double min_target_distance_m = 0.28;
     double max_target_distance_m = 0.95;
     int max_candidate_gates = 5;
-    double startup_scan_duration_s = 1.6;
+    double startup_scan_duration_s = 12.0;
     double startup_scan_yaw_rate = 0.70;
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
