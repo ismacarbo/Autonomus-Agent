@@ -3164,11 +3164,73 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         motion_sector_clearance > 0.0 &&
         motion_sector_clearance < lateral_stop_distance;
     bool use_gap_recovery_turn = false;
+    bool handled_gap_priority_tracking = false;
     const double recovery_turn_clearance =
         std::max(config_.localization.min_valid_range_m + 0.005, 0.10);
     const double recovery_turn_enter_heading = 0.12;
     const double recovery_turn_hold_heading = 0.05;
+    const double gap_acquire_clearance = std::max(
+        config_.localization.min_valid_range_m + 0.04,
+        config_.localization.obstacle_stop_distance_m - 0.01);
+    const double gap_acquire_forward_clearance = std::max(
+        config_.localization.obstacle_stop_distance_m + 0.07,
+        config_.localization.min_valid_range_m + 0.14);
     if (!scanning_startup &&
+        use_dynamic_gap_gates_ &&
+        have_reference_trajectory &&
+        have_motion_heading) {
+        const double heading_threshold =
+            gap_recovery_turn_active_
+                ? config_.gap_extraction.gap_acquire_hold_heading_rad
+                : config_.gap_extraction.gap_acquire_enter_heading_rad;
+        const double heading_error = motion_heading_local;
+        const bool motion_heading_supported =
+            motion_sector_clearance <= 0.0 || motion_sector_clearance > gap_acquire_clearance;
+        if (std::abs(heading_error) > heading_threshold && motion_heading_supported) {
+            handled_gap_priority_tracking = true;
+            gap_recovery_turn_active_ = true;
+            use_gap_recovery_turn = true;
+            use_direct_yaw_rate_command = true;
+            direct_yaw_rate_command = clamp_value(
+                config_.gap_extraction.gap_acquire_yaw_gain * heading_error,
+                -0.90 * config_.drive.max_yaw_rate,
+                0.90 * config_.drive.max_yaw_rate);
+
+            double acquire_speed = 0.0;
+            const double turn_in_place_heading = std::max(
+                config_.gap_extraction.gap_acquire_turn_in_place_heading_rad,
+                heading_threshold + 0.02);
+            if (motion_sector_clearance > gap_acquire_forward_clearance &&
+                std::abs(heading_error) < turn_in_place_heading) {
+                const double heading_scale = clamp_value(
+                    (turn_in_place_heading - std::abs(heading_error)) /
+                        std::max(
+                            turn_in_place_heading -
+                                config_.gap_extraction.gap_acquire_hold_heading_rad,
+                            1e-3),
+                    0.0,
+                    1.0);
+                const double clearance_scale = clamp_value(
+                    (motion_sector_clearance - gap_acquire_forward_clearance) / 0.40,
+                    0.0,
+                    1.0);
+                acquire_speed = clamp_value(
+                    config_.gap_extraction.gap_acquire_creep_speed_mps *
+                        (0.30 + 0.70 * heading_scale) *
+                        (0.45 + 0.55 * clearance_scale),
+                    0.0,
+                    config_.gap_extraction.gap_acquire_creep_speed_mps);
+            }
+
+            commanded_speed_ = acquire_speed;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = acquire_speed;
+            last_command_.target_curvature = 0.0;
+            last_mpc_command_.reset();
+        }
+    }
+    if (!handled_gap_priority_tracking &&
+        !scanning_startup &&
         lidar_front_blocked_for_recovery &&
         use_dynamic_gap_gates_ &&
         chosen_gate_index_ >= 0 &&
@@ -3196,7 +3258,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         } else {
             gap_recovery_turn_active_ = false;
         }
-    } else if (!scanning_startup &&
+    } else if (!handled_gap_priority_tracking &&
+               !scanning_startup &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
         const double heading_limit = clamp_value(
@@ -3275,7 +3338,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         } else {
             gap_recovery_turn_active_ = false;
         }
-    } else {
+    } else if (!handled_gap_priority_tracking) {
         gap_recovery_turn_active_ = false;
     }
     if (config_.planner_safety_stop_enabled &&

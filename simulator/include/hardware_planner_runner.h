@@ -86,6 +86,11 @@ struct GapExtractionConfig {
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
     double gap_goal_cruise_speed_mps = 0.16;
+    double gap_acquire_enter_heading_rad = 0.14;
+    double gap_acquire_hold_heading_rad = 0.06;
+    double gap_acquire_turn_in_place_heading_rad = 0.22;
+    double gap_acquire_creep_speed_mps = 0.05;
+    double gap_acquire_yaw_gain = 1.9;
     double recovery_creep_speed_mps = 0.07;
     double recovery_heading_search_half_angle_rad = 1.35;
     double recovery_sector_half_angle_rad = 0.24;
