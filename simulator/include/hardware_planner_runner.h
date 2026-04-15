@@ -81,7 +81,7 @@ struct GapExtractionConfig {
     double min_target_distance_m = 0.28;
     double max_target_distance_m = 0.95;
     int max_candidate_gates = 5;
-    double startup_scan_duration_s = 12.0;
+    double startup_scan_duration_s = 0.0;
     double startup_scan_yaw_rate = 0.70;
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
@@ -312,6 +312,10 @@ class HardwarePlannerRunner {
                                                          double dt,
                                                          double measured_yaw,
                                                          double measured_yaw_rate);
+    bool controller_encoder_odometry_usable(const ControllerTelemetry& telemetry,
+                                            std::int32_t left_delta_ticks,
+                                            std::int32_t right_delta_ticks,
+                                            double encoder_dt);
     void update_controller_encoder_snapshot(const ControllerTelemetry& telemetry,
                                            std::int32_t* left_delta_ticks,
                                            std::int32_t* right_delta_ticks);
@@ -431,6 +435,7 @@ class HardwarePlannerRunner {
     bool yaw_offset_initialized_ = false;
     bool have_raw_imu_yaw_ = false;
     bool encoder_ticks_initialized_ = false;
+    int encoder_ready_streak_ = 0;
     bool measured_wheel_speeds_valid_ = false;
     int no_motion_command_cycles_ = 0;
     bool use_dynamic_gap_gates_ = false;

@@ -16,6 +16,8 @@ namespace thesis_sim {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kStableEncoderReadyFrames = 3;
+constexpr double kEncoderWheelSpeedMargin = 1.35;
 
 struct LidarSearchWindow {
     double xy_window = 0.0;
@@ -988,6 +990,7 @@ void HardwarePlannerRunner::reset() {
     yaw_offset_initialized_ = false;
     have_raw_imu_yaw_ = false;
     encoder_ticks_initialized_ = false;
+    encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
     no_motion_command_cycles_ = 0;
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
@@ -1036,6 +1039,7 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     measured_right_wheel_speed_ = 0.0;
     wheel_speed_error_integral_left_ = 0.0;
     wheel_speed_error_integral_right_ = 0.0;
+    encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
@@ -1419,7 +1423,8 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         telemetry.enc_dt_ms > 0
             ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
             : std::max(dt, 0.01);
-    const bool encoder_ready = config_.use_encoder_odometry && controller_encoders_ready(telemetry);
+    const bool encoder_ready =
+        controller_encoder_odometry_usable(telemetry, left_delta_ticks, right_delta_ticks, encoder_dt);
 
     double odom_speed = 0.0;
     double odom_yaw_rate = 0.0;
@@ -1455,9 +1460,10 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
             std::abs(telemetry.pwm_r) >= geometry_.min_effective_pwm ||
             std::abs(telemetry.target_pwm_l) >= geometry_.min_effective_pwm ||
             std::abs(telemetry.target_pwm_r) >= geometry_.min_effective_pwm;
+        const bool commanded_linear_motion = std::abs(last_command_.target_speed) > 0.02;
 
         odom_speed = clamp_value(last_command_.target_speed, 0.0, geometry_.max_linear_speed);
-        if (odom_speed <= 1e-4 && controller_driving) {
+        if (odom_speed <= 1e-4 && controller_driving && commanded_linear_motion) {
             odom_speed = pwm_speed_estimate;
         } else if (!controller_driving) {
             odom_speed = 0.0;
@@ -1506,6 +1512,42 @@ void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerT
     }
 }
 
+bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerTelemetry& telemetry,
+                                                               std::int32_t left_delta_ticks,
+                                                               std::int32_t right_delta_ticks,
+                                                               double encoder_dt) {
+    const bool raw_encoder_ready = config_.use_encoder_odometry && controller_encoders_ready(telemetry);
+    const bool overflow_warn = encoder_flag_set(telemetry.enc_flags, EncoderFlag::OverflowWarn);
+    if (!raw_encoder_ready || overflow_warn || encoder_dt <= 1e-6) {
+        encoder_ready_streak_ = 0;
+        return false;
+    }
+
+    if (left_delta_ticks < 0 || right_delta_ticks < 0) {
+        encoder_ready_streak_ = 0;
+        return false;
+    }
+
+    const double ticks_to_distance =
+        (2.0 * kPi * geometry_.wheel_radius) /
+        static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
+    const double left_wheel_speed =
+        std::abs(static_cast<double>(left_delta_ticks)) * ticks_to_distance / encoder_dt;
+    const double right_wheel_speed =
+        std::abs(static_cast<double>(right_delta_ticks)) * ticks_to_distance / encoder_dt;
+    const double max_wheel_speed =
+        geometry_.max_linear_speed + 0.5 * std::abs(geometry_.track) * geometry_.max_yaw_rate;
+    const double allowed_wheel_speed =
+        std::max(max_wheel_speed * kEncoderWheelSpeedMargin, max_wheel_speed + 0.08);
+    if (left_wheel_speed > allowed_wheel_speed || right_wheel_speed > allowed_wheel_speed) {
+        encoder_ready_streak_ = 0;
+        return false;
+    }
+
+    ++encoder_ready_streak_;
+    return encoder_ready_streak_ >= kStableEncoderReadyFrames;
+}
+
 void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
                                                                             double dt,
                                                                             double measured_yaw,
@@ -1518,7 +1560,8 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         telemetry.enc_dt_ms > 0U
             ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
             : std::max(dt, 0.01);
-    const bool encoder_ready = config_.use_encoder_odometry && controller_encoders_ready(telemetry);
+    const bool encoder_ready =
+        controller_encoder_odometry_usable(telemetry, left_delta_ticks, right_delta_ticks, effective_dt);
 
     double odom_speed = 0.0;
     double odom_yaw_rate = 0.0;
@@ -1554,9 +1597,10 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
             std::abs(telemetry.pwm_r) >= geometry_.min_effective_pwm ||
             std::abs(telemetry.target_pwm_l) >= geometry_.min_effective_pwm ||
             std::abs(telemetry.target_pwm_r) >= geometry_.min_effective_pwm;
+        const bool commanded_linear_motion = std::abs(last_command_.target_speed) > 0.02;
 
         odom_speed = clamp_value(last_command_.target_speed, 0.0, geometry_.max_linear_speed);
-        if (odom_speed <= 1e-4 && controller_driving) {
+        if (odom_speed <= 1e-4 && controller_driving && commanded_linear_motion) {
             odom_speed = pwm_speed_estimate;
         } else if (!controller_driving) {
             odom_speed = 0.0;
@@ -2124,7 +2168,14 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const double free_threshold = std::max(
         config_.gap_extraction.free_distance_threshold_m,
         config_.localization.obstacle_stop_distance_m + 0.03);
-    const double preferred_heading = estimate_.yaw;
+    const Vec2 global_goal = world_.goal();
+    const bool have_global_goal =
+        is_inside_bounds(world_, global_goal) &&
+        distance(lidar_origin, global_goal) > 0.05;
+    const double goal_heading = have_global_goal ? angle_to(lidar_origin, global_goal) : estimate_.yaw;
+    const double goal_distance_from_origin =
+        have_global_goal ? distance(lidar_origin, global_goal) : 0.0;
+    const double preferred_heading = goal_heading;
     std::vector<TargetCandidate> candidates;
     std::optional<GateSpec> persisted_spec;
     std::optional<gate> persisted_gate;
@@ -2298,17 +2349,28 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             0.0,
             1.0);
         const double forward_alignment = 0.5 * (1.0 + std::cos(candidate_local_angle));
+        const double progress_score =
+            clamp_value(std::cos(candidate_local_angle), 0.0, 1.0) * distance_score;
+        const double goal_alignment = have_global_goal
+            ? 0.5 * (1.0 + std::cos(wrap_angle(candidate_world_angle - goal_heading)))
+            : forward_alignment;
+        const double goal_progress = have_global_goal
+            ? clamp_value(
+                  (goal_distance_from_origin - distance(target, global_goal)) /
+                      std::max(max_target_distance, 0.05),
+                  -0.35,
+                  1.0)
+            : progress_score;
         const double clearance_score = grid_local_clearance_score(
             local_grid,
             cell_x,
             cell_y,
             std::max(1, static_cast<int>(std::ceil(inflate_radius / grid_resolution))));
-        const double progress_score =
-            clamp_value(std::cos(candidate_local_angle), 0.0, 1.0) * distance_score;
 
         candidates.push_back({
             base_score + 1.95 * progress_score + 1.55 * distance_score +
-                1.35 * forward_alignment + 1.10 * clearance_score +
+                1.35 * forward_alignment + 1.20 * goal_alignment +
+                1.25 * goal_progress + 1.10 * clearance_score +
                 continuity_bonus_for_target(target),
             target_distance,
             candidate_local_angle,
@@ -2470,6 +2532,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
 bool HardwarePlannerRunner::startup_scan_active() const {
     return use_dynamic_gap_gates_ &&
+           config_.gap_extraction.startup_scan_duration_s > 1e-3 &&
            !goal_reached_ &&
            !locked_gap_goal_.has_value() &&
            !startup_scan_complete_;
@@ -2589,32 +2652,37 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         }
     }
 
-    startup_scan_elapsed_s_ += std::max(dt, 0.0);
-    startup_scan_complete_ =
-        startup_scan_elapsed_s_ >= std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
+    const bool startup_scan_enabled = config_.gap_extraction.startup_scan_duration_s > 1e-3;
+    if (!startup_scan_enabled) {
+        startup_scan_complete_ = true;
+    } else {
+        startup_scan_elapsed_s_ += std::max(dt, 0.0);
+        startup_scan_complete_ =
+            startup_scan_elapsed_s_ >= std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
 
-    if (!startup_scan_complete_ &&
-        perception_map_ready() &&
-        !gate_specs_.empty()) {
-        const double front_open_threshold = std::max(
-            config_.gap_extraction.free_distance_threshold_m,
-            config_.localization.obstacle_stop_distance_m + 0.08);
-        const bool front_is_open =
-            estimate_.front_lidar_distance <= 0.0 ||
-            estimate_.front_lidar_distance >= front_open_threshold;
+        if (!startup_scan_complete_ &&
+            perception_map_ready() &&
+            !gate_specs_.empty()) {
+            const double front_open_threshold = std::max(
+                config_.gap_extraction.free_distance_threshold_m,
+                config_.localization.obstacle_stop_distance_m + 0.08);
+            const bool front_is_open =
+                estimate_.front_lidar_distance <= 0.0 ||
+                estimate_.front_lidar_distance >= front_open_threshold;
 
-        bool have_forward_candidate = false;
-        for (const GateSpec& spec : gate_specs_) {
-            const double heading_error = std::abs(
-                wrap_angle(angle_to(estimate_.position, spec.position) - estimate_.yaw));
-            if (heading_error <= 28.0 * kPi / 180.0) {
-                have_forward_candidate = true;
-                break;
+            bool have_forward_candidate = false;
+            for (const GateSpec& spec : gate_specs_) {
+                const double heading_error = std::abs(
+                    wrap_angle(angle_to(estimate_.position, spec.position) - estimate_.yaw));
+                if (heading_error <= 28.0 * kPi / 180.0) {
+                    have_forward_candidate = true;
+                    break;
+                }
             }
-        }
 
-        if (front_is_open || have_forward_candidate) {
-            startup_scan_complete_ = true;
+            if (front_is_open || have_forward_candidate) {
+                startup_scan_complete_ = true;
+            }
         }
     }
 
@@ -2643,6 +2711,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     int best_bucket = std::numeric_limits<int>::max();
     double best_forward_progress = -std::numeric_limits<double>::infinity();
     double best_heading_error = std::numeric_limits<double>::infinity();
+    double best_goal_distance = std::numeric_limits<double>::infinity();
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const Vec2& target = gate_specs_[i].position;
         const double heading_error = std::abs(
@@ -2650,6 +2719,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         const double gate_distance = distance(estimate_.position, target);
         const double forward_progress =
             std::max(std::cos(heading_error), 0.0) * gate_distance;
+        const double goal_distance = distance(target, world_.goal());
         int heading_bucket = 3;
         if (heading_error <= 18.0 * kPi / 180.0) {
             heading_bucket = 0;
@@ -2665,17 +2735,22 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             heading_bucket < 3 &&
             (forward_progress > best_forward_progress + 1e-6 ||
              (std::abs(forward_progress - best_forward_progress) <= 1e-6 &&
-              heading_error < best_heading_error));
+              (goal_distance + 1e-6 < best_goal_distance ||
+               (std::abs(goal_distance - best_goal_distance) <= 1e-6 &&
+                heading_error < best_heading_error))));
         const bool better_heading_only =
             heading_bucket == best_bucket &&
             heading_bucket >= 3 &&
-            heading_error < best_heading_error;
+            (heading_error < best_heading_error - 1e-6 ||
+             (std::abs(heading_error - best_heading_error) <= 1e-6 &&
+              goal_distance + 1e-6 < best_goal_distance));
 
         if (better_bucket || better_forward || better_heading_only) {
             preferred_gate_index = i;
             best_bucket = heading_bucket;
             best_forward_progress = forward_progress;
             best_heading_error = heading_error;
+            best_goal_distance = goal_distance;
         }
     }
 
@@ -2905,7 +2980,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_speed = 0.0;
         last_command_.target_curvature = 0.0;
         use_direct_yaw_rate_command = true;
-        direct_yaw_rate_command = 0.0;
+        direct_yaw_rate_command = startup_scan_direction_ * clamp_value(
+            std::abs(config_.gap_extraction.startup_scan_yaw_rate),
+            0.0,
+            0.85 * config_.drive.max_yaw_rate);
         last_mpc_command_.reset();
     } else if (have_reference_trajectory) {
         const MpcCommand mpc_command = mpc_follower_.solve(
