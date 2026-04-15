@@ -3197,21 +3197,77 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = false;
         }
     } else if (!scanning_startup &&
-               lidar_front_blocked_for_recovery &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
-        const double left_clearance =
-            sector_max_clearance(lidar_hits_, estimate_.yaw, 0.90, 0.55);
-        const double right_clearance =
-            sector_max_clearance(lidar_hits_, estimate_.yaw, -0.90, 0.55);
-        const double better_clearance = std::max(left_clearance, right_clearance);
-        if (better_clearance > config_.localization.obstacle_stop_distance_m + 0.05) {
+        const double heading_limit = clamp_value(
+            config_.gap_extraction.recovery_heading_search_half_angle_rad,
+            0.45,
+            0.95 * kPi);
+        const double sector_half_width = clamp_value(
+            config_.gap_extraction.recovery_sector_half_angle_rad,
+            0.10,
+            0.45);
+        const double heading_step = 10.0 * kPi / 180.0;
+        double best_heading = 0.0;
+        double best_sector_clearance = -std::numeric_limits<double>::infinity();
+        double best_heading_score = -std::numeric_limits<double>::infinity();
+        for (double heading = -heading_limit; heading <= heading_limit + 1e-6; heading += heading_step) {
+            const double sector_clearance = sector_min_clearance(
+                lidar_hits_,
+                estimate_.yaw,
+                heading,
+                sector_half_width,
+                estimate_.front_lidar_distance > 0.0
+                    ? estimate_.front_lidar_distance
+                    : config_.localization.max_range_m);
+            const double heading_score = sector_clearance - 0.18 * std::abs(heading);
+            if (heading_score > best_heading_score) {
+                best_heading_score = heading_score;
+                best_sector_clearance = sector_clearance;
+                best_heading = heading;
+            }
+        }
+
+        const double recovery_clearance_margin = 0.05;
+        const double forward_creep_clearance = std::max(
+            config_.localization.obstacle_stop_distance_m + recovery_clearance_margin,
+            config_.localization.min_valid_range_m + 0.10);
+        const double turn_only_clearance = std::max(
+            config_.localization.obstacle_stop_distance_m - 0.02,
+            config_.localization.min_valid_range_m + 0.04);
+        if (best_sector_clearance > forward_creep_clearance) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
-            direct_yaw_rate_command =
-                (left_clearance >= right_clearance ? 1.0 : -1.0) *
-                0.55 * config_.drive.max_yaw_rate;
+            direct_yaw_rate_command = clamp_value(
+                1.4 * best_heading,
+                -0.65 * config_.drive.max_yaw_rate,
+                0.65 * config_.drive.max_yaw_rate);
+            const double creep_alignment = clamp_value(
+                1.0 - std::abs(best_heading) / std::max(heading_limit, 1e-3),
+                0.0,
+                1.0);
+            const double creep_clearance_scale = clamp_value(
+                (best_sector_clearance - forward_creep_clearance) / 0.45,
+                0.0,
+                1.0);
+            commanded_speed_ = clamp_value(
+                config_.gap_extraction.recovery_creep_speed_mps *
+                    (0.45 + 0.55 * creep_alignment) *
+                    (0.40 + 0.60 * creep_clearance_scale),
+                0.0,
+                config_.gap_extraction.recovery_creep_speed_mps);
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = commanded_speed_;
+            last_command_.target_curvature = 0.0;
+        } else if (best_sector_clearance > turn_only_clearance && std::abs(best_heading) > 0.08) {
+            gap_recovery_turn_active_ = true;
+            use_gap_recovery_turn = true;
+            use_direct_yaw_rate_command = true;
+            direct_yaw_rate_command = clamp_value(
+                1.2 * best_heading,
+                -0.55 * config_.drive.max_yaw_rate,
+                0.55 * config_.drive.max_yaw_rate);
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
