@@ -2305,7 +2305,21 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     local_grid.finalize(inflate_radius);
 
     if (locked_gap_goal_.has_value()) {
-        if (grid_segment_is_clear(local_grid, lidar_origin, *locked_gap_goal_) &&
+        const double gap_distance = distance(estimate_.position, *locked_gap_goal_);
+        const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
+        const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
+        const double crossing_margin =
+            std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
+        const double missed_gap_lateral_limit =
+            locked_gap_corridor_half_width_m_ +
+            std::max(config_.gap_extraction.target_clearance_radius_m, 0.04);
+        const bool missed_locked_gap =
+            gap_distance <= std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.10) &&
+            longitudinal_progress < crossing_margin &&
+            lateral_offset > missed_gap_lateral_limit;
+
+        if (!missed_locked_gap &&
+            grid_segment_is_clear(local_grid, lidar_origin, *locked_gap_goal_) &&
             scan_supports_target(*locked_gap_goal_, scan) &&
             perception_map_supports_target(lidar_origin, *locked_gap_goal_)) {
             publish_locked_gap_goal();
@@ -2464,12 +2478,13 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             right_boundary_index < static_cast<int>(beams.size()) &&
             beams[static_cast<size_t>(right_boundary_index)].distance < free_threshold;
 
-        double gap_width = 2.0 * min_sector_distance * std::sin(0.5 * angular_span);
-        if (have_left_obstacle && have_right_obstacle) {
-            gap_width = distance(
-                beams[static_cast<size_t>(left_boundary_index)].hit,
-                beams[static_cast<size_t>(right_boundary_index)].hit);
+        if (!(have_left_obstacle && have_right_obstacle)) {
+            return;
         }
+
+        const double gap_width = distance(
+            beams[static_cast<size_t>(left_boundary_index)].hit,
+            beams[static_cast<size_t>(right_boundary_index)].hit);
         if (!(gap_width >= required_gap_width)) {
             return;
         }
@@ -3743,10 +3758,20 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
         config_.gap_extraction.target_clearance_radius_m,
         geometry_.body_width * 0.55);
     const double target_clearance_sq = target_clearance_radius * target_clearance_radius;
+    const double corridor_half_width = std::max(
+        0.5 * geometry_.body_width + config_.gap_extraction.path_clearance_radius_m,
+        config_.gap_extraction.target_clearance_radius_m);
+    const double corridor_half_angle = clamp_value(
+        std::atan2(corridor_half_width, std::max(target_distance, 0.10)),
+        4.0 * kPi / 180.0,
+        std::max(config_.gap_extraction.min_gap_angle_rad * 0.55, 16.0 * kPi / 180.0));
+    const double corridor_margin = std::max(0.04, target_clearance_radius * 0.55);
     double best_angle_delta = std::numeric_limits<double>::infinity();
     double best_range = 0.0;
     int support_beams = 0;
     int free_support_beams = 0;
+    int corridor_beams = 0;
+    int corridor_clear_beams = 0;
 
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
@@ -3782,6 +3807,15 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
                 ++free_support_beams;
             }
         }
+
+        if (angle_delta <= corridor_half_angle) {
+            ++corridor_beams;
+            if (point.distance_m + corridor_margin >= target_distance) {
+                ++corridor_clear_beams;
+            } else {
+                return false;
+            }
+        }
     }
 
     const double angular_tolerance = std::max(config_.gap_extraction.min_gap_angle_rad * 0.5, 10.0 * kPi / 180.0);
@@ -3794,6 +3828,14 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     }
 
     if (support_beams >= 2 && free_support_beams < support_beams) {
+        return false;
+    }
+
+    if (corridor_beams < 2) {
+        return false;
+    }
+
+    if (corridor_clear_beams < corridor_beams) {
         return false;
     }
 
