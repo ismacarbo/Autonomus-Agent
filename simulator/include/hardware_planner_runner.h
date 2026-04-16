@@ -94,6 +94,8 @@ struct GapExtractionConfig {
     double recovery_creep_speed_mps = 0.07;
     double recovery_heading_search_half_angle_rad = 1.35;
     double recovery_sector_half_angle_rad = 0.24;
+    double recovery_escape_turn_min_heading_rad = 0.08;
+    double recovery_escape_turn_yaw_gain = 1.55;
     double straight_path_sample_spacing_m = 0.06;
     double map_point_resolution_m = 0.03;
     int max_persistent_points = 6000;

@@ -3270,6 +3270,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.gap_extraction.recovery_sector_half_angle_rad,
             0.10,
             0.45);
+        const double recovery_search_range = clamp_value(
+            config_.gap_extraction.planning_max_range_m,
+            config_.localization.min_valid_range_m + 0.10,
+            config_.localization.max_range_m);
         const double heading_step = 10.0 * kPi / 180.0;
         double best_heading = 0.0;
         double best_sector_clearance = -std::numeric_limits<double>::infinity();
@@ -3280,9 +3284,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 estimate_.yaw,
                 heading,
                 sector_half_width,
-                estimate_.front_lidar_distance > 0.0
-                    ? estimate_.front_lidar_distance
-                    : config_.localization.max_range_m);
+                recovery_search_range);
             const double heading_score = sector_clearance - 0.18 * std::abs(heading);
             if (heading_score > best_heading_score) {
                 best_heading_score = heading_score;
@@ -3331,6 +3333,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 1.2 * best_heading,
                 -0.55 * config_.drive.max_yaw_rate,
                 0.55 * config_.drive.max_yaw_rate);
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+        } else if ((lidar_front_blocked_for_recovery || estimate_.min_lidar_distance <= turn_only_clearance) &&
+                   std::abs(best_heading) > config_.gap_extraction.recovery_escape_turn_min_heading_rad) {
+            gap_recovery_turn_active_ = true;
+            use_gap_recovery_turn = true;
+            use_direct_yaw_rate_command = true;
+            direct_yaw_rate_command = clamp_value(
+                config_.gap_extraction.recovery_escape_turn_yaw_gain * best_heading,
+                -0.75 * config_.drive.max_yaw_rate,
+                0.75 * config_.drive.max_yaw_rate);
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
