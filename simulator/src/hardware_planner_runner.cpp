@@ -2310,6 +2310,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
         const double crossing_margin =
             std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
+        const double gate_heading_local =
+            std::abs(wrap_angle(angle_to(lidar_origin, *locked_gap_goal_) - estimate_.yaw));
         const double missed_gap_lateral_limit =
             locked_gap_corridor_half_width_m_ +
             std::max(config_.gap_extraction.target_clearance_radius_m, 0.04);
@@ -2317,14 +2319,45 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             gap_distance <= std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.10) &&
             longitudinal_progress < crossing_margin &&
             lateral_offset > missed_gap_lateral_limit;
+        const bool grid_supports_locked_gap =
+            grid_segment_is_clear(local_grid, lidar_origin, *locked_gap_goal_);
+        const bool perception_supports_locked_gap =
+            perception_map_supports_target(lidar_origin, *locked_gap_goal_);
+        const bool scan_supports_locked_gap =
+            scan_supports_target(*locked_gap_goal_, scan);
+        const bool soft_hold_front_open =
+            estimate_.front_lidar_distance <= 0.0 ||
+            estimate_.front_lidar_distance >=
+                config_.localization.obstacle_stop_distance_m + 0.03;
+        const bool soft_hold_gap_close =
+            gap_distance <=
+            std::max(config_.gap_extraction.max_target_distance_m * 1.25, 0.70);
+        const bool soft_hold_heading_ok =
+            gate_heading_local <= config_.gap_extraction.locked_gap_soft_hold_heading_rad;
+        const bool soft_hold_locked_gap =
+            !missed_locked_gap &&
+            grid_supports_locked_gap &&
+            perception_supports_locked_gap &&
+            soft_hold_gap_close &&
+            soft_hold_heading_ok &&
+            (soft_hold_front_open || gate_heading_local <= 0.55);
 
         if (!missed_locked_gap &&
-            grid_segment_is_clear(local_grid, lidar_origin, *locked_gap_goal_) &&
-            scan_supports_target(*locked_gap_goal_, scan) &&
-            perception_map_supports_target(lidar_origin, *locked_gap_goal_)) {
+            grid_supports_locked_gap &&
+            scan_supports_locked_gap &&
+            perception_supports_locked_gap) {
+            locked_gap_invalid_streak_ = 0;
             publish_locked_gap_goal();
             return;
         }
+
+        if (soft_hold_locked_gap &&
+            locked_gap_invalid_streak_ < std::max(1, config_.gap_extraction.locked_gap_grace_frames)) {
+            ++locked_gap_invalid_streak_;
+            publish_locked_gap_goal();
+            return;
+        }
+
         clear_locked_gap_goal();
     }
 
@@ -2657,6 +2690,7 @@ void HardwarePlannerRunner::clear_locked_gap_goal() {
     locked_gap_approach_direction_ = {1.0, 0.0};
     locked_gap_corridor_half_width_m_ = 0.0;
     locked_gap_crossed_ = false;
+    locked_gap_invalid_streak_ = 0;
 }
 
 void HardwarePlannerRunner::set_locked_gap_goal(const Vec2& target) {
@@ -2677,6 +2711,7 @@ void HardwarePlannerRunner::set_locked_gap_goal(const Vec2& target) {
         0.05,
         std::max(0.5 * config_.gap_extraction.min_gap_width_m, 0.05));
     locked_gap_crossed_ = false;
+    locked_gap_invalid_streak_ = 0;
 }
 
 double HardwarePlannerRunner::locked_gap_longitudinal_progress(const Vec2& position) const {

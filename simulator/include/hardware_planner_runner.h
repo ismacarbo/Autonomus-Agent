@@ -86,6 +86,8 @@ struct GapExtractionConfig {
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
     double gap_goal_cruise_speed_mps = 0.16;
+    int locked_gap_grace_frames = 6;
+    double locked_gap_soft_hold_heading_rad = 2.05;
     double gap_acquire_enter_heading_rad = 0.14;
     double gap_acquire_hold_heading_rad = 0.06;
     double gap_acquire_turn_in_place_heading_rad = 0.22;
@@ -450,6 +452,7 @@ class HardwarePlannerRunner {
     int no_motion_command_cycles_ = 0;
     bool use_dynamic_gap_gates_ = false;
     bool gap_recovery_turn_active_ = false;
+    int locked_gap_invalid_streak_ = 0;
     bool stall_boost_active_ = false;
     bool connected_ = false;
     bool telemetry_ready_ = false;
