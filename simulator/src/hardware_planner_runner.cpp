@@ -2191,7 +2191,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
         const double gate_heading_local =
             wrap_angle(angle_to(lidar_origin, previous_spec.position) - estimate_.yaw);
-        if (std::abs(gate_heading_local) > 0.45 * kPi) {
+        if (std::abs(gate_heading_local) > 0.70 * kPi) {
             return false;
         }
 
@@ -2368,6 +2368,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
         const double candidate_world_angle = angle_to(lidar_origin, target);
         const double candidate_local_angle = wrap_angle(candidate_world_angle - estimate_.yaw);
+        const double abs_candidate_local_angle = std::abs(candidate_local_angle);
         const double distance_score = clamp_value(
             (target_distance - min_target_distance) /
                 std::max(max_target_distance - min_target_distance, 0.05),
@@ -2391,12 +2392,24 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             cell_x,
             cell_y,
             std::max(1, static_cast<int>(std::ceil(inflate_radius / grid_resolution))));
+        const double lateral_heading_penalty = clamp_value(
+            (abs_candidate_local_angle - 55.0 * kPi / 180.0) /
+                (45.0 * kPi / 180.0),
+            0.0,
+            1.6);
+        const double reverse_heading_penalty = clamp_value(
+            (abs_candidate_local_angle - 95.0 * kPi / 180.0) /
+                (35.0 * kPi / 180.0),
+            0.0,
+            1.8);
 
         candidates.push_back({
             base_score + 1.95 * progress_score + 1.55 * distance_score +
                 1.35 * forward_alignment + 1.20 * goal_alignment +
                 1.25 * goal_progress + 1.10 * clearance_score +
-                continuity_bonus_for_target(target),
+                continuity_bonus_for_target(target) -
+                1.65 * lateral_heading_penalty -
+                2.10 * reverse_heading_penalty,
             target_distance,
             candidate_local_angle,
             candidate_world_angle,
@@ -2794,10 +2807,16 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     }
 
     size_t preferred_gate_index = 0;
-    int best_bucket = std::numeric_limits<int>::max();
-    double best_forward_progress = -std::numeric_limits<double>::infinity();
-    double best_heading_error = std::numeric_limits<double>::infinity();
-    double best_goal_distance = std::numeric_limits<double>::infinity();
+    double best_gate_score = -std::numeric_limits<double>::infinity();
+    bool have_reachable_gate = false;
+    for (size_t i = 0; i < gate_specs_.size(); ++i) {
+        const double heading_error = std::abs(
+            wrap_angle(angle_to(estimate_.position, gate_specs_[i].position) - estimate_.yaw));
+        if (heading_error <= 85.0 * kPi / 180.0) {
+            have_reachable_gate = true;
+            break;
+        }
+    }
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const Vec2& target = gate_specs_[i].position;
         const double heading_error = std::abs(
@@ -2806,37 +2825,39 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         const double forward_progress =
             std::max(std::cos(heading_error), 0.0) * gate_distance;
         const double goal_distance = distance(target, world_.goal());
-        int heading_bucket = 3;
-        if (heading_error <= 18.0 * kPi / 180.0) {
-            heading_bucket = 0;
-        } else if (heading_error <= 35.0 * kPi / 180.0) {
-            heading_bucket = 1;
-        } else if (heading_error <= 60.0 * kPi / 180.0) {
-            heading_bucket = 2;
+        const double rank_bonus = std::max(0.0, 1.6 - 0.30 * static_cast<double>(i));
+        const double goal_progress = clamp_value(
+            (distance(estimate_.position, world_.goal()) - goal_distance) /
+                std::max(config_.gap_extraction.max_target_distance_m, 0.10),
+            -0.60,
+            1.20);
+        const double heading_penalty = clamp_value(
+            (heading_error - 40.0 * kPi / 180.0) /
+                (50.0 * kPi / 180.0),
+            0.0,
+            1.6);
+        const double reverse_penalty = clamp_value(
+            (heading_error - 90.0 * kPi / 180.0) /
+                (35.0 * kPi / 180.0),
+            0.0,
+            2.0);
+        double gate_score =
+            rank_bonus +
+            1.15 * goal_progress +
+            0.95 * forward_progress +
+            0.40 * clamp_value(std::cos(heading_error), -0.35, 1.0) -
+            1.55 * heading_penalty -
+            (have_reachable_gate ? 2.10 : 0.90) * reverse_penalty -
+            0.12 * gate_distance;
+        if (i == 0) {
+            gate_score += 0.18;
         }
 
-        const bool better_bucket = heading_bucket < best_bucket;
-        const bool better_forward =
-            heading_bucket == best_bucket &&
-            heading_bucket < 3 &&
-            (forward_progress > best_forward_progress + 1e-6 ||
-             (std::abs(forward_progress - best_forward_progress) <= 1e-6 &&
-              (goal_distance + 1e-6 < best_goal_distance ||
-               (std::abs(goal_distance - best_goal_distance) <= 1e-6 &&
-                heading_error < best_heading_error))));
-        const bool better_heading_only =
-            heading_bucket == best_bucket &&
-            heading_bucket >= 3 &&
-            (heading_error < best_heading_error - 1e-6 ||
-             (std::abs(heading_error - best_heading_error) <= 1e-6 &&
-              goal_distance + 1e-6 < best_goal_distance));
-
-        if (better_bucket || better_forward || better_heading_only) {
+        if (gate_score > best_gate_score + 1e-6 ||
+            (std::abs(gate_score - best_gate_score) <= 1e-6 &&
+             goal_distance + 1e-6 < distance(gate_specs_[preferred_gate_index].position, world_.goal()))) {
             preferred_gate_index = i;
-            best_bucket = heading_bucket;
-            best_forward_progress = forward_progress;
-            best_heading_error = heading_error;
-            best_goal_distance = goal_distance;
+            best_gate_score = gate_score;
         }
     }
 
