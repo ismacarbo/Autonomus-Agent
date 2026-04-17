@@ -553,7 +553,12 @@ def parse_args():
     parser.add_argument("--no-imu-zero", action="store_true", help="Do not send GYRO_ZERO when connecting to IMU")
 
     parser.add_argument("--lidar-x-offset", type=float, default=0.075, help="LiDAR X offset in body frame [m]")
-    parser.add_argument("--lidar-y-offset", type=float, default=0.0, help="LiDAR Y offset in body frame [m]")
+    parser.add_argument(
+        "--lidar-y-offset",
+        type=float,
+        default=-0.04,
+        help="LiDAR Y offset in body frame [m]. Negative means the LiDAR is mounted slightly on the robot right side",
+    )
     parser.add_argument(
         "--lidar-yaw-deg",
         type=float,
