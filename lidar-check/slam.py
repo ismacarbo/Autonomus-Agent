@@ -31,6 +31,7 @@ class CalibrationConfig:
     lidar_x_offset_m: float = 0.075
     lidar_y_offset_m: float = 0.0
     lidar_yaw_offset_rad: float = 2.83
+    flip_left_right: bool = False
     min_range_m: float = 0.12
     max_range_m: float = 3.0
     front_half_angle_rad: float = 0.26
@@ -317,6 +318,8 @@ def scan_to_body_frame(scan, cfg, decimation):
             [distance_m * math.cos(beam_angle), distance_m * math.sin(beam_angle)],
             dtype=float,
         )
+        if cfg.flip_left_right:
+            raw_xy[1] *= -1.0
         body_xy = lidar_origin + rot @ raw_xy
         kept.append((beam_angle, distance_m, body_xy[0], body_xy[1]))
         local_hits.append((body_xy[0], body_xy[1]))
@@ -510,6 +513,7 @@ class CalibrationViewer:
         yaw_deg = math.degrees(self.cfg.lidar_yaw_offset_rad)
         front_str = f"{front_distance_m:.3f} m" if math.isfinite(front_distance_m) else "n/a"
         front_soft_str = f"{front_soft_distance_m:.3f} m" if math.isfinite(front_soft_distance_m) else "n/a"
+        flip_str = "yes" if self.cfg.flip_left_right else "no"
         self.status_text.set_text(
             f"scan: {scan_idx}\n"
             f"front core: {front_str}\n"
@@ -518,6 +522,7 @@ class CalibrationViewer:
             f"lidar_x_offset: {self.cfg.lidar_x_offset_m:.3f} m\n"
             f"lidar_y_offset: {self.cfg.lidar_y_offset_m:.3f} m\n"
             f"lidar_yaw_offset: {yaw_deg:.1f} deg\n"
+            f"flip_left_right: {flip_str}\n"
             f"imu_yaw_rel: {imu_str}\n"
             f"red = robot heading\n"
             f"yellow = lidar heading"
@@ -565,6 +570,11 @@ def parse_args():
         default=162.0,
         help="LiDAR yaw offset in body frame [deg]. Default is a calibration guess for reversed + left-rotated mount",
     )
+    parser.add_argument(
+        "--flip-left-right",
+        action="store_true",
+        help="Mirror the LiDAR lateral axis if left/right are swapped in the viewer",
+    )
     parser.add_argument("--body-length", type=float, default=0.34, help="Robot body length [m]")
     parser.add_argument("--body-width", type=float, default=0.24, help="Robot body width [m]")
     parser.add_argument("--front-half-angle-deg", type=float, default=15.0, help="Front core half-angle [deg]")
@@ -607,6 +617,7 @@ def run():
         lidar_x_offset_m=args.lidar_x_offset,
         lidar_y_offset_m=args.lidar_y_offset,
         lidar_yaw_offset_rad=math.radians(args.lidar_yaw_deg),
+        flip_left_right=args.flip_left_right,
         min_range_m=args.min_range,
         max_range_m=args.max_range,
         front_half_angle_rad=math.radians(args.front_half_angle_deg),
@@ -633,7 +644,8 @@ def run():
     print(f"[INFO] starting LiDAR calibration on {args.lidar_port} @ {args.baudrate} baud")
     print(
         f"[INFO] offsets: x={cfg.lidar_x_offset_m:.3f} m, y={cfg.lidar_y_offset_m:.3f} m, "
-        f"yaw={math.degrees(cfg.lidar_yaw_offset_rad):.1f} deg"
+        f"yaw={math.degrees(cfg.lidar_yaw_offset_rad):.1f} deg, "
+        f"flip_left_right={'yes' if cfg.flip_left_right else 'no'}"
     )
 
     try:
