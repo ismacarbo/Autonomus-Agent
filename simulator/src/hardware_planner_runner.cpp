@@ -970,6 +970,7 @@ void HardwarePlannerRunner::reset() {
     startup_scan_complete_ = false;
     chosen_gate_index_ = -1;
     goal_reached_ = false;
+    unstructured_gap_goal_completed_ = false;
     safety_stop_active_ = false;
     yaw_offset_ = 0.0;
     last_raw_imu_yaw_ = 0.0;
@@ -2332,20 +2333,27 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const bool soft_hold_gap_close =
             gap_distance <=
             std::max(config_.gap_extraction.max_target_distance_m * 1.25, 0.70);
+        const bool soft_hold_gap_near =
+            gap_distance <=
+            std::max(config_.gap_extraction.max_target_distance_m * 0.95, 0.60);
         const bool soft_hold_heading_ok =
             gate_heading_local <= config_.gap_extraction.locked_gap_soft_hold_heading_rad;
+        const bool strong_support_locked_gap =
+            (scan_supports_locked_gap &&
+             (grid_supports_locked_gap || perception_supports_locked_gap)) ||
+            (grid_supports_locked_gap && perception_supports_locked_gap);
+        const bool soft_hold_support_locked_gap =
+            scan_supports_locked_gap ||
+            grid_supports_locked_gap ||
+            perception_supports_locked_gap;
         const bool soft_hold_locked_gap =
             !missed_locked_gap &&
-            grid_supports_locked_gap &&
-            perception_supports_locked_gap &&
             soft_hold_gap_close &&
             soft_hold_heading_ok &&
-            (soft_hold_front_open || gate_heading_local <= 0.55);
+            (soft_hold_support_locked_gap || soft_hold_gap_near) &&
+            (soft_hold_front_open || gate_heading_local <= 0.75 || soft_hold_gap_near);
 
-        if (!missed_locked_gap &&
-            grid_supports_locked_gap &&
-            scan_supports_locked_gap &&
-            perception_supports_locked_gap) {
+        if (!missed_locked_gap && strong_support_locked_gap) {
             locked_gap_invalid_streak_ = 0;
             publish_locked_gap_goal();
             return;
@@ -2790,6 +2798,17 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         return;
     }
 
+    if (unstructured_gap_goal_completed_) {
+        gates_.clear();
+        gate_specs_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = 0.0;
+        startup_scan_complete_ = true;
+        return;
+    }
+
     if (locked_gap_goal_.has_value()) {
         if (!is_inside_bounds(world_, *locked_gap_goal_)) {
             clear_locked_gap_goal();
@@ -3096,6 +3115,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     stall_boost_active_ = false;
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
+
+    if (goal_reached_ || unstructured_gap_goal_completed_) {
+        commanded_speed_ = 0.0;
+        commanded_steer_angle_ = 0.0;
+        last_command_.target_speed = 0.0;
+        last_command_.target_curvature = 0.0;
+        last_command_.target_yaw_rate = 0.0;
+        return;
+    }
 
     const double safe_dt = std::max(dt, 1e-3);
     const double speed_limit =
@@ -4074,17 +4102,31 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             distance_to_goal_ = 0.0;
         }
     } else if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
-        if (locked_gap_goal_.has_value()) {
+        if (unstructured_gap_goal_completed_) {
+            distance_to_goal_ = 0.0;
+            goal_reached_ = true;
+        } else if (locked_gap_goal_.has_value()) {
             const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
             const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
             const double crossing_margin =
                 std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
+            const double gate_heading_local = std::abs(
+                wrap_angle(angle_to(estimate_.position, *locked_gap_goal_) - estimate_.yaw));
+            const double gap_distance = distance(estimate_.position, *locked_gap_goal_);
+            const bool gate_is_close_and_behind =
+                gap_distance <= std::max(config_.gap_extraction.gap_goal_tolerance_m * 1.35, 0.26) &&
+                lateral_offset <=
+                    locked_gap_corridor_half_width_m_ +
+                    std::max(config_.gap_extraction.target_clearance_radius_m, 0.05) &&
+                gate_heading_local >= 95.0 * kPi / 180.0;
             distance_to_goal_ = std::max(crossing_margin - longitudinal_progress, 0.0);
             goal_reached_ =
                 lateral_offset <= locked_gap_corridor_half_width_m_ &&
                 longitudinal_progress >= crossing_margin;
+            goal_reached_ = goal_reached_ || gate_is_close_and_behind;
             if (goal_reached_) {
                 locked_gap_crossed_ = true;
+                unstructured_gap_goal_completed_ = true;
                 publish_locked_gap_goal();
                 distance_to_goal_ = 0.0;
             }
