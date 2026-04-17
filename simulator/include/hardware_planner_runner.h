@@ -62,7 +62,8 @@ struct LidarLocalizationConfig {
     double min_valid_range_m = 0.12;
     double lidar_x_offset = 0.075;
     double lidar_y_offset = 0.04;
-    double lidar_yaw_offset = 3.45575191895;  // 198 deg
+    double lidar_yaw_offset = 2.82743338823;  // 162 deg
+    bool lidar_flip_left_right = true;
     double xy_search_window_m = 0.20;
     double xy_search_step_m = 0.08;
     double yaw_search_window_rad = 0.08;

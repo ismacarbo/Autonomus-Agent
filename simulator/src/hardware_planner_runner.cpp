@@ -117,6 +117,15 @@ Vec2 lidar_origin_world(const Vec2& base_position, double base_yaw, const LidarL
     return {base_position.x + rotated.x, base_position.y + rotated.y};
 }
 
+double lidar_sensor_angle_rad(const LidarLocalizationConfig& cfg, double angle_deg) {
+    const double raw_angle = deg_to_rad(angle_deg);
+    return wrap_angle(cfg.lidar_flip_left_right ? -raw_angle : raw_angle);
+}
+
+double lidar_body_local_angle_rad(const LidarLocalizationConfig& cfg, double angle_deg) {
+    return wrap_angle(cfg.lidar_yaw_offset + lidar_sensor_angle_rad(cfg, angle_deg));
+}
+
 double planning_lidar_range(const HardwarePlannerConfig& config) {
     return clamp_value(
         config.gap_extraction.planning_max_range_m,
@@ -1854,8 +1863,8 @@ double HardwarePlannerRunner::score_candidate_pose(const Vec2& position,
             continue;
         }
 
-        const double beam_heading = wrap_angle(
-            yaw + config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+        const double beam_heading =
+            wrap_angle(yaw + lidar_body_local_angle_rad(config_.localization, point.angle_deg));
         const std::vector<LidarHit> expected = world_.raycast(
             origin,
             beam_heading,
@@ -1927,8 +1936,8 @@ double HardwarePlannerRunner::score_candidate_pose_against_perception_map(
             continue;
         }
 
-        const double beam_heading = wrap_angle(
-            yaw + config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+        const double beam_heading =
+            wrap_angle(yaw + lidar_body_local_angle_rad(config_.localization, point.angle_deg));
         const Vec2 hit{
             origin.x + std::cos(beam_heading) * point.distance_m,
             origin.y + std::sin(beam_heading) * point.distance_m,
@@ -1989,7 +1998,7 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
             continue;
         }
         ++diagnostics_.valid_lidar_points;
-        const double angle_local = wrap_angle(config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+        const double angle_local = lidar_body_local_angle_rad(config_.localization, point.angle_deg);
         const double angle_world = wrap_angle(estimate_.yaw + angle_local);
         if (point.distance_m < config_.localization.obstacle_stop_distance_m) {
             ++diagnostics_.close_lidar_points;
@@ -2127,8 +2136,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             scan_point_is_self_hit(point)) {
             continue;
         }
-        const double local_angle =
-            wrap_angle(config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+        const double local_angle = lidar_body_local_angle_rad(config_.localization, point.angle_deg);
         const double world_angle = wrap_angle(estimate_.yaw + local_angle);
         beams.push_back({
             local_angle,
@@ -3782,7 +3790,7 @@ double HardwarePlannerRunner::compute_front_lidar_distance(const std::vector<RPL
             scan_point_is_self_hit(point)) {
             continue;
         }
-        const double local_angle = wrap_angle(config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+        const double local_angle = lidar_body_local_angle_rad(config_.localization, point.angle_deg);
         if (std::abs(local_angle) <= config_.localization.front_sector_half_angle_rad) {
             min_range = std::min(min_range, point.distance_m);
         }
@@ -3868,7 +3876,7 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
             }
         }
 
-        const double beam_angle_local = wrap_angle(deg_to_rad(point.angle_deg));
+        const double beam_angle_local = lidar_sensor_angle_rad(config_.localization, point.angle_deg);
         const double angle_delta = std::abs(wrap_angle(beam_angle_local - target_angle_local));
         if (angle_delta < best_angle_delta) {
             best_angle_delta = angle_delta;
@@ -3923,8 +3931,8 @@ Vec2 HardwarePlannerRunner::scan_point_world_hit(const RPLidarA1::ScanPoint& poi
                                                  const Vec2& position,
                                                  double yaw) const {
     const Vec2 origin = lidar_origin_world(position, yaw, config_.localization);
-    const double beam_heading = wrap_angle(
-        yaw + config_.localization.lidar_yaw_offset + deg_to_rad(point.angle_deg));
+    const double beam_heading =
+        wrap_angle(yaw + lidar_body_local_angle_rad(config_.localization, point.angle_deg));
     return {
         origin.x + std::cos(beam_heading) * point.distance_m,
         origin.y + std::sin(beam_heading) * point.distance_m,
