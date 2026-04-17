@@ -3346,6 +3346,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.localization.min_valid_range_m + 0.10,
             config_.localization.max_range_m);
         const double heading_step = 10.0 * kPi / 180.0;
+        const double forward_sector_clearance = sector_min_clearance(
+            lidar_hits_,
+            estimate_.yaw,
+            0.0,
+            sector_half_width,
+            recovery_search_range);
         double best_heading = 0.0;
         double best_sector_clearance = -std::numeric_limits<double>::infinity();
         double best_heading_score = -std::numeric_limits<double>::infinity();
@@ -3371,6 +3377,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const double turn_only_clearance = std::max(
             config_.localization.obstacle_stop_distance_m - 0.02,
             config_.localization.min_valid_range_m + 0.04);
+        const bool forward_sector_is_open =
+            forward_sector_clearance > forward_creep_clearance;
+        const bool forward_heading_competitive =
+            best_sector_clearance <= forward_sector_clearance + 0.12;
+        if (forward_sector_is_open && forward_heading_competitive) {
+            best_heading = 0.0;
+            best_sector_clearance = forward_sector_clearance;
+        }
         if (best_sector_clearance > forward_creep_clearance) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
@@ -3408,7 +3422,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
             last_command_.target_curvature = 0.0;
-        } else if ((lidar_front_blocked_for_recovery || estimate_.min_lidar_distance <= turn_only_clearance) &&
+        } else if (lidar_front_blocked_for_recovery &&
                    std::abs(best_heading) > config_.gap_extraction.recovery_escape_turn_min_heading_rad) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
