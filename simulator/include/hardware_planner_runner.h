@@ -440,6 +440,7 @@ class HardwarePlannerRunner {
     double structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
     Vec2 structured_goal_position_{};
     std::optional<Vec2> locked_gap_goal_;
+    std::vector<Vec2> passed_unstructured_gap_positions_;
     Vec2 locked_gap_approach_direction_{1.0, 0.0};
     double locked_gap_corridor_half_width_m_ = 0.0;
     double startup_scan_elapsed_s_ = 0.0;
@@ -460,7 +461,7 @@ class HardwarePlannerRunner {
     bool connected_ = false;
     bool telemetry_ready_ = false;
     bool goal_reached_ = false;
-    bool unstructured_gap_goal_completed_ = false;
+    int passed_unstructured_gap_count_ = 0;
     bool safety_stop_active_ = false;
 };
 

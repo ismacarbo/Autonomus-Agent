@@ -979,7 +979,7 @@ void HardwarePlannerRunner::reset() {
     startup_scan_complete_ = false;
     chosen_gate_index_ = -1;
     goal_reached_ = false;
-    unstructured_gap_goal_completed_ = false;
+    passed_unstructured_gap_count_ = 0;
     safety_stop_active_ = false;
     yaw_offset_ = 0.0;
     last_raw_imu_yaw_ = 0.0;
@@ -1011,6 +1011,7 @@ void HardwarePlannerRunner::reset() {
     planned_trajectory_.clear();
     reference_trajectory_.clear();
     visible_gate_indices_.clear();
+    passed_unstructured_gap_positions_.clear();
     lidar_hits_.clear();
     lidar_map_points_.clear();
     lidar_occupancy_cells_.clear();
@@ -2397,10 +2398,19 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const double required_gap_width = std::max(
         config_.gap_extraction.min_gap_width_m,
         geometry_.body_width + 2.0 * config_.gap_extraction.path_clearance_radius_m);
+    const double passed_gap_reject_radius = std::max(
+        config_.gap_extraction.gap_goal_acceptance_radius_m,
+        std::max(config_.gap_extraction.gap_goal_tolerance_m * 1.15, 0.24));
 
     auto try_add_candidate = [&](const Vec2& target, double base_score) {
         if (!is_inside_bounds(world_, target)) {
             return;
+        }
+
+        for (const Vec2& passed_target : passed_unstructured_gap_positions_) {
+            if (distance(passed_target, target) <= passed_gap_reject_radius) {
+                return;
+            }
         }
 
         const double target_distance = distance(lidar_origin, target);
@@ -2806,17 +2816,6 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         return;
     }
 
-    if (unstructured_gap_goal_completed_) {
-        gates_.clear();
-        gate_specs_.clear();
-        visible_gate_indices_.clear();
-        chosen_gate_index_ = -1;
-        diagnostics_.candidate_gates = 0;
-        diagnostics_.chosen_gate_distance = 0.0;
-        startup_scan_complete_ = true;
-        return;
-    }
-
     if (locked_gap_goal_.has_value()) {
         if (!is_inside_bounds(world_, *locked_gap_goal_)) {
             clear_locked_gap_goal();
@@ -3124,7 +3123,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
 
-    if (goal_reached_ || unstructured_gap_goal_completed_) {
+    if (goal_reached_) {
         commanded_speed_ = 0.0;
         commanded_steer_angle_ = 0.0;
         last_command_.target_speed = 0.0;
@@ -4110,10 +4109,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             distance_to_goal_ = 0.0;
         }
     } else if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
-        if (unstructured_gap_goal_completed_) {
-            distance_to_goal_ = 0.0;
-            goal_reached_ = true;
-        } else if (locked_gap_goal_.has_value()) {
+        if (locked_gap_goal_.has_value()) {
             const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
             const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
             const double crossing_margin =
@@ -4147,10 +4143,13 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             goal_reached_ =
                 goal_reached_ || gate_is_close_and_behind || gate_is_within_acceptance_neighborhood;
             if (goal_reached_) {
+                const Vec2 completed_gap = *locked_gap_goal_;
                 locked_gap_crossed_ = true;
-                unstructured_gap_goal_completed_ = true;
-                publish_locked_gap_goal();
+                passed_unstructured_gap_positions_.push_back(completed_gap);
+                ++passed_unstructured_gap_count_;
+                clear_locked_gap_goal();
                 distance_to_goal_ = 0.0;
+                goal_reached_ = false;
             }
         } else if (chosen_gate_index_ >= 0 && chosen_gate_index_ < static_cast<int>(gate_specs_.size())) {
             distance_to_goal_ =
@@ -4267,6 +4266,9 @@ HardwarePlannerReport HardwarePlannerRunner::current_report() const {
 }
 
 int HardwarePlannerRunner::count_passed_gates() const {
+    if (use_dynamic_gap_gates_ || world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        return passed_unstructured_gap_count_;
+    }
     int total = 0;
     for (const gate& g : gates_) {
         if (g.passed) {
