@@ -4118,6 +4118,12 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
             const double crossing_margin =
                 std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
+            const double acceptance_radius = std::max(
+                config_.gap_extraction.gap_goal_acceptance_radius_m,
+                config_.gap_extraction.gap_goal_tolerance_m);
+            const double acceptance_lateral_limit =
+                locked_gap_corridor_half_width_m_ +
+                std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
             const double gate_heading_local = std::abs(
                 wrap_angle(angle_to(estimate_.position, *locked_gap_goal_) - estimate_.yaw));
             const double gap_distance = distance(estimate_.position, *locked_gap_goal_);
@@ -4127,11 +4133,19 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                     locked_gap_corridor_half_width_m_ +
                     std::max(config_.gap_extraction.target_clearance_radius_m, 0.05) &&
                 gate_heading_local >= 95.0 * kPi / 180.0;
-            distance_to_goal_ = std::max(crossing_margin - longitudinal_progress, 0.0);
+            const bool gate_is_within_acceptance_neighborhood =
+                gap_distance <= acceptance_radius &&
+                (lateral_offset <= acceptance_lateral_limit ||
+                 longitudinal_progress >= -0.05 ||
+                 gate_heading_local >= 80.0 * kPi / 180.0);
+            const double crossing_distance = std::max(crossing_margin - longitudinal_progress, 0.0);
+            const double proximity_distance = std::max(gap_distance - acceptance_radius, 0.0);
+            distance_to_goal_ = std::min(crossing_distance, proximity_distance);
             goal_reached_ =
                 lateral_offset <= locked_gap_corridor_half_width_m_ &&
                 longitudinal_progress >= crossing_margin;
-            goal_reached_ = goal_reached_ || gate_is_close_and_behind;
+            goal_reached_ =
+                goal_reached_ || gate_is_close_and_behind || gate_is_within_acceptance_neighborhood;
             if (goal_reached_) {
                 locked_gap_crossed_ = true;
                 unstructured_gap_goal_completed_ = true;

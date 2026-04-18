@@ -86,6 +86,8 @@ struct GapExtractionConfig {
     double startup_scan_yaw_rate = 0.70;
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
+    double gap_goal_acceptance_radius_m = 0.32;
+    double gap_goal_acceptance_lateral_slack_m = 0.10;
     double gap_goal_cruise_speed_mps = 0.16;
     int locked_gap_grace_frames = 18;
     double locked_gap_soft_hold_heading_rad = 2.35;
