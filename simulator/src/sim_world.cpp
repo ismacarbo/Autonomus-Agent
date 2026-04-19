@@ -262,8 +262,28 @@ std::vector<Vec2> make_hardware_paper_loop() {
         {0.46, 0.13}, {0.86, 0.15}, {1.18, 0.39}, {1.48, 0.63}, {1.84, 0.75},
     };
     seed = chaikin_closed_polyline(seed, 1);
-    seed = resample_closed_polyline(seed, 0.08);
-    return close_polyline_loop(std::move(seed), 0.12);
+    double min_x = std::numeric_limits<double>::infinity();
+    double max_x = -std::numeric_limits<double>::infinity();
+    double min_y = std::numeric_limits<double>::infinity();
+    double max_y = -std::numeric_limits<double>::infinity();
+    for (const Vec2& point : seed) {
+        min_x = std::min(min_x, point.x);
+        max_x = std::max(max_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_y = std::max(max_y, point.y);
+    }
+
+    const double target_width = 0.50;
+    const double scale = target_width / std::max(max_x - min_x, kEps);
+    const Vec2 target_center{0.30, 0.27};
+    const Vec2 source_center{0.5 * (min_x + max_x), 0.5 * (min_y + max_y)};
+    for (Vec2& point : seed) {
+        point.x = target_center.x + (point.x - source_center.x) * scale;
+        point.y = target_center.y + (point.y - source_center.y) * scale;
+    }
+
+    seed = resample_closed_polyline(seed, 0.025);
+    return close_polyline_loop(std::move(seed), 0.04);
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
@@ -837,9 +857,12 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
         case StructuredMapPreset::HardwareTrack:
             // Indoor validation loop shaped after the paper's structured-road example:
             // a larger left lobe, a tighter right lobe, and an S-like connector.
-            world.bounds_ = {0.0, 0.0, 2.20, 2.00};
+            // Kept within roughly half a meter for the real indoor demo area.
+            world.bounds_ = {0.0, 0.0, 0.60, 0.55};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_paper_loop();
+            world.road_centerline_ =
+                rotate_closed_polyline(world.road_centerline_, find_nearest_point_index(world.road_centerline_, {0.30, 0.27}));
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
