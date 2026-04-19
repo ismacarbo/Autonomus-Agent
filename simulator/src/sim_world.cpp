@@ -13,6 +13,10 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kEps = 1e-9;
 
+std::vector<Vec2> close_polyline_loop(std::vector<Vec2> points, double threshold);
+std::vector<Vec2> chaikin_closed_polyline(const std::vector<Vec2>& points, int passes);
+std::vector<Vec2> resample_closed_polyline(const std::vector<Vec2>& points, double spacing);
+
 double dot(const Vec2& a, const Vec2& b) {
     return a.x * b.x + a.y * b.y;
 }
@@ -247,6 +251,19 @@ std::vector<Vec2> make_validation_loop() {
         {9.0, 6.0},
         {5.5, 8.4},
     };
+}
+
+std::vector<Vec2> make_hardware_paper_loop() {
+    std::vector<Vec2> seed = {
+        {1.85, 0.97}, {1.48, 1.15}, {0.96, 1.05}, {0.58, 1.00}, {0.32, 1.22},
+        {0.38, 1.49}, {0.74, 1.53}, {1.10, 1.35}, {1.50, 1.19}, {1.90, 1.35},
+        {2.04, 1.65}, {1.88, 1.85}, {1.58, 1.83}, {1.40, 1.57}, {1.18, 1.37},
+        {0.80, 1.41}, {0.42, 1.37}, {0.16, 1.09}, {0.08, 0.69}, {0.18, 0.33},
+        {0.46, 0.13}, {0.86, 0.15}, {1.18, 0.39}, {1.48, 0.63}, {1.84, 0.75},
+    };
+    seed = chaikin_closed_polyline(seed, 1);
+    seed = resample_closed_polyline(seed, 0.08);
+    return close_polyline_loop(std::move(seed), 0.12);
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
@@ -818,12 +835,11 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::HardwareTrack:
-            // Default indoor hardware track: 0.50 m x 0.50 m circular loop without obstacles.
-            world.bounds_ = {0.0, 0.0, 0.50, 0.50};
+            // Indoor validation loop shaped after the paper's structured-road example:
+            // a larger left lobe, a tighter right lobe, and an S-like connector.
+            world.bounds_ = {0.0, 0.0, 2.20, 2.00};
             world.obstacles_.clear();
-            world.road_centerline_ = close_polyline_loop(
-                make_circle_loop({0.25, 0.25}, 0.20, 20),
-                0.08);
+            world.road_centerline_ = make_hardware_paper_loop();
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);

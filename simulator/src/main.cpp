@@ -2952,7 +2952,9 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
 
     if (show_live_scene) {
         const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
-        draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, 1.45f);
+        const float vehicle_visual_scale =
+            world.environment_mode() == EnvironmentMode::StructuredRoad ? 1.00f : 1.45f;
+        draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, vehicle_visual_scale);
     }
 
     if (ui_state->show_world_hud) {
