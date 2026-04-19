@@ -1455,6 +1455,108 @@ void draw_polyline(ImDrawList* draw_list, const CanvasTransform& tx, const std::
         thickness);
 }
 
+double structured_road_width_for_world(const WorldMap& world) {
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+        return 0.0;
+    }
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    return span <= 5.0 ? 0.60 : 3.0;
+}
+
+std::vector<Vec2> make_offset_polyline(const std::vector<Vec2>& points, double offset) {
+    if (points.size() < 2) {
+        return {};
+    }
+
+    std::vector<Vec2> base = points;
+    const bool closed_loop = base.size() >= 3 && thesis_sim::distance(base.front(), base.back()) <= 0.45;
+    if (closed_loop && base.size() > 2) {
+        base.pop_back();
+    }
+    if (base.size() < 2) {
+        return {};
+    }
+
+    const auto segment_normal = [&](size_t from, size_t to) {
+        const Vec2& a = base[from];
+        const Vec2& b = base[to];
+        const double dx = b.x - a.x;
+        const double dy = b.y - a.y;
+        const double length = std::hypot(dx, dy);
+        if (length <= 1e-9) {
+            return Vec2{0.0, 0.0};
+        }
+        return Vec2{-dy / length, dx / length};
+    };
+
+    std::vector<Vec2> out;
+    out.reserve(base.size() + (closed_loop ? 1 : 0));
+    for (size_t i = 0; i < base.size(); ++i) {
+        Vec2 normal{};
+        if (closed_loop) {
+            const size_t previous = i == 0 ? base.size() - 1 : i - 1;
+            const size_t next = (i + 1) % base.size();
+            const Vec2 prev_normal = segment_normal(previous, i);
+            const Vec2 next_normal = segment_normal(i, next);
+            normal = {prev_normal.x + next_normal.x, prev_normal.y + next_normal.y};
+            const double normal_length = std::hypot(normal.x, normal.y);
+            if (normal_length > 1e-9) {
+                normal.x /= normal_length;
+                normal.y /= normal_length;
+            } else {
+                normal = next_normal;
+            }
+        } else if (i == 0) {
+            normal = segment_normal(0, 1);
+        } else if (i + 1 == base.size()) {
+            normal = segment_normal(i - 1, i);
+        } else {
+            const Vec2 prev_normal = segment_normal(i - 1, i);
+            const Vec2 next_normal = segment_normal(i, i + 1);
+            normal = {prev_normal.x + next_normal.x, prev_normal.y + next_normal.y};
+            const double normal_length = std::hypot(normal.x, normal.y);
+            if (normal_length > 1e-9) {
+                normal.x /= normal_length;
+                normal.y /= normal_length;
+            } else {
+                normal = next_normal;
+            }
+        }
+
+        out.push_back({
+            base[i].x + normal.x * offset,
+            base[i].y + normal.y * offset,
+        });
+    }
+
+    if (closed_loop && !out.empty()) {
+        out.push_back(out.front());
+    }
+    return out;
+}
+
+void draw_structured_road_map(ImDrawList* draw_list, const CanvasTransform& tx, const WorldMap& world) {
+    const std::vector<Vec2>& centerline = world.road_centerline();
+    if (centerline.size() < 2) {
+        return;
+    }
+
+    const double road_width = structured_road_width_for_world(world);
+    const double half_width = 0.5 * road_width;
+    const ImU32 road_bound_color = IM_COL32(255, 96, 96, 230);
+    const ImU32 road_center_color = IM_COL32(122, 232, 158, 190);
+    const ImU32 lane_color = IM_COL32(245, 213, 105, 150);
+
+    draw_polyline(draw_list, tx, make_offset_polyline(centerline, half_width), road_bound_color, 2.4f);
+    draw_polyline(draw_list, tx, make_offset_polyline(centerline, -half_width), road_bound_color, 2.4f);
+    if (road_width >= 1.2) {
+        draw_polyline(draw_list, tx, make_offset_polyline(centerline, road_width / 6.0), lane_color, 1.4f);
+        draw_polyline(draw_list, tx, make_offset_polyline(centerline, -road_width / 6.0), lane_color, 1.4f);
+    }
+    draw_polyline(draw_list, tx, centerline, road_center_color, 2.0f);
+}
+
 void draw_vehicle(ImDrawList* draw_list,
                   const CanvasTransform& tx,
                   const VehicleSnapshot& vehicle,
@@ -1472,8 +1574,12 @@ void draw_vehicle(ImDrawList* draw_list,
     draw_list->AddPolyline(body.data(), static_cast<int>(body.size()), IM_COL32(20, 22, 26, 255), ImDrawFlags_Closed, 2.5f);
 
     for (const WheelPose& wheel : vehicle.wheels) {
+        const Vec2 scaled_wheel_center{
+            vehicle.position.x + (wheel.center.x - vehicle.position.x) * visual_scale,
+            vehicle.position.y + (wheel.center.y - vehicle.position.y) * visual_scale,
+        };
         const auto wheel_box = thesis_sim::make_box_corners(
-            wheel.center,
+            scaled_wheel_center,
             wheel.yaw,
             geometry.wheel_length * visual_scale,
             geometry.wheel_width * visual_scale);
@@ -2066,7 +2172,11 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
     }
 
     if (!sim.world().road_centerline().empty()) {
-        draw_polyline(draw_list, tx, sim.world().road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+        if (sim.world().environment_mode() == EnvironmentMode::StructuredRoad) {
+            draw_structured_road_map(draw_list, tx, sim.world());
+        } else {
+            draw_polyline(draw_list, tx, sim.world().road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+        }
     }
 
     if (ui_state->show_trails) {
@@ -2173,6 +2283,9 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
             {"orange: fused state / estimated trail", kColorEstimateTrail},
             {"yellow: selected planner trajectory", kColorTrajectory},
         };
+        if (sim.world().environment_mode() == EnvironmentMode::StructuredRoad) {
+            legend.push_back({"red: structured road bounds", IM_COL32(255, 96, 96, 230)});
+        }
         if (sim.lidar_enabled() && ui_state->show_lidar_rays) {
             legend.push_back({"green: LiDAR hit rays", kColorLidar});
         }
@@ -2878,11 +2991,17 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
                                  kColorObstacle, 4.0f);
     }
     if (!world.road_centerline().empty()) {
-        draw_polyline(draw_list, tx, world.road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+        if (world.environment_mode() == EnvironmentMode::StructuredRoad) {
+            draw_structured_road_map(draw_list, tx, world);
+        } else {
+            draw_polyline(draw_list, tx, world.road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+        }
     }
 
     if (show_live_scene && ui_state->show_trails) {
-        draw_polyline(draw_list, tx, hardware.frame.trail, kColorEstimateTrail, 2.5f);
+        const ImU32 live_trail_color =
+            world.environment_mode() == EnvironmentMode::StructuredRoad ? kColorTrail : kColorEstimateTrail;
+        draw_polyline(draw_list, tx, hardware.frame.trail, live_trail_color, 2.5f);
         draw_polyline(draw_list, tx, hardware.frame.planned_trajectory, kColorTrajectory, 3.0f);
     }
 
@@ -2966,7 +3085,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
     if (show_live_scene) {
         const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
         const float vehicle_visual_scale =
-            world.environment_mode() == EnvironmentMode::StructuredRoad ? 0.28f : 1.45f;
+            world.environment_mode() == EnvironmentMode::StructuredRoad ? 1.0f : 1.45f;
         draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, vehicle_visual_scale);
     }
 
@@ -3034,9 +3153,15 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         draw_overlay_panel(draw_list, ImVec2(canvas_pos.x + canvas_size.x - 236.0f, canvas_pos.y + 16.0f), 220.0f, top_right);
 
         std::vector<OverlayLine> legend = {
-            {"orange: estimated hardware trail", kColorEstimateTrail},
+            {world.environment_mode() == EnvironmentMode::StructuredRoad
+                 ? "blue: estimated hardware trail"
+                 : "orange: estimated hardware trail",
+             world.environment_mode() == EnvironmentMode::StructuredRoad ? kColorTrail : kColorEstimateTrail},
             {"yellow: selected planner trajectory", kColorTrajectory},
         };
+        if (world.environment_mode() == EnvironmentMode::StructuredRoad) {
+            legend.push_back({"red: structured road bounds", IM_COL32(255, 96, 96, 230)});
+        }
         if (show_live_scene && hardware.scene.lidar_enabled && ui_state->show_lidar_rays) {
             legend.push_back({"green: LiDAR hit rays", kColorLidar});
         }

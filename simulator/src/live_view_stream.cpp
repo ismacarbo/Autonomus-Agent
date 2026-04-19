@@ -1019,12 +1019,10 @@ bool needs_structured_display_normalization(const WorldMap& world) {
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return false;
     }
-    if (points_form_closed_loop(world.road_centerline())) {
-        return false;
-    }
-    const Rect& bounds = world.bounds();
-    const double world_span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
-    return world.structured_preset() == StructuredMapPreset::HardwareTrack || world_span <= 5.0;
+    // Keep structured hardware scenes in physical meters. Remapping compact
+    // tracks onto the large validation road makes the robot footprint and
+    // wheel placement appear to change scale between preview and live stream.
+    return false;
 }
 
 StructuredDisplayRemap make_structured_display_remap(const WorldMap& source_world) {

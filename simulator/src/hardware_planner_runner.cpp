@@ -1079,9 +1079,12 @@ void HardwarePlannerRunner::initialize_planner_state() {
     const double world_height = std::max(bounds.max_y - bounds.min_y, 0.0);
     const double world_span = std::max(world_width, world_height);
     const bool compact_world = world_span <= 5.0;
+    const bool compact_structured_world =
+        compact_world && world_.environment_mode() == EnvironmentMode::StructuredRoad;
 
     sim_ = {};
-    sim_.W = compact_world ? 0.90 : 3.0;
+    sim_.W = compact_structured_world ? clamp_value(geometry_.body_width + 0.36, 0.55, 0.90)
+                                      : (compact_world ? 0.90 : 3.0);
     sim_.T_max = compact_world ? 8.0 : 20.0;
     sim_.la = compact_world ? 1.20 : 8.0;
     sim_.la_stop = compact_world ? 2.40 : 18.0;
