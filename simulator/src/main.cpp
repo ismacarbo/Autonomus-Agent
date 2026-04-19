@@ -1638,10 +1638,23 @@ std::string hardware_launch_hint(const UiState& ui_state) {
         }
         cmd << " --infinite";
     } else {
+        const bool custom_world =
+            structured
+                ? static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset) == StructuredMapPreset::Custom
+                : static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset) == UnstructuredMapPreset::Custom;
         cmd << "thesis_robot_runner"
             << " --stream-host <pc-ip>"
             << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
             << " --scenario " << (structured ? "structured" : "unstructured");
+        if (custom_world) {
+            cmd << " --world-file <copied-custom-map.thmap>";
+        } else if (structured) {
+            cmd << " --structured-map "
+                << structured_map_cli_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset));
+        } else {
+            cmd << " --unstructured-map "
+                << unstructured_map_cli_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset));
+        }
     }
     return cmd.str();
 }
@@ -2953,7 +2966,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
     if (show_live_scene) {
         const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
         const float vehicle_visual_scale =
-            world.environment_mode() == EnvironmentMode::StructuredRoad ? 0.70f : 1.45f;
+            world.environment_mode() == EnvironmentMode::StructuredRoad ? 0.28f : 1.45f;
         draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, vehicle_visual_scale);
     }
 
@@ -3585,10 +3598,11 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 ui_state->hardware_structured_preset = static_cast<int>(next_preset);
                 if (next_preset != StructuredMapPreset::Custom) {
                     load_hardware_editor_from_selection(ui_state);
-                    clear_hardware_world_sync(
+                    queue_current_hardware_world(
                         ui_state,
                         hardware_server,
-                        "Structured preset restored locally. It will be streamed automatically to the next Raspberry runner connection.");
+                        "Structured preset queued for the Raspberry runner.",
+                        "Structured preset restored locally, but it could not be queued for the Raspberry runner.");
                 }
             }
         } else {
@@ -3630,10 +3644,11 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 ui_state->hardware_unstructured_preset = static_cast<int>(next_preset);
                 if (next_preset != UnstructuredMapPreset::Custom) {
                     load_hardware_editor_from_selection(ui_state);
-                    clear_hardware_world_sync(
+                    queue_current_hardware_world(
                         ui_state,
                         hardware_server,
-                        "Unstructured preset restored locally. It will be streamed automatically to the next Raspberry runner connection.");
+                        "Unstructured preset queued for the Raspberry runner.",
+                        "Unstructured preset restored locally, but it could not be queued for the Raspberry runner.");
                 }
             }
         }
@@ -3750,10 +3765,11 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 ui_state->hardware_track_scale = track_scale;
                 if (hardware_track_selected) {
                     load_hardware_editor_from_selection(ui_state);
-                    clear_hardware_world_sync(
+                    queue_current_hardware_world(
                         ui_state,
                         hardware_server,
-                        "Hardware Track scale updated locally. The resized map will be streamed automatically to the next Raspberry runner connection.");
+                        "Hardware Track scale queued for the Raspberry runner.",
+                        "Hardware Track scale updated locally, but it could not be queued for the Raspberry runner.");
                 } else {
                     ui_state->last_hardware_world_sync_status =
                         "Hardware Track scale updated. It will apply the next time you load the Hardware Track preset.";
@@ -3766,10 +3782,11 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::Checkbox("Enable drag editing", &ui_state->map_editor_enabled);
         if (ImGui::Button("Load Selected Scenario", ImVec2(-1.0f, 0.0f))) {
             load_hardware_editor_from_selection(ui_state);
-            clear_hardware_world_sync(
+            queue_current_hardware_world(
                 ui_state,
                 hardware_server,
-                "Selected preset restored locally. It will be streamed automatically to the next Raspberry runner connection.");
+                "Selected preset queued for the Raspberry runner.",
+                "Selected preset restored locally, but it could not be queued for the Raspberry runner.");
         }
         if (hardware.has_scene) {
             if (ImGui::Button("Load Live Stream Scene", ImVec2(-1.0f, 0.0f))) {

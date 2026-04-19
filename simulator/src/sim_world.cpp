@@ -273,17 +273,17 @@ std::vector<Vec2> make_hardware_paper_loop() {
         max_y = std::max(max_y, point.y);
     }
 
-    const double target_width = 0.50;
+    const double target_width = 0.34;
     const double scale = target_width / std::max(max_x - min_x, kEps);
-    const Vec2 target_center{0.30, 0.27};
+    const Vec2 target_center{0.25, 0.22};
     const Vec2 source_center{0.5 * (min_x + max_x), 0.5 * (min_y + max_y)};
     for (Vec2& point : seed) {
         point.x = target_center.x + (point.x - source_center.x) * scale;
         point.y = target_center.y + (point.y - source_center.y) * scale;
     }
 
-    seed = resample_closed_polyline(seed, 0.025);
-    return close_polyline_loop(std::move(seed), 0.04);
+    seed = resample_closed_polyline(seed, 0.018);
+    return close_polyline_loop(std::move(seed), 0.03);
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
@@ -857,8 +857,8 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
         case StructuredMapPreset::HardwareTrack:
             // Indoor validation loop shaped after the paper's structured-road example:
             // a larger left lobe, a tighter right lobe, and an S-like connector.
-            // Kept within roughly half a meter for the real indoor demo area.
-            world.bounds_ = {0.0, 0.0, 0.60, 0.55};
+            // Kept well inside a half-meter indoor demo area.
+            world.bounds_ = {0.0, 0.0, 0.50, 0.42};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_paper_loop();
             world.road_centerline_ =
