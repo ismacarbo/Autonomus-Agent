@@ -67,6 +67,25 @@ double wrap_arc_length(double s, double s_max) {
     return wrapped;
 }
 
+double closed_loop_reference_span(double road_length, double lookahead_distance) {
+    if (!(road_length > 1e-6)) {
+        return 0.0;
+    }
+    if (road_length <= 5.0) {
+        return clamp_value(0.75 * road_length, std::min(0.45, road_length), road_length);
+    }
+    return std::max(4.0, std::min(lookahead_distance, 0.75 * road_length));
+}
+
+bool compact_structured_world(const WorldMap& world) {
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+        return false;
+    }
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    return span <= 0.75;
+}
+
 bool project_curvilinear_state(const clothoid_info& clothoid,
                                const Vec2& position,
                                double s_hint,
@@ -321,7 +340,23 @@ PlannerDrivenVehicleSim::PlannerDrivenVehicleSim(WorldMap world, SimConfig confi
 }
 
 void PlannerDrivenVehicleSim::reset() {
+    geometry_ = VehicleGeometry{};
+    if (compact_structured_world(world_)) {
+        geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.10);
+        geometry_.max_steer_rate = std::max(geometry_.max_steer_rate, 4.50);
+        geometry_.max_curvature = std::max(geometry_.max_curvature, 5.50);
+    }
     rebuild_vehicle_model();
+    MpcFollowerConfig mpc_config{};
+    if (compact_structured_world(world_)) {
+        mpc_config.preview_distance = 0.20;
+        mpc_config.min_lookahead_distance = 0.12;
+        mpc_config.max_steer_rate = 4.50;
+        mpc_config.w_heading = 14.0;
+        mpc_config.w_steer_rate = 0.025;
+    }
+    mpc_follower_ = KinematicBicycleMpcFollower(mpc_config);
+
     step_count_ = 0;
     sim_time_ = 0.0;
     last_j_ = 0.0;
@@ -1113,7 +1148,7 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
     double s_start = closed_structured_loop ? wrap_arc_length(s_current, cl_.end_point_s) : std::max(0.0, s_current);
     double s_end = 0.0;
     if (closed_structured_loop) {
-        const double max_span = std::max(4.0, std::min(lookahead_distance, 0.75 * cl_.end_point_s));
+        const double max_span = closed_loop_reference_span(cl_.end_point_s, lookahead_distance);
         s_end = s_start + max_span;
     } else {
         s_end = std::min(cl_.end_point_s, s_start + lookahead_distance);

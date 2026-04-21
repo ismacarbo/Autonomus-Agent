@@ -24,6 +24,7 @@ struct MpcFollowerConfig {
     int horizon_steps = 12;
     double horizon_dt = 0.10;
     double preview_distance = 1.4;
+    double min_lookahead_distance = 0.6;
     int preview_min_index = 1;
     double min_accel = -1.8;
     double max_accel = 1.3;

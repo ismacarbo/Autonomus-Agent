@@ -48,10 +48,12 @@ TrackingError compute_tracking_error(const PredictState& state, const ReferenceW
     };
 }
 
-double pursuit_curvature(const PredictState& state, const ReferenceWaypoint& target) {
+double pursuit_curvature(const PredictState& state,
+                         const ReferenceWaypoint& target,
+                         double min_lookahead_distance) {
     const double dx = target.position.x - state.position.x;
     const double dy = target.position.y - state.position.y;
-    const double lookahead = std::max(std::hypot(dx, dy), 0.6);
+    const double lookahead = std::max(std::hypot(dx, dy), std::max(min_lookahead_distance, 1e-3));
     const double alpha = wrap_angle(std::atan2(dy, dx) - state.yaw);
     return 2.0 * std::sin(alpha) / lookahead;
 }
@@ -201,7 +203,10 @@ MpcCommand KinematicBicycleMpcFollower::solve(const VehicleGeometry& geometry,
         vehicle_state.steer_angle,
     };
     const TrackingError anchor_error = compute_tracking_error(current_state, anchor_ref);
-    const double preview_curvature = pursuit_curvature(current_state, preview_ref);
+    const double preview_curvature = pursuit_curvature(
+        current_state,
+        preview_ref,
+        config_.min_lookahead_distance);
     const double corrective_curvature =
         0.35 * preview_curvature +
         0.65 * preview_ref.curvature +

@@ -499,12 +499,24 @@ int run_simulated(const AppOptions& options,
         plant->step(planner_config.nominal_dt, control);
         host_time_s += planner_config.nominal_dt;
 
+        const thesis_sim::Rect& world_bounds = runner.world().bounds();
+        const double world_span = std::max(
+            world_bounds.max_x - world_bounds.min_x,
+            world_bounds.max_y - world_bounds.min_y);
+        const bool compact_structured_world =
+            runner.world().environment_mode() == EnvironmentMode::StructuredRoad &&
+            world_span <= 0.75;
+        const double collision_padding =
+            compact_structured_world && runner.world().obstacles().empty()
+                ? -0.20
+                : (compact_structured_world ? 0.0 : 0.05);
         collision = runner.world().collides(
             thesis_sim::make_box_corners(
                 plant->state().position,
                 plant->state().yaw,
                 runner.geometry().body_length,
-                runner.geometry().body_width));
+                runner.geometry().body_width),
+            collision_padding);
     }
 
     stream_frame_if_due(options, runner, &streamer, true);

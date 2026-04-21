@@ -51,6 +51,32 @@ double wrap_arc_length(double s, double s_max) {
     return wrapped;
 }
 
+double closed_loop_reference_span(double road_length, double lookahead_distance) {
+    if (!(road_length > 1e-6)) {
+        return 0.0;
+    }
+    if (road_length <= 5.0) {
+        return clamp_value(0.75 * road_length, std::min(0.45, road_length), road_length);
+    }
+    return std::max(4.0, std::min(lookahead_distance, 0.75 * road_length));
+}
+
+double structured_tracking_speed_floor(const WorldMap& world, double speed_limit) {
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    const double floor = span <= 0.75 ? 0.075 : 0.060;
+    return clamp_value(floor, 0.0, std::max(speed_limit, 0.0));
+}
+
+bool compact_structured_world(const WorldMap& world) {
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+        return false;
+    }
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    return span <= 0.75;
+}
+
 double deg_to_rad(double angle_deg) {
     return angle_deg * kPi / 180.0;
 }
@@ -955,6 +981,22 @@ void HardwarePlannerRunner::apply_world(WorldMap world) {
 }
 
 void HardwarePlannerRunner::reset() {
+    geometry_ = make_vehicle_geometry(config_);
+    if (compact_structured_world(world_)) {
+        geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.10);
+        geometry_.max_curvature = std::max(geometry_.max_curvature, 5.50);
+    }
+    estimator_.set_geometry(geometry_);
+    MpcFollowerConfig mpc_config{};
+    if (compact_structured_world(world_)) {
+        mpc_config.preview_distance = 0.20;
+        mpc_config.min_lookahead_distance = 0.12;
+        mpc_config.max_steer_rate = 4.50;
+        mpc_config.w_heading = 14.0;
+        mpc_config.w_steer_rate = 0.025;
+    }
+    mpc_follower_ = KinematicBicycleMpcFollower(mpc_config);
+
     step_count_ = 0;
     sim_time_ = 0.0;
     last_j_ = 0.0;
@@ -2961,7 +3003,19 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
         if (distance_to_goal_ < std::max(config_.goal_tolerance_m * 2.0, 0.35)) {
             goal_speed_cap = std::min(goal_speed_cap, 0.10);
         }
-        planner_speed_ref_ = std::min(planner_speed_ref_, goal_speed_cap);
+        const bool keep_tracking =
+            !goal_reached_ &&
+            distance_to_goal_ > std::max(config_.goal_tolerance_m * 2.0, 0.25);
+        if (keep_tracking) {
+            planner_speed_ref_ = std::max(
+                planner_speed_ref_,
+                structured_tracking_speed_floor(world_, config_.cruise_speed_limit));
+        }
+        planner_speed_ref_ = clamp_value(planner_speed_ref_, 0.0, goal_speed_cap);
+        planner_accel_ref_ = clamp_value(
+            (planner_speed_ref_ - estimate_.speed) / std::max(dt, 1e-3),
+            -geometry_.max_decel,
+            geometry_.max_accel);
         return;
     }
 
@@ -3093,7 +3147,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     double s_start = closed_structured_loop ? wrap_arc_length(s_current, cl_.end_point_s) : std::max(0.0, s_current);
     double s_end = 0.0;
     if (closed_structured_loop) {
-        const double max_span = std::max(4.0, std::min(lookahead_distance, 0.75 * cl_.end_point_s));
+        const double max_span = closed_loop_reference_span(cl_.end_point_s, lookahead_distance);
         s_end = s_start + max_span;
     } else {
         s_end = std::min(cl_.end_point_s, s_start + lookahead_distance);
@@ -3501,6 +3555,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.target_curvature,
             geometry_);
         last_command_.target_speed *= speed_scale;
+        if (have_reference_trajectory &&
+            !goal_reached_ &&
+            distance_to_goal_ > std::max(config_.goal_tolerance_m * 2.0, 0.25) &&
+            last_command_.target_speed > 1e-4) {
+            last_command_.target_speed = std::max(
+                last_command_.target_speed,
+                structured_tracking_speed_floor(world_, speed_limit));
+        }
         commanded_speed_ = last_command_.target_speed;
     }
 
