@@ -1,0 +1,25 @@
+{
+  "description": "First unstructured simulation-vs-real baseline for model validation and tracking-error analysis.",
+  "simulation_baseline": "reports/thesis_planner_unstructured_wide_slalom_gui_auto_20260317_032610_597.json",
+  "robot_validation_run": "reports/thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260418_181318_932.json",
+  "default_analysis_window": "until_first_gate",
+  "default_robot_glob": "reports/thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260418*.json",
+  "notes": [
+    "The default simulation and hardware reports are not the same physical map.",
+    "Use this as a fitting-ready scaffold and as a first baseline of unstructured behavior.",
+    "For thesis-grade validation, collect matched simulation and robot runs with the same gate/map protocol."
+  ],
+  "primary_signals": [
+    "speed",
+    "yaw_rate",
+    "distance_to_goal_norm",
+    "tracker_cross_track",
+    "tracker_heading_error_deg",
+    "planning_ms",
+    "step_ms"
+  ],
+  "initial_fit_models": [
+    "first_order_speed_from_pwm",
+    "first_order_yaw_rate_from_diff_pwm"
+  ]
+}

@@ -18,6 +18,7 @@ build-pi-headless/
 serialProtocolValidation.py
 committer.sh
 documentation/
+data_analisys/outputs/
 
 # Python cache / bytecode
 __pycache__/

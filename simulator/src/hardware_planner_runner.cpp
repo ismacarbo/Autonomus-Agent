@@ -1083,7 +1083,7 @@ void HardwarePlannerRunner::initialize_planner_state() {
         compact_world && world_.environment_mode() == EnvironmentMode::StructuredRoad;
 
     sim_ = {};
-    sim_.W = compact_structured_world ? clamp_value(geometry_.body_width + 0.36, 0.55, 0.90)
+    sim_.W = compact_structured_world ? clamp_value(geometry_.body_width + 0.08, 0.28, 0.38)
                                       : (compact_world ? 0.90 : 3.0);
     sim_.T_max = compact_world ? 8.0 : 20.0;
     sim_.la = compact_world ? 1.20 : 8.0;

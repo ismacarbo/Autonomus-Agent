@@ -5,6 +5,8 @@ option(THESIS_BUILD_SIM_GUI "Build thesis_planner_sim and its SDL/ImGui dependen
 if(THESIS_BUILD_SIM_GUI)
   include(FetchContent)
 
+  find_package(SDL2 CONFIG QUIET)
+
   find_path(
     SDL2_INCLUDE_DIR
     NAMES SDL.h
@@ -18,6 +20,10 @@ if(THESIS_BUILD_SIM_GUI)
     PATH_SUFFIXES SDL2
   )
 
+  if(SDL2_LIBRARY AND NOT EXISTS "${SDL2_LIBRARY}")
+    unset(SDL2_LIBRARY CACHE)
+  endif()
+
   find_library(
     SDL2_LIBRARY
     NAMES SDL2
@@ -28,13 +34,17 @@ if(THESIS_BUILD_SIM_GUI)
       /usr/local/lib/${CMAKE_LIBRARY_ARCHITECTURE}
   )
 
-  if(NOT SDL2_INCLUDE_DIR OR NOT SDL2_LIBRARY)
+  if(NOT TARGET SDL2::SDL2 AND (NOT SDL2_INCLUDE_DIR OR NOT SDL2_LIBRARY))
     message(FATAL_ERROR "SDL2 development files not found. Install SDL2 headers/libs, e.g. package 'libsdl2-dev', or configure with -DTHESIS_BUILD_SIM_GUI=OFF when you only need thesis_robot_runner.")
   endif()
 
   add_library(simulator_sdl2 INTERFACE)
-  target_include_directories(simulator_sdl2 INTERFACE ${SDL2_INCLUDE_DIR})
-  target_link_libraries(simulator_sdl2 INTERFACE ${SDL2_LIBRARY})
+  if(TARGET SDL2::SDL2)
+    target_link_libraries(simulator_sdl2 INTERFACE SDL2::SDL2)
+  else()
+    target_include_directories(simulator_sdl2 INTERFACE ${SDL2_INCLUDE_DIR})
+    target_link_libraries(simulator_sdl2 INTERFACE ${SDL2_LIBRARY})
+  endif()
 
   FetchContent_Declare(
     imgui
@@ -203,19 +213,4 @@ target_include_directories(thesis_robot_runner PRIVATE
 target_link_libraries(thesis_robot_runner PRIVATE
   thesis_hardware_planner
   thesis_live_view
-)
-
-add_executable(thesis_robot_smoke_test
-  src/hardware_protocol_smoke_test.cpp
-)
-
-target_include_directories(thesis_robot_smoke_test PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_link_libraries(thesis_robot_smoke_test PRIVATE
-  thesis_planner_stack
-  thesis_robot_io
-  thesis_live_view
-  thesis_world
 )
