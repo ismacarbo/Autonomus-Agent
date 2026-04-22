@@ -19,6 +19,7 @@ namespace {
 
 using thesis_sim::ControllerTelemetry;
 using thesis_sim::EnvironmentMode;
+using thesis_sim::GateSpec;
 using thesis_sim::GateBehaviorMode;
 using thesis_sim::HardwarePlannerConfig;
 using thesis_sim::HardwarePlannerReport;
@@ -29,6 +30,7 @@ using thesis_sim::MotorControlMode;
 using thesis_sim::RealRobotBridge;
 using thesis_sim::RealRobotObservation;
 using thesis_sim::RPLidarA1;
+using thesis_sim::Rect;
 using thesis_sim::StructuredMapPreset;
 using thesis_sim::UnstructuredMapPreset;
 using thesis_sim::Vec2;
@@ -62,6 +64,60 @@ struct AppOptions {
 
 double clamp_value(double value, double lo, double hi) {
     return std::max(lo, std::min(value, hi));
+}
+
+Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
+    return {
+        center.x + (point.x - center.x) * scale,
+        center.y + (point.y - center.y) * scale,
+    };
+}
+
+Rect scale_rect_about(const Rect& rect, const Vec2& center, double scale) {
+    const Vec2 min_point = scale_point_about({rect.min_x, rect.min_y}, center, scale);
+    const Vec2 max_point = scale_point_about({rect.max_x, rect.max_y}, center, scale);
+    return {
+        std::min(min_point.x, max_point.x),
+        std::min(min_point.y, max_point.y),
+        std::max(min_point.x, max_point.x),
+        std::max(min_point.y, max_point.y),
+    };
+}
+
+WorldMap fit_structured_hardware_world(WorldMap world) {
+    constexpr double kStructuredMaxSpanM = 0.30;
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+        return world;
+    }
+
+    const Rect bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    if (!(span > kStructuredMaxSpanM)) {
+        return world;
+    }
+
+    const double scale = kStructuredMaxSpanM / span;
+    const Vec2 center{
+        (bounds.min_x + bounds.max_x) * 0.5,
+        (bounds.min_y + bounds.max_y) * 0.5,
+    };
+    world.set_bounds(scale_rect_about(bounds, center, scale));
+    world.set_start(scale_point_about(world.start(), center, scale));
+    world.set_goal(scale_point_about(world.goal(), center, scale));
+    for (Rect& obstacle : world.editable_obstacles()) {
+        obstacle = scale_rect_about(obstacle, center, scale);
+    }
+    for (GateSpec& gate : world.editable_gates()) {
+        gate.position = scale_point_about(gate.position, center, scale);
+        gate.anchor_position = scale_point_about(gate.anchor_position, center, scale);
+        gate.motion_amplitude.x *= scale;
+        gate.motion_amplitude.y *= scale;
+    }
+    for (Vec2& point : world.editable_road_centerline()) {
+        point = scale_point_about(point, center, scale);
+    }
+    world.finalize_editor_changes();
+    return world;
 }
 
 double deg_to_rad(double angle_deg) {
@@ -124,7 +180,7 @@ WorldMap make_world_from_options(const AppOptions& options) {
         return world;
     }
     if (options.environment_mode == EnvironmentMode::StructuredRoad) {
-        return WorldMap::structured_demo(options.structured_preset);
+        return fit_structured_hardware_world(WorldMap::structured_demo(options.structured_preset));
     }
     return WorldMap::unstructured_demo(options.unstructured_preset, GateBehaviorMode::Static, 0);
 }

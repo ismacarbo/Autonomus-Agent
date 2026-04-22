@@ -68,6 +68,11 @@ enum WorkspaceSource {
     kWorkspaceSourceHardwarePlanner = 1,
 };
 
+constexpr double kHardwareStructuredMaxSpanM = 0.30;
+constexpr float kHardwareTrackDefaultScale = 0.42f;
+constexpr float kHardwareTrackMinScale = 0.35f;
+constexpr float kHardwareTrackMaxScale = 0.42f;
+
 enum class MapEditorHandleType {
     None = 0,
     Start,
@@ -92,7 +97,7 @@ struct UiState {
     int hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
     int hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
     int hardware_structured_preset = static_cast<int>(StructuredMapPreset::HardwareTrack);
-    float hardware_track_scale = 1.0f;
+    float hardware_track_scale = kHardwareTrackDefaultScale;
     bool show_grid = true;
     bool show_trails = true;
     bool show_lidar_rays = true;
@@ -167,6 +172,11 @@ Rect scale_rect_about(const Rect& rect, const Vec2& center, double scale) {
     };
 }
 
+double world_max_span(const WorldMap& world) {
+    const Rect bounds = world.bounds();
+    return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+}
+
 WorldMap scale_world_map(const WorldMap& source, double scale) {
     if (std::abs(scale - 1.0) <= 1e-6 || scale <= 0.0) {
         return source;
@@ -199,16 +209,31 @@ WorldMap scale_world_map(const WorldMap& source, double scale) {
     return scaled;
 }
 
+WorldMap fit_hardware_structured_world(WorldMap world) {
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+        return world;
+    }
+
+    const double span = world_max_span(world);
+    if (!(span > kHardwareStructuredMaxSpanM)) {
+        return world;
+    }
+    return scale_world_map(world, kHardwareStructuredMaxSpanM / span);
+}
+
 WorldMap apply_hardware_track_scale(const UiState& ui_state, WorldMap world) {
     const EnvironmentMode selected_mode = static_cast<EnvironmentMode>(ui_state.hardware_environment_mode);
     const StructuredMapPreset selected_structured_preset =
         static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset);
     if (selected_mode == EnvironmentMode::StructuredRoad &&
         selected_structured_preset == StructuredMapPreset::HardwareTrack) {
-        const double scale = std::clamp(static_cast<double>(ui_state.hardware_track_scale), 0.25, 2.0);
-        return scale_world_map(world, scale);
+        const double scale = std::clamp(
+            static_cast<double>(ui_state.hardware_track_scale),
+            static_cast<double>(kHardwareTrackMinScale),
+            static_cast<double>(kHardwareTrackMaxScale));
+        return fit_hardware_structured_world(scale_world_map(world, scale));
     }
-    return world;
+    return fit_hardware_structured_world(std::move(world));
 }
 
 bool validate_hardware_structured_world(const WorldMap& world, std::string* error_message) {
@@ -240,9 +265,9 @@ bool validate_hardware_structured_world(const WorldMap& world, std::string* erro
     const Rect bounds = world.bounds();
     const double bounds_span_x = bounds.max_x - bounds.min_x;
     const double bounds_span_y = bounds.max_y - bounds.min_y;
-    if (std::max(road_span_x, road_span_y) < 0.20 || std::max(bounds_span_x, bounds_span_y) < 0.30) {
+    if (std::max(road_span_x, road_span_y) < 0.12 || std::max(bounds_span_x, bounds_span_y) < 0.24) {
         if (error_message != nullptr) {
-            *error_message = "Structured custom map rejected: the edited road is too small for the hardware viewport and robot footprint.";
+            *error_message = "Structured custom map rejected: the edited road is too small for the micro indoor hardware viewport.";
         }
         return false;
     }
@@ -544,7 +569,7 @@ WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
         ui_state.hardware_editor_world.environment_mode() == EnvironmentMode::StructuredRoad) {
         WorldMap custom = ui_state.hardware_editor_world;
         custom.finalize_editor_changes();
-        return custom;
+        return fit_hardware_structured_world(std::move(custom));
     }
     WorldMap world = make_world_from_mode(selected_mode, selected_preset, selected_structured_preset, GateBehaviorMode::Static, 0);
     world = apply_hardware_track_scale(ui_state, std::move(world));
@@ -1517,6 +1542,9 @@ double structured_road_width_for_world(const WorldMap& world) {
     }
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    if (span <= 0.35) {
+        return std::max(0.08, span * 0.38);
+    }
     return span <= 5.0 ? 0.14 : 3.0;
 }
 
@@ -1620,6 +1648,9 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
 
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    if (span <= 0.35) {
+        return 0.28f;
+    }
     if (span <= 0.75) {
         return 0.55f;
     }
@@ -4070,6 +4101,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             WorldMap applied_world = ui_state->hardware_editor_world;
             applied_world.finalize_editor_changes();
             applied_world = sanitize_hardware_unstructured_world(std::move(applied_world));
+            applied_world = fit_hardware_structured_world(std::move(applied_world));
             std::string validation_error;
             if (!validate_hardware_world(applied_world, &validation_error)) {
                 ui_state->hardware_editor_world = previous_world;
@@ -4093,7 +4125,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         };
         if (hardware_structured_mode) {
             float track_scale = ui_state->hardware_track_scale;
-            if (ImGui::SliderFloat("Track Scale", &track_scale, 0.35f, 1.40f, "%.2fx")) {
+            if (ImGui::SliderFloat("Track Scale", &track_scale, kHardwareTrackMinScale, kHardwareTrackMaxScale, "%.2fx")) {
                 ui_state->hardware_track_scale = track_scale;
                 if (hardware_track_selected) {
                     load_hardware_editor_from_selection(ui_state);

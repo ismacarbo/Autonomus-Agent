@@ -86,6 +86,15 @@ bool compact_structured_world(const WorldMap& world) {
     return span <= 0.75;
 }
 
+double world_span_m(const WorldMap& world) {
+    const Rect& bounds = world.bounds();
+    return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+}
+
+bool micro_structured_world(const WorldMap& world) {
+    return compact_structured_world(world) && world_span_m(world) <= 0.35;
+}
+
 bool project_curvilinear_state(const clothoid_info& clothoid,
                                const Vec2& position,
                                double s_hint,
@@ -341,14 +350,24 @@ PlannerDrivenVehicleSim::PlannerDrivenVehicleSim(WorldMap world, SimConfig confi
 
 void PlannerDrivenVehicleSim::reset() {
     geometry_ = VehicleGeometry{};
-    if (compact_structured_world(world_)) {
+    if (micro_structured_world(world_)) {
+        geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.35);
+        geometry_.max_steer_rate = std::max(geometry_.max_steer_rate, 8.00);
+        geometry_.max_curvature = std::max(geometry_.max_curvature, 14.0);
+    } else if (compact_structured_world(world_)) {
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.10);
         geometry_.max_steer_rate = std::max(geometry_.max_steer_rate, 4.50);
         geometry_.max_curvature = std::max(geometry_.max_curvature, 5.50);
     }
     rebuild_vehicle_model();
     MpcFollowerConfig mpc_config{};
-    if (compact_structured_world(world_)) {
+    if (micro_structured_world(world_)) {
+        mpc_config.preview_distance = 0.08;
+        mpc_config.min_lookahead_distance = 0.05;
+        mpc_config.max_steer_rate = 8.00;
+        mpc_config.w_heading = 18.0;
+        mpc_config.w_steer_rate = 0.020;
+    } else if (compact_structured_world(world_)) {
         mpc_config.preview_distance = 0.20;
         mpc_config.min_lookahead_distance = 0.12;
         mpc_config.max_steer_rate = 4.50;
@@ -399,17 +418,29 @@ void PlannerDrivenVehicleSim::reset() {
     visible_gate_indices_.clear();
     lidar_hits_.clear();
 
+    const Rect& bounds = world_.bounds();
+    const double world_width = std::max(bounds.max_x - bounds.min_x, 0.0);
+    const double world_height = std::max(bounds.max_y - bounds.min_y, 0.0);
+    const double world_span = std::max(world_width, world_height);
+    const bool compact_world = world_span <= 5.0;
+    const bool compact_structured_world =
+        compact_world && world_.environment_mode() == EnvironmentMode::StructuredRoad;
+    const bool micro_structured_world =
+        compact_structured_world && world_span <= 0.35;
+
     sim_ = {};
-    sim_.W = 3.0;
-    sim_.T_max = 20.0;
-    sim_.la = 8.0;
-    sim_.la_stop = 18.0;
+    sim_.W = micro_structured_world ? clamp_value(world_span * 0.42, 0.10, 0.16)
+             : (compact_structured_world ? 0.32 : (compact_world ? 0.90 : 3.0));
+    sim_.T_max = micro_structured_world ? 4.0 : (compact_world ? 8.0 : 20.0);
+    sim_.la = micro_structured_world ? 0.35 : (compact_world ? 1.20 : 8.0);
+    sim_.la_stop = micro_structured_world ? 0.70 : (compact_world ? 2.40 : 18.0);
     sim_.z_coord = 0.1;
     sim_.veh_W = geometry_.body_width;
     sim_.veh_L = geometry_.body_length;
-    sim_.end_sim = 200.0;
-    sim_.tol_obst = 0.25;
-    sim_.lat_tol = 0.2;
+    sim_.end_sim = micro_structured_world ? std::max(world_span * 8.0, 3.0)
+                   : (compact_world ? std::max(world_span * 4.0, 6.0) : 200.0);
+    sim_.tol_obst = micro_structured_world ? 0.06 : (compact_world ? 0.18 : 0.25);
+    sim_.lat_tol = micro_structured_world ? 0.04 : (compact_world ? 0.12 : 0.2);
     sim_.DT = static_cast<float>(config_.dt);
     sim_.V_max = config_.cruise_speed_limit;
 
