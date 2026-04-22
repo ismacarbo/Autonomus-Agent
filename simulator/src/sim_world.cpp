@@ -267,19 +267,29 @@ std::vector<Vec2> make_indoor_circle_loop() {
     return resample_closed_polyline(loop, 0.015);
 }
 
-std::vector<Vec2> make_hardware_straight_track() {
-    constexpr int kSamples = 21;
-    const Vec2 start{0.10, 0.18};
-    const Vec2 goal{0.40, 0.18};
+std::vector<Vec2> make_hardware_road_track() {
+    constexpr int kStraightSamples = 9;
+    constexpr int kArcSamples = 19;
+    const Vec2 lower_start{0.1125, 0.075};
+    const Vec2 upper_start{0.1125, 0.225};
+    const Vec2 arc_center{0.1125, 0.150};
+    const double arc_radius = 0.075;
     std::vector<Vec2> track;
-    track.reserve(kSamples);
-    for (int i = 0; i < kSamples; ++i) {
-        const double alpha = static_cast<double>(i) / static_cast<double>(kSamples - 1);
+    track.reserve(kStraightSamples + kArcSamples + 1);
+
+    for (int i = 0; i < kStraightSamples; ++i) {
+        const double alpha = static_cast<double>(i) / static_cast<double>(kStraightSamples - 1);
+        track.push_back(interpolate(lower_start, upper_start, alpha));
+    }
+    for (int i = 1; i < kArcSamples; ++i) {
+        const double alpha = static_cast<double>(i) / static_cast<double>(kArcSamples - 1);
+        const double theta = 0.5 * kPi - alpha * kPi;
         track.push_back({
-            start.x + alpha * (goal.x - start.x),
-            start.y + alpha * (goal.y - start.y),
+            arc_center.x + arc_radius * std::cos(theta),
+            arc_center.y + arc_radius * std::sin(theta),
         });
     }
+    track.push_back(track.front());
     return track;
 }
 
@@ -861,14 +871,13 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::HardwareTrack:
-            // Minimal indoor validation preset: a straight 30 cm segment.
-            // This isolates heading acquisition and longitudinal tracking before
-            // moving on to curves and closed loops.
-            world.bounds_ = {0.0, 0.0, 0.50, 0.36};
+            // Minimal indoor road validation: one short straight plus one
+            // semicircular bend, closed as a tiny D-shaped track in 30 cm.
+            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
             world.obstacles_.clear();
-            world.road_centerline_ = make_hardware_straight_track();
+            world.road_centerline_ = make_hardware_road_track();
             world.start_ = world.road_centerline_.front();
-            world.goal_ = world.road_centerline_.back();
+            world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         default:

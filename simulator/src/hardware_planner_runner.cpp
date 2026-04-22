@@ -4423,16 +4423,23 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             tiny_indoor_loop ? std::clamp(0.10 * cl_.end_point_s, 0.065, 0.10)
                              : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
         const double goal_position_acceptance =
-            tiny_indoor_loop ? std::clamp(0.18 * structured_course_span_m(world_), 0.065, 0.09)
+            tiny_indoor_loop ? std::clamp(0.28 * structured_course_span_m(world_), 0.09, 0.11)
                              : std::max(config_.goal_tolerance_m * 2.0, 0.35);
+        const bool tiny_loop_neighborhood_complete =
+            tiny_indoor_loop &&
+            structured_goal_ready_ &&
+            structured_progress_s_ >= 0.50 * structured_goal_progress_target_ &&
+            goal_position_distance < goal_position_acceptance;
         const bool returned_to_start =
             wrapped_track_s <= start_window || wrapped_track_s >= std::max(cl_.end_point_s - start_window, 0.0);
         distance_to_goal_ = structured_goal_ready_
                                 ? std::max(structured_goal_progress_target_ - structured_progress_s_, 0.0)
                                 : cl_.end_point_s;
-        goal_reached_ = structured_goal_ready_ &&
-                        structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
-                        (returned_to_start || goal_position_distance < goal_position_acceptance);
+        goal_reached_ =
+            tiny_loop_neighborhood_complete ||
+            (structured_goal_ready_ &&
+             structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
+             (returned_to_start || goal_position_distance < goal_position_acceptance));
         if (goal_reached_) {
             distance_to_goal_ = 0.0;
         }
