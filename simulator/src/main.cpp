@@ -68,7 +68,7 @@ enum WorkspaceSource {
     kWorkspaceSourceHardwarePlanner = 1,
 };
 
-constexpr double kHardwareStructuredMaxSpanM = 0.60;
+constexpr double kHardwareStructuredMaxSpanM = 0.40;
 constexpr float kHardwareTrackDefaultScale = 0.78f;
 constexpr float kHardwareTrackMinScale = 0.55f;
 constexpr float kHardwareTrackMaxScale = 1.00f;
@@ -237,10 +237,10 @@ WorldMap fit_hardware_structured_world(WorldMap world) {
         return world;
     }
 
-    constexpr double kRoadEdgeMarginM = 0.08;
+    constexpr double kRoadEdgeMarginM = 0.04;
     const Rect content = structured_content_bounds(world);
     const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-    const double target_content_span = std::max(0.34, kHardwareStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
+    const double target_content_span = std::max(0.28, kHardwareStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
     const Vec2 center{
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,

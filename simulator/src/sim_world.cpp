@@ -233,7 +233,7 @@ std::vector<Vec2> make_zigzag_road() {
 }
 
 std::vector<Vec2> make_validation_loop() {
-    return {
+    std::vector<Vec2> seed = {
         {4.0, 11.0},
         {6.5, 14.0},
         {10.5, 16.8},
@@ -251,6 +251,26 @@ std::vector<Vec2> make_validation_loop() {
         {9.0, 6.0},
         {5.5, 8.4},
     };
+    double min_x = std::numeric_limits<double>::infinity();
+    double max_x = -std::numeric_limits<double>::infinity();
+    double min_y = std::numeric_limits<double>::infinity();
+    double max_y = -std::numeric_limits<double>::infinity();
+    for (const Vec2& point : seed) {
+        min_x = std::min(min_x, point.x);
+        max_x = std::max(max_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_y = std::max(max_y, point.y);
+    }
+
+    const double target_span = 0.32;
+    const double scale = target_span / std::max(std::max(max_x - min_x, max_y - min_y), kEps);
+    const Vec2 target_center{0.20, 0.20};
+    const Vec2 source_center{0.5 * (min_x + max_x), 0.5 * (min_y + max_y)};
+    for (Vec2& point : seed) {
+        point.x = target_center.x + (point.x - source_center.x) * scale;
+        point.y = target_center.y + (point.y - source_center.y) * scale;
+    }
+    return seed;
 }
 
 std::vector<Vec2> make_hardware_straight_track() {
@@ -827,6 +847,7 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
     switch (preset) {
         case StructuredMapPreset::ValidationRoad:
         case StructuredMapPreset::Custom:
+            world.bounds_ = {0.0, 0.0, 0.40, 0.40};
             world.road_centerline_ = close_polyline_loop(make_validation_loop(), 0.45);
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
