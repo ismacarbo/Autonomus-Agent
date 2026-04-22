@@ -84,6 +84,20 @@ bool micro_structured_world(const WorldMap& world) {
     return compact_structured_world(world) && world_span_m(world) <= 0.35;
 }
 
+double structured_goal_active_distance(const WorldMap& world, double configured_goal_tolerance) {
+    if (micro_structured_world(world)) {
+        return std::max(0.040, 0.16 * world_span_m(world));
+    }
+    return std::max(configured_goal_tolerance * 2.0, 0.25);
+}
+
+double structured_slowdown_radius(const WorldMap& world, double configured_slowdown_radius) {
+    if (micro_structured_world(world)) {
+        return clamp_value(0.65 * world_span_m(world), 0.10, 0.22);
+    }
+    return std::max(configured_slowdown_radius, 0.25);
+}
+
 double deg_to_rad(double angle_deg) {
     return angle_deg * kPi / 180.0;
 }
@@ -3018,15 +3032,17 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
         config_.cruise_speed_limit);
 
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
-        const double slowdown_radius = std::max(config_.goal_slowdown_radius_m, 0.25);
+        const double slowdown_radius = structured_slowdown_radius(world_, config_.goal_slowdown_radius_m);
+        const double active_distance = structured_goal_active_distance(world_, config_.goal_tolerance_m);
+        const double base_speed = micro_structured_world(world_) ? 0.035 : 0.060;
         const double alpha = clamp_value(distance_to_goal_ / slowdown_radius, 0.0, 1.0);
-        double goal_speed_cap = 0.06 + alpha * (config_.cruise_speed_limit - 0.06);
-        if (distance_to_goal_ < std::max(config_.goal_tolerance_m * 2.0, 0.35)) {
-            goal_speed_cap = std::min(goal_speed_cap, 0.10);
+        double goal_speed_cap = base_speed + alpha * (config_.cruise_speed_limit - base_speed);
+        if (distance_to_goal_ < active_distance) {
+            goal_speed_cap = std::min(goal_speed_cap, micro_structured_world(world_) ? 0.045 : 0.10);
         }
         const bool keep_tracking =
             !goal_reached_ &&
-            distance_to_goal_ > std::max(config_.goal_tolerance_m * 2.0, 0.25);
+            distance_to_goal_ > active_distance;
         if (keep_tracking) {
             planner_speed_ref_ = std::max(
                 planner_speed_ref_,
@@ -3567,7 +3583,32 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
 
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad && !safety_stop_active_) {
-        const double slowdown_radius = std::max(config_.goal_slowdown_radius_m, 0.25);
+        const double active_distance = structured_goal_active_distance(world_, config_.goal_tolerance_m);
+        const bool keep_tracking = !goal_reached_ && distance_to_goal_ > active_distance;
+        if (micro_structured_world(world_) &&
+            keep_tracking &&
+            have_reference_trajectory &&
+            last_mpc_command_.has_value()) {
+            const double heading_error = last_mpc_command_->heading_error;
+            if (std::abs(heading_error) > deg_to_rad(70.0)) {
+                use_direct_yaw_rate_command = true;
+                direct_yaw_rate_command = clamp_value(
+                    -1.25 * heading_error,
+                    -0.85 * config_.drive.max_yaw_rate,
+                    0.85 * config_.drive.max_yaw_rate);
+                if (std::abs(direct_yaw_rate_command) < 0.35) {
+                    direct_yaw_rate_command = signum(direct_yaw_rate_command == 0.0 ? -heading_error
+                                                                                    : direct_yaw_rate_command) *
+                                              0.35;
+                }
+                commanded_speed_ = 0.0;
+                commanded_steer_angle_ = 0.0;
+                last_command_.target_speed = 0.0;
+                last_command_.target_curvature = 0.0;
+            }
+        }
+
+        const double slowdown_radius = structured_slowdown_radius(world_, config_.goal_slowdown_radius_m);
         const double speed_scale = structured_tracking_speed_scale(
             distance_to_goal_,
             slowdown_radius,
@@ -3577,9 +3618,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             geometry_);
         last_command_.target_speed *= speed_scale;
         if (have_reference_trajectory &&
-            !goal_reached_ &&
-            distance_to_goal_ > std::max(config_.goal_tolerance_m * 2.0, 0.25) &&
-            last_command_.target_speed > 1e-4) {
+            keep_tracking &&
+            !use_direct_yaw_rate_command) {
             last_command_.target_speed = std::max(
                 last_command_.target_speed,
                 structured_tracking_speed_floor(world_, speed_limit));

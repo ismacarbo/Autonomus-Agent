@@ -1333,6 +1333,8 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::CircleLoop;
             } else if (value == "zigzag") {
                 options.structured_preset = StructuredMapPreset::ZigZag;
+            } else if (value == "hardware" || value == "hardware_track") {
+                options.structured_preset = StructuredMapPreset::HardwareTrack;
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
@@ -1353,6 +1355,8 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::CircleLoop;
             } else if (value == "zigzag") {
                 options.structured_preset = StructuredMapPreset::ZigZag;
+            } else if (value == "hardware" || value == "hardware_track") {
+                options.structured_preset = StructuredMapPreset::HardwareTrack;
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
@@ -1543,7 +1547,7 @@ double structured_road_width_for_world(const WorldMap& world) {
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
     if (span <= 0.35) {
-        return std::max(0.08, span * 0.38);
+        return std::clamp(span * 0.18, 0.045, 0.065);
     }
     return span <= 5.0 ? 0.14 : 3.0;
 }
@@ -1649,7 +1653,7 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
     if (span <= 0.35) {
-        return 0.28f;
+        return 0.24f;
     }
     if (span <= 0.75) {
         return 0.55f;
@@ -1660,11 +1664,22 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
     return 1.0f;
 }
 
+ImU32 hardware_vehicle_body_color_for_world(const WorldMap& world) {
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+        return kColorBody;
+    }
+
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    return span <= 0.35 ? IM_COL32(238, 239, 226, 188) : kColorBody;
+}
+
 void draw_vehicle(ImDrawList* draw_list,
                   const CanvasTransform& tx,
                   const VehicleSnapshot& vehicle,
                   const thesis_sim::VehicleGeometry& geometry,
-                  float visual_scale = 1.0f) {
+                  float visual_scale = 1.0f,
+                  ImU32 body_color = kColorBody) {
     std::array<ImVec2, 4> body{};
     for (size_t i = 0; i < body.size(); ++i) {
         const Vec2 scaled_corner{
@@ -1673,7 +1688,7 @@ void draw_vehicle(ImDrawList* draw_list,
         };
         body[i] = world_to_screen(tx, scaled_corner);
     }
-    draw_list->AddConvexPolyFilled(body.data(), static_cast<int>(body.size()), kColorBody);
+    draw_list->AddConvexPolyFilled(body.data(), static_cast<int>(body.size()), body_color);
     draw_list->AddPolyline(body.data(), static_cast<int>(body.size()), IM_COL32(20, 22, 26, 255), ImDrawFlags_Closed, 2.5f);
 
     for (const WheelPose& wheel : vehicle.wheels) {
@@ -3286,7 +3301,12 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
 
     if (show_live_scene) {
         const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
-        draw_vehicle(draw_list, tx, vehicle, hardware.scene.geometry, hardware_vehicle_visual_scale_for_world(world));
+        draw_vehicle(draw_list,
+                     tx,
+                     vehicle,
+                     hardware.scene.geometry,
+                     hardware_vehicle_visual_scale_for_world(world),
+                     hardware_vehicle_body_color_for_world(world));
     }
 
     if (ui_state->show_world_hud) {
