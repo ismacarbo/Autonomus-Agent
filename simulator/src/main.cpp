@@ -1018,9 +1018,12 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     }
 
     const std::string status =
-        hardware_server.connected()
-            ? (hardware.frame.goal_reached ? "goal_reached" : (hardware.frame.safety_stop_active ? "safety_stop" : "live"))
-            : (hardware_server.listening() ? "listening" : "idle");
+        hardware.frame.goal_reached
+            ? "goal_reached"
+            : (hardware.frame.safety_stop_active ? "safety_stop"
+                                                : (hardware_server.connected()
+                                                       ? "live"
+                                                       : (hardware_server.listening() ? "listening" : "idle")));
 
     const MetricSummary planning_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::planning_ms);
     const MetricSummary tracking_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::tracking_ms);

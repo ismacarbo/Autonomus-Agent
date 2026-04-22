@@ -3747,11 +3747,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 closed_structured_loop &&
                 std::abs(estimate_.speed) < 0.012 &&
                 heading_error_abs > deg_to_rad(100.0);
+            const bool stalled_indoor_heading =
+                tiny_indoor_loop &&
+                closed_structured_loop &&
+                !early_progress &&
+                std::abs(estimate_.speed) < 0.020 &&
+                tracker_cross_track_error_ < 0.030 &&
+                heading_error_abs > deg_to_rad(72.0);
             if ((allow_direct_yaw_acquire &&
                  (heading_error_abs > enter_heading_rad ||
                   (early_progress &&
                    heading_error_abs > deg_to_rad(tiny_indoor_loop ? 32.0 : 40.0)))) ||
-                severe_indoor_heading) {
+                severe_indoor_heading ||
+                stalled_indoor_heading) {
                 use_direct_yaw_rate_command = true;
                 direct_yaw_rate_command = clamp_value(
                     -yaw_gain * heading_error,

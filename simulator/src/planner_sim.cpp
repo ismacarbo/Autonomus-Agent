@@ -77,6 +77,45 @@ double closed_loop_reference_span(double road_length, double lookahead_distance)
     return std::max(4.0, std::min(lookahead_distance, 0.75 * road_length));
 }
 
+double stabilize_structured_track_s(double candidate_s,
+                                    double previous_s,
+                                    double road_length,
+                                    double max_forward_step,
+                                    double* progress_delta) {
+    if (!(road_length > 1e-6)) {
+        if (progress_delta != nullptr) {
+            *progress_delta = 0.0;
+        }
+        return 0.0;
+    }
+
+    const double safe_step = std::max(max_forward_step, 0.02);
+    if (!std::isfinite(previous_s)) {
+        if (progress_delta != nullptr) {
+            *progress_delta = 0.0;
+        }
+        return wrap_arc_length(candidate_s, road_length);
+    }
+
+    const double previous_wrapped = wrap_arc_length(previous_s, road_length);
+    double delta_s = candidate_s - previous_wrapped;
+    if (delta_s > 0.5 * road_length) {
+        delta_s -= road_length;
+    } else if (delta_s < -0.5 * road_length) {
+        delta_s += road_length;
+    }
+
+    if (delta_s < -0.15) {
+        delta_s = 0.0;
+    }
+    delta_s = clamp_value(delta_s, 0.0, safe_step);
+    if (progress_delta != nullptr) {
+        *progress_delta = delta_s;
+    }
+
+    return wrap_arc_length(previous_wrapped + delta_s, road_length);
+}
+
 bool compact_structured_world(const WorldMap& world) {
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return false;
@@ -1134,8 +1173,26 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
         s_current = clamp_value(std::max(0.0, s_current), 0.0, cl_.end_point_s);
     }
 
+    double structured_progress_delta = 0.0;
     double lateral_offset = 0.0;
     if (!project_curvilinear_state(cl_, navigation_position_, s_current, closed_structured_loop, &s_current, &lateral_offset)) {
+        double x_on_path = 0.0;
+        double y_on_path = 0.0;
+        cl_.prev_road.eval(s_current, x_on_path, y_on_path);
+        const double path_heading = wrap_angle(cl_.prev_road.theta(s_current));
+        const double dx = navigation_position_.x - x_on_path;
+        const double dy = navigation_position_.y - y_on_path;
+        lateral_offset = -std::sin(path_heading) * dx + std::cos(path_heading) * dy;
+    }
+    if (closed_structured_loop) {
+        const double max_forward_step =
+            std::max(navigation_speed_ * std::max(config_.dt, 1e-3) + 0.20, 0.08);
+        s_current = stabilize_structured_track_s(
+            s_current,
+            structured_last_s_,
+            cl_.end_point_s,
+            max_forward_step,
+            &structured_progress_delta);
         double x_on_path = 0.0;
         double y_on_path = 0.0;
         cl_.prev_road.eval(s_current, x_on_path, y_on_path);
@@ -1152,25 +1209,17 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
 
     if (closed_structured_loop) {
         if (!structured_goal_ready_) {
-            const double goal_epsilon = std::clamp(0.02 * cl_.end_point_s, 0.25, 1.0);
-            structured_goal_progress_target_ = std::max(0.0, cl_.end_point_s - goal_epsilon);
+            structured_goal_progress_target_ = std::max(0.0, cl_.end_point_s);
             structured_goal_position_ = world_.start();
             structured_goal_ready_ = structured_goal_progress_target_ > 0.0;
         }
 
         if (!std::isfinite(structured_last_s_)) {
-            structured_last_s_ = s_current;
             structured_progress_s_ = 0.0;
         } else {
-            double delta_s = s_current - structured_last_s_;
-            if (delta_s < -0.5 * cl_.end_point_s) {
-                delta_s += cl_.end_point_s;
-            } else if (delta_s > 0.5 * cl_.end_point_s) {
-                delta_s -= cl_.end_point_s;
-            }
-            structured_progress_s_ = std::max(0.0, structured_progress_s_ + delta_s);
-            structured_last_s_ = s_current;
+            structured_progress_s_ = std::max(0.0, structured_progress_s_ + structured_progress_delta);
         }
+        structured_last_s_ = s_current;
     }
 
     const bool unstructured = world_.environment_mode() == EnvironmentMode::UnstructuredGates;
@@ -1316,15 +1365,29 @@ void PlannerDrivenVehicleSim::step() {
     update_vehicle_snapshot();
     collision_ = world_.collides(vehicle_.body_corners);
     if (structured_road_is_closed_loop(world_)) {
+        const bool tiny_indoor_loop = micro_structured_world(world_);
+        const double wrapped_track_s =
+            std::isfinite(x0_.x) ? wrap_arc_length(x0_.x, cl_.end_point_s) : 0.0;
         const double goal_position_distance =
             distance(vehicle_.position, structured_goal_ready_ ? structured_goal_position_ : world_.start());
         distance_to_goal_ = structured_goal_ready_
                                 ? std::max(structured_goal_progress_target_ - structured_progress_s_, 0.0)
                                 : cl_.end_point_s;
-        const double progress_margin = std::max(0.8, 0.03 * std::max(cl_.end_point_s, 1.0));
-        goal_reached_ = structured_goal_ready_ &&
-                        structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
-                        goal_position_distance < 0.75;
+        const double progress_margin =
+            tiny_indoor_loop ? std::clamp(0.11 * cl_.end_point_s, 0.065, 0.10)
+                             : std::clamp(0.03 * std::max(cl_.end_point_s, 1.0), 0.05, 0.20);
+        const double start_window =
+            tiny_indoor_loop ? std::clamp(0.10 * cl_.end_point_s, 0.065, 0.10)
+                             : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
+        const double goal_position_acceptance =
+            tiny_indoor_loop ? std::clamp(0.28 * world_span_m(world_), 0.09, 0.11) : 0.35;
+        const bool returned_to_start =
+            wrapped_track_s <= start_window ||
+            wrapped_track_s >= std::max(cl_.end_point_s - start_window, 0.0);
+        goal_reached_ =
+            structured_goal_ready_ &&
+            structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
+            (returned_to_start || goal_position_distance < goal_position_acceptance);
     } else {
         distance_to_goal_ = distance(vehicle_.position, world_.goal());
         goal_reached_ = distance_to_goal_ < 0.75 && std::abs(vehicle_.speed) < 0.15;

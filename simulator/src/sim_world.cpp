@@ -287,20 +287,28 @@ std::vector<Vec2> make_hardware_road_track() {
 }
 
 std::vector<Vec2> make_hardware_figure_eight_track() {
-    std::vector<Vec2> track = {
-        {0.150, 0.225},
-        {0.085, 0.220},
-        {0.055, 0.175},
-        {0.075, 0.105},
-        {0.150, 0.075},
-        {0.225, 0.105},
-        {0.245, 0.175},
-        {0.215, 0.220},
-    };
-    track = close_polyline_loop(std::move(track), 0.02);
-    track = chaikin_closed_polyline(track, 3);
-    track = close_polyline_loop(std::move(track), 0.02);
-    return resample_closed_polyline(track, 0.012);
+    constexpr int kSamples = 96;
+    constexpr double kStartPhase = 0.5 * kPi;
+    const Vec2 center{0.150, 0.150};
+    const double radius_x = 0.080;
+    const double radius_y = 0.050;
+
+    std::vector<Vec2> track;
+    track.reserve(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+        const double phase =
+            kStartPhase + 2.0 * kPi * static_cast<double>(i) / static_cast<double>(kSamples);
+        // A 1:2 Lissajous curve yields a true figure-eight while keeping the
+        // start away from the center crossover, which is easier to track on
+        // the indoor hardware loop than the previous smoothed oval.
+        track.push_back({
+            center.x + radius_x * std::sin(phase),
+            center.y + radius_y * std::sin(2.0 * phase),
+        });
+    }
+
+    track = close_polyline_loop(std::move(track), 0.01);
+    return resample_closed_polyline(track, 0.008);
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
