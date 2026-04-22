@@ -3867,8 +3867,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
             tiny_indoor_structured_loop(world_) &&
             last_command_.target_speed > 1e-4) {
+            double forward_curvature_limit =
+                0.82 / std::max(half_track, 1e-3);
+            if (world_.structured_preset() == StructuredMapPreset::FigureEight) {
+                // The true figure-eight needs materially more curvature than the
+                // oval-like indoor loops. Keeping the old cap makes the robot
+                // understeer and drive almost straight through the first lobe.
+                forward_curvature_limit = std::max(forward_curvature_limit, 10.0);
+            }
+            forward_curvature_limit = std::min(forward_curvature_limit, geometry_.max_curvature);
             const double forward_yaw_limit =
-                0.82 * last_command_.target_speed / std::max(half_track, 1e-3);
+                forward_curvature_limit * last_command_.target_speed;
             last_command_.target_yaw_rate = clamp_value(
                 last_command_.target_yaw_rate,
                 -forward_yaw_limit,
