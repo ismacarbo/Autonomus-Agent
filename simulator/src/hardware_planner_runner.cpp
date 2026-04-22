@@ -73,27 +73,46 @@ double world_span_m(const WorldMap& world) {
     return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
 }
 
+double structured_course_span_m(const WorldMap& world) {
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad ||
+        world.road_centerline().empty()) {
+        return world_span_m(world);
+    }
+    double min_x = world.road_centerline().front().x;
+    double max_x = min_x;
+    double min_y = world.road_centerline().front().y;
+    double max_y = min_y;
+    for (const Vec2& point : world.road_centerline()) {
+        min_x = std::min(min_x, point.x);
+        max_x = std::max(max_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_y = std::max(max_y, point.y);
+    }
+    return std::max(max_x - min_x, max_y - min_y);
+}
+
 bool compact_structured_world(const WorldMap& world) {
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return false;
     }
-    return world_span_m(world) <= 0.75;
+    return structured_course_span_m(world) <= 0.90 || world_span_m(world) <= 0.75;
 }
 
 bool micro_structured_world(const WorldMap& world) {
-    return compact_structured_world(world) && world_span_m(world) <= 0.35;
+    return world.environment_mode() == EnvironmentMode::StructuredRoad &&
+           structured_course_span_m(world) <= 0.55;
 }
 
 double structured_goal_active_distance(const WorldMap& world, double configured_goal_tolerance) {
     if (micro_structured_world(world)) {
-        return std::max(0.040, 0.16 * world_span_m(world));
+        return std::max(0.040, 0.16 * structured_course_span_m(world));
     }
     return std::max(configured_goal_tolerance * 2.0, 0.25);
 }
 
 double structured_slowdown_radius(const WorldMap& world, double configured_slowdown_radius) {
     if (micro_structured_world(world)) {
-        return clamp_value(0.65 * world_span_m(world), 0.10, 0.22);
+        return clamp_value(0.65 * structured_course_span_m(world), 0.10, 0.22);
     }
     return std::max(configured_slowdown_radius, 0.25);
 }
@@ -1149,7 +1168,9 @@ void HardwarePlannerRunner::initialize_planner_state() {
     const Rect& bounds = world_.bounds();
     const double world_width = std::max(bounds.max_x - bounds.min_x, 0.0);
     const double world_height = std::max(bounds.max_y - bounds.min_y, 0.0);
-    const double world_span = std::max(world_width, world_height);
+    const double world_span = world_.environment_mode() == EnvironmentMode::StructuredRoad
+                                  ? structured_course_span_m(world_)
+                                  : std::max(world_width, world_height);
     const bool compact_world = world_span <= 5.0;
     const bool compact_structured_world =
         compact_world && world_.environment_mode() == EnvironmentMode::StructuredRoad;
@@ -3585,21 +3606,27 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad && !safety_stop_active_) {
         const double active_distance = structured_goal_active_distance(world_, config_.goal_tolerance_m);
         const bool keep_tracking = !goal_reached_ && distance_to_goal_ > active_distance;
-        if (micro_structured_world(world_) &&
+        if (compact_structured_world(world_) &&
             keep_tracking &&
             have_reference_trajectory &&
             last_mpc_command_.has_value()) {
             const double heading_error = last_mpc_command_->heading_error;
-            if (std::abs(heading_error) > deg_to_rad(70.0)) {
+            const double heading_error_abs = std::abs(heading_error);
+            const bool early_progress = structured_progress_s_ < std::max(0.05, 0.10 * structured_course_span_m(world_));
+            const double enter_heading_rad = micro_structured_world(world_) ? deg_to_rad(48.0) : deg_to_rad(62.0);
+            const double min_turn_yaw_rate = micro_structured_world(world_) ? 0.35 : 0.25;
+            const double yaw_gain = micro_structured_world(world_) ? 1.55 : 1.20;
+            if (heading_error_abs > enter_heading_rad ||
+                (early_progress && heading_error_abs > deg_to_rad(40.0))) {
                 use_direct_yaw_rate_command = true;
                 direct_yaw_rate_command = clamp_value(
-                    -1.25 * heading_error,
+                    -yaw_gain * heading_error,
                     -0.85 * config_.drive.max_yaw_rate,
                     0.85 * config_.drive.max_yaw_rate);
-                if (std::abs(direct_yaw_rate_command) < 0.35) {
+                if (std::abs(direct_yaw_rate_command) < min_turn_yaw_rate) {
                     direct_yaw_rate_command = signum(direct_yaw_rate_command == 0.0 ? -heading_error
                                                                                     : direct_yaw_rate_command) *
-                                              0.35;
+                                              min_turn_yaw_rate;
                 }
                 commanded_speed_ = 0.0;
                 commanded_steer_angle_ = 0.0;
