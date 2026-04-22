@@ -3618,14 +3618,20 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             keep_tracking &&
             have_reference_trajectory &&
             last_mpc_command_.has_value()) {
+            const bool closed_structured_loop = structured_road_is_closed_loop(world_);
             const double heading_error = last_mpc_command_->heading_error;
             const double heading_error_abs = std::abs(heading_error);
             const bool early_progress = structured_progress_s_ < std::max(0.05, 0.10 * structured_course_span_m(world_));
             const double enter_heading_rad = micro_structured_world(world_) ? deg_to_rad(48.0) : deg_to_rad(62.0);
             const double min_turn_yaw_rate = micro_structured_world(world_) ? 0.35 : 0.25;
             const double yaw_gain = micro_structured_world(world_) ? 1.55 : 1.20;
-            if (heading_error_abs > enter_heading_rad ||
-                (early_progress && heading_error_abs > deg_to_rad(40.0))) {
+            const bool allow_direct_yaw_acquire =
+                !closed_structured_loop ||
+                early_progress ||
+                std::abs(estimate_.speed) < 0.02;
+            if (allow_direct_yaw_acquire &&
+                (heading_error_abs > enter_heading_rad ||
+                 (early_progress && heading_error_abs > deg_to_rad(40.0)))) {
                 use_direct_yaw_rate_command = true;
                 direct_yaw_rate_command = clamp_value(
                     -yaw_gain * heading_error,

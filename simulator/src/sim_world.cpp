@@ -233,44 +233,21 @@ std::vector<Vec2> make_zigzag_road() {
 }
 
 std::vector<Vec2> make_validation_loop() {
-    std::vector<Vec2> seed = {
-        {4.0, 11.0},
-        {6.5, 14.0},
-        {10.5, 16.8},
-        {15.5, 18.8},
-        {21.0, 19.6},
-        {26.5, 19.0},
-        {31.5, 17.2},
-        {35.0, 14.2},
-        {36.0, 10.2},
-        {34.5, 6.8},
-        {31.0, 4.5},
-        {26.0, 3.2},
-        {20.0, 3.0},
-        {14.0, 4.0},
-        {9.0, 6.0},
-        {5.5, 8.4},
-    };
-    double min_x = std::numeric_limits<double>::infinity();
-    double max_x = -std::numeric_limits<double>::infinity();
-    double min_y = std::numeric_limits<double>::infinity();
-    double max_y = -std::numeric_limits<double>::infinity();
-    for (const Vec2& point : seed) {
-        min_x = std::min(min_x, point.x);
-        max_x = std::max(max_x, point.x);
-        min_y = std::min(min_y, point.y);
-        max_y = std::max(max_y, point.y);
+    constexpr int kSamples = 28;
+    const Vec2 center{0.20, 0.20};
+    const double radius_x = 0.13;
+    const double radius_y = 0.11;
+    std::vector<Vec2> loop;
+    loop.reserve(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+        const double theta = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(kSamples);
+        loop.push_back({
+            center.x + radius_x * std::cos(theta),
+            center.y + radius_y * std::sin(theta),
+        });
     }
-
-    const double target_span = 0.32;
-    const double scale = target_span / std::max(std::max(max_x - min_x, max_y - min_y), kEps);
-    const Vec2 target_center{0.20, 0.20};
-    const Vec2 source_center{0.5 * (min_x + max_x), 0.5 * (min_y + max_y)};
-    for (Vec2& point : seed) {
-        point.x = target_center.x + (point.x - source_center.x) * scale;
-        point.y = target_center.y + (point.y - source_center.y) * scale;
-    }
-    return seed;
+    loop = close_polyline_loop(std::move(loop), 0.03);
+    return resample_closed_polyline(loop, 0.02);
 }
 
 std::vector<Vec2> make_hardware_straight_track() {
