@@ -253,41 +253,31 @@ std::vector<Vec2> make_validation_loop() {
     };
 }
 
-std::vector<Vec2> make_hardware_paper_loop() {
-    std::vector<Vec2> seed = {
-        {1.85, 0.97}, {1.48, 1.15}, {0.96, 1.05}, {0.58, 1.00}, {0.32, 1.22},
-        {0.38, 1.49}, {0.74, 1.53}, {1.10, 1.35}, {1.50, 1.19}, {1.90, 1.35},
-        {2.04, 1.65}, {1.88, 1.85}, {1.58, 1.83}, {1.40, 1.57}, {1.18, 1.37},
-        {0.80, 1.41}, {0.42, 1.37}, {0.16, 1.09}, {0.08, 0.69}, {0.18, 0.33},
-        {0.46, 0.13}, {0.86, 0.15}, {1.18, 0.39}, {1.48, 0.63}, {1.84, 0.75},
-    };
-    seed = chaikin_closed_polyline(seed, 1);
-    double min_x = std::numeric_limits<double>::infinity();
-    double max_x = -std::numeric_limits<double>::infinity();
-    double min_y = std::numeric_limits<double>::infinity();
-    double max_y = -std::numeric_limits<double>::infinity();
-    for (const Vec2& point : seed) {
-        min_x = std::min(min_x, point.x);
-        max_x = std::max(max_x, point.x);
-        min_y = std::min(min_y, point.y);
-        max_y = std::max(max_y, point.y);
+std::vector<Vec2> make_hardware_straight_track() {
+    constexpr int kSamples = 21;
+    const Vec2 start{0.10, 0.18};
+    const Vec2 goal{0.40, 0.18};
+    std::vector<Vec2> track;
+    track.reserve(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+        const double alpha = static_cast<double>(i) / static_cast<double>(kSamples - 1);
+        track.push_back({
+            start.x + alpha * (goal.x - start.x),
+            start.y + alpha * (goal.y - start.y),
+        });
     }
-
-    const double target_width = 0.24;
-    const double scale = target_width / std::max(max_x - min_x, kEps);
-    const Vec2 target_center{0.28, 0.23};
-    const Vec2 source_center{0.5 * (min_x + max_x), 0.5 * (min_y + max_y)};
-    for (Vec2& point : seed) {
-        point.x = target_center.x + (point.x - source_center.x) * scale;
-        point.y = target_center.y + (point.y - source_center.y) * scale;
-    }
-
-    seed = resample_closed_polyline(seed, 0.018);
-    return close_polyline_loop(std::move(seed), 0.03);
+    return track;
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
-    return points.size() >= 3 && distance(points.front(), points.back()) <= threshold;
+    if (points.size() < 3 || distance(points.front(), points.back()) > threshold) {
+        return false;
+    }
+    double arc_length = 0.0;
+    for (size_t i = 1; i < points.size(); ++i) {
+        arc_length += distance(points[i - 1], points[i]);
+    }
+    return arc_length > 2.0 * threshold;
 }
 
 std::vector<Vec2> close_polyline_loop(std::vector<Vec2> points, double threshold) {
@@ -855,16 +845,14 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::HardwareTrack:
-            // Indoor validation loop shaped after the paper's structured-road example:
-            // a larger left lobe, a tighter right lobe, and an S-like connector.
-            // Kept very compact for real desktop-floor tests in ~0.5 m space.
-            world.bounds_ = {0.0, 0.0, 0.52, 0.44};
+            // Minimal indoor validation preset: a straight 30 cm segment.
+            // This isolates heading acquisition and longitudinal tracking before
+            // moving on to curves and closed loops.
+            world.bounds_ = {0.0, 0.0, 0.50, 0.36};
             world.obstacles_.clear();
-            world.road_centerline_ = make_hardware_paper_loop();
-            world.road_centerline_ =
-                rotate_closed_polyline(world.road_centerline_, find_nearest_point_index(world.road_centerline_, {0.30, 0.25}));
+            world.road_centerline_ = make_hardware_straight_track();
             world.start_ = world.road_centerline_.front();
-            world.goal_ = world.start_;
+            world.goal_ = world.road_centerline_.back();
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         default:

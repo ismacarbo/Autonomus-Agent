@@ -627,8 +627,14 @@ bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) 
 }
 
 bool structured_road_is_closed_loop(const WorldMap& world) {
-    return world.environment_mode() == EnvironmentMode::StructuredRoad &&
-           points_form_closed_loop(world.road_centerline(), 0.45);
+    if (world.environment_mode() != EnvironmentMode::StructuredRoad ||
+        world.road_centerline().size() < 3) {
+        return false;
+    }
+    const double course_span = structured_course_span_m(world);
+    const double closure_threshold = std::clamp(0.12 * course_span, 0.05, 0.18);
+    return distance(world.start(), world.goal()) <= closure_threshold &&
+           points_form_closed_loop(world.road_centerline(), closure_threshold);
 }
 
 double distance_to_gate_point(const gate& candidate, const Vec2& position) {
@@ -4316,8 +4322,15 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         }
     } else {
         distance_to_goal_ = distance(estimate_.position, world_.goal());
-        goal_reached_ = distance_to_goal_ < config_.goal_tolerance_m &&
+        double goal_tolerance = config_.goal_tolerance_m;
+        if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+            goal_tolerance = std::clamp(0.12 * structured_course_span_m(world_), 0.035, 0.08);
+        }
+        goal_reached_ = distance_to_goal_ < goal_tolerance &&
                         std::abs(estimate_.speed) < config_.goal_stop_speed_mps;
+        if (goal_reached_) {
+            distance_to_goal_ = 0.0;
+        }
     }
 
     if (goal_reached_) {
