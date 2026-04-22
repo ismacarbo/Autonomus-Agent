@@ -108,7 +108,7 @@ Rect structured_content_bounds(const WorldMap& world) {
 }
 
 WorldMap fit_structured_hardware_world(WorldMap world) {
-    constexpr double kStructuredMaxSpanM = 2.00;
+    constexpr double kStructuredMaxSpanM = 1.00;
     constexpr double kRoadEdgeMarginM = 0.25;
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;

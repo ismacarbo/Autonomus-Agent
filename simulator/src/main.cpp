@@ -68,7 +68,7 @@ enum WorkspaceSource {
     kWorkspaceSourceHardwarePlanner = 1,
 };
 
-constexpr double kHardwareStructuredMaxSpanM = 2.00;
+constexpr double kHardwareStructuredMaxSpanM = 1.00;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.85f;
 constexpr float kHardwareTrackMaxScale = 1.00f;
