@@ -250,6 +250,23 @@ std::vector<Vec2> make_validation_loop() {
     return resample_closed_polyline(loop, 0.02);
 }
 
+std::vector<Vec2> make_indoor_circle_loop() {
+    constexpr int kSamples = 36;
+    const Vec2 center{0.375, 0.375};
+    const double radius = 0.15;
+    std::vector<Vec2> loop;
+    loop.reserve(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+        const double theta = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(kSamples);
+        loop.push_back({
+            center.x + radius * std::cos(theta),
+            center.y + radius * std::sin(theta),
+        });
+    }
+    loop = close_polyline_loop(std::move(loop), 0.02);
+    return resample_closed_polyline(loop, 0.015);
+}
+
 std::vector<Vec2> make_hardware_straight_track() {
     constexpr int kSamples = 21;
     const Vec2 start{0.10, 0.18};
@@ -831,7 +848,8 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::CircleLoop:
-            world.road_centerline_ = close_polyline_loop(make_circle_loop({20.0, 12.0}, 10.0, 36), 0.45);
+            world.bounds_ = {0.0, 0.0, 0.75, 0.75};
+            world.road_centerline_ = make_indoor_circle_loop();
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
@@ -1107,10 +1125,12 @@ std::vector<LidarHit> WorldMap::raycast(const Vec2& origin, double heading, int 
 }
 
 bool WorldMap::collides(const std::array<Vec2, 4>& polygon, double padding) const {
-    const Rect padded_bounds = expand(bounds_, -padding);
-    for (const Vec2& corner : polygon) {
-        if (!point_in_rect(corner, padded_bounds)) {
-            return true;
+    if (environment_mode_ != EnvironmentMode::StructuredRoad) {
+        const Rect padded_bounds = expand(bounds_, -padding);
+        for (const Vec2& corner : polygon) {
+            if (!point_in_rect(corner, padded_bounds)) {
+                return true;
+            }
         }
     }
 
