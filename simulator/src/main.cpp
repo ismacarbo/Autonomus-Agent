@@ -1371,6 +1371,8 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::ZigZag;
             } else if (value == "hardware" || value == "hardware_track") {
                 options.structured_preset = StructuredMapPreset::HardwareTrack;
+            } else if (value == "figure_eight" || value == "figure8" || value == "eight") {
+                options.structured_preset = StructuredMapPreset::FigureEight;
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
@@ -1393,6 +1395,8 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::ZigZag;
             } else if (value == "hardware" || value == "hardware_track") {
                 options.structured_preset = StructuredMapPreset::HardwareTrack;
+            } else if (value == "figure_eight" || value == "figure8" || value == "eight") {
+                options.structured_preset = StructuredMapPreset::FigureEight;
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
@@ -1836,6 +1840,8 @@ const char* structured_map_cli_name(StructuredMapPreset preset) {
             return "zigzag";
         case StructuredMapPreset::HardwareTrack:
             return "hardware_track";
+        case StructuredMapPreset::FigureEight:
+            return "figure_eight";
         case StructuredMapPreset::Custom:
             return "custom";
         case StructuredMapPreset::ValidationRoad:
@@ -3948,6 +3954,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::CircleLoop),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::FigureEight),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::Custom),
             };
             int selection = 0;
@@ -3964,8 +3971,11 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 case StructuredMapPreset::HardwareTrack:
                     selection = 3;
                     break;
-                case StructuredMapPreset::Custom:
+                case StructuredMapPreset::FigureEight:
                     selection = 4;
+                    break;
+                case StructuredMapPreset::Custom:
+                    selection = 5;
                     break;
                 default:
                     selection = 0;
@@ -3987,6 +3997,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                         next_preset = StructuredMapPreset::HardwareTrack;
                         break;
                     case 4:
+                        next_preset = StructuredMapPreset::FigureEight;
+                        break;
+                    case 5:
                         next_preset = StructuredMapPreset::Custom;
                         break;
                     default:
@@ -4584,13 +4597,54 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::ValidationRoad),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::CircleLoop),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::FigureEight),
             };
-            int structured_selection = ui_state->structured_preset;
-            if (structured_selection == static_cast<int>(StructuredMapPreset::Custom)) {
-                structured_selection = static_cast<int>(StructuredMapPreset::ValidationRoad);
+            StructuredMapPreset previous_structured_preset =
+                static_cast<StructuredMapPreset>(ui_state->structured_preset);
+            int structured_selection = 0;
+            switch (previous_structured_preset) {
+                case StructuredMapPreset::ValidationRoad:
+                    structured_selection = 0;
+                    break;
+                case StructuredMapPreset::CircleLoop:
+                    structured_selection = 1;
+                    break;
+                case StructuredMapPreset::ZigZag:
+                    structured_selection = 2;
+                    break;
+                case StructuredMapPreset::HardwareTrack:
+                    structured_selection = 3;
+                    break;
+                case StructuredMapPreset::FigureEight:
+                    structured_selection = 4;
+                    break;
+                case StructuredMapPreset::Custom:
+                default:
+                    structured_selection = 0;
+                    break;
             }
             if (ImGui::Combo("Structured Map", &structured_selection, structured_items, IM_ARRAYSIZE(structured_items))) {
-                ui_state->structured_preset = structured_selection;
+                StructuredMapPreset next_structured_preset = StructuredMapPreset::ValidationRoad;
+                switch (structured_selection) {
+                    case 1:
+                        next_structured_preset = StructuredMapPreset::CircleLoop;
+                        break;
+                    case 2:
+                        next_structured_preset = StructuredMapPreset::ZigZag;
+                        break;
+                    case 3:
+                        next_structured_preset = StructuredMapPreset::HardwareTrack;
+                        break;
+                    case 4:
+                        next_structured_preset = StructuredMapPreset::FigureEight;
+                        break;
+                    case 0:
+                    default:
+                        next_structured_preset = StructuredMapPreset::ValidationRoad;
+                        break;
+                }
+                ui_state->structured_preset = static_cast<int>(next_structured_preset);
                 sim.load_world(world_from_ui_selection(sim, *ui_state));
                 sync_ui_state_from_sim(ui_state, sim);
                 ui_state->paused = true;

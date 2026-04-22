@@ -67,6 +67,9 @@ double closed_loop_reference_span(double road_length, double lookahead_distance)
     if (!(road_length > 1e-6)) {
         return 0.0;
     }
+    if (road_length <= 0.55) {
+        return clamp_value(0.22 * road_length, std::min(0.08, road_length), std::min(0.12, road_length));
+    }
     if (road_length <= 0.90) {
         return clamp_value(0.34 * road_length, std::min(0.16, road_length), std::min(0.24, road_length));
     }
@@ -3733,14 +3736,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 tiny_indoor_loop ? 0.14 : (micro_structured_world(world_) ? 0.35 : 0.25);
             const double yaw_gain =
                 tiny_indoor_loop ? 0.70 : (micro_structured_world(world_) ? 1.55 : 1.20);
-            const bool allow_direct_yaw_acquire =
+            bool allow_direct_yaw_acquire =
                 !closed_structured_loop ||
                 (tiny_indoor_loop ? early_progress : (early_progress || std::abs(estimate_.speed) < 0.02));
+            if (!closed_structured_loop && micro_structured_world(world_)) {
+                allow_direct_yaw_acquire = early_progress && std::abs(estimate_.speed) < 0.012;
+            }
             const bool severe_indoor_heading =
                 tiny_indoor_loop &&
                 closed_structured_loop &&
                 std::abs(estimate_.speed) < 0.012 &&
-                heading_error_abs > deg_to_rad(70.0);
+                heading_error_abs > deg_to_rad(100.0);
             if ((allow_direct_yaw_acquire &&
                  (heading_error_abs > enter_heading_rad ||
                   (early_progress &&
@@ -3777,9 +3783,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             keep_tracking &&
             !use_direct_yaw_rate_command) {
             const double heading_stop_deg =
-                tiny_indoor_loop ? 55.0 : (micro_structured_world(world_) ? 32.0 : 38.0);
+                tiny_indoor_loop ? 55.0 : (micro_structured_world(world_) ? 55.0 : 38.0);
             const double heading_slow_deg =
-                tiny_indoor_loop ? 24.0 : (micro_structured_world(world_) ? 16.0 : 20.0);
+                tiny_indoor_loop ? 24.0 : (micro_structured_world(world_) ? 24.0 : 20.0);
             const double cross_stop_m =
                 tiny_indoor_loop ? 0.040 : (micro_structured_world(world_) ? 0.05 : 0.07);
             const double cross_slow_m =
@@ -3792,8 +3798,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                                      : 0.0;
             } else if (tracker_heading_error_deg_ > heading_slow_deg ||
                        tracker_cross_track_error_ > cross_slow_m) {
+                const double slow_floor =
+                    tiny_indoor_loop ? 0.016 : (micro_structured_world(world_) ? 0.014 : 0.0);
                 last_command_.target_speed =
-                    std::min(std::max(last_command_.target_speed, tiny_indoor_loop ? 0.016 : 0.0),
+                    std::min(std::max(last_command_.target_speed, slow_floor),
                              tiny_indoor_loop ? 0.030 : 0.04);
             }
         }
@@ -3807,7 +3815,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 tiny_indoor_loop ? 18.0 : (micro_structured_world(world_) ? 10.0 : 14.0);
             const double cross_floor_m =
                 tiny_indoor_loop ? 0.015 : (micro_structured_world(world_) ? 0.02 : 0.03);
-            if (tiny_indoor_loop &&
+            if ((tiny_indoor_loop || micro_structured_world(world_)) &&
                 tracker_heading_error_deg_ < 42.0 &&
                 tracker_cross_track_error_ < 0.025) {
                 last_command_.target_speed = std::max(last_command_.target_speed, 0.018);
@@ -3837,6 +3845,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     } else {
         commanded_steer_angle_ = 0.0;
     }
+    const double half_track = config_.drive.track_width * 0.5;
     if (use_direct_yaw_rate_command) {
         last_command_.target_yaw_rate = clamp_value(
             direct_yaw_rate_command,
@@ -3847,9 +3856,18 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.target_speed * last_command_.target_curvature,
             -config_.drive.max_yaw_rate,
             config_.drive.max_yaw_rate);
+        if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
+            tiny_indoor_structured_loop(world_) &&
+            last_command_.target_speed > 1e-4) {
+            const double forward_yaw_limit =
+                0.82 * last_command_.target_speed / std::max(half_track, 1e-3);
+            last_command_.target_yaw_rate = clamp_value(
+                last_command_.target_yaw_rate,
+                -forward_yaw_limit,
+                forward_yaw_limit);
+        }
     }
 
-    const double half_track = config_.drive.track_width * 0.5;
     const auto [left_wheel_speed, right_wheel_speed] =
         wheel_speeds_from_body(last_command_.target_speed, last_command_.target_yaw_rate, half_track);
 

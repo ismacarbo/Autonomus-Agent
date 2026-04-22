@@ -186,6 +186,9 @@ StructuredMapPreset parse_structured_preset(const std::string& value) {
     if (value == "hardware" || value == "hardware_track") {
         return StructuredMapPreset::HardwareTrack;
     }
+    if (value == "figure_eight" || value == "figure8" || value == "eight") {
+        return StructuredMapPreset::FigureEight;
+    }
     if (value == "custom") {
         return StructuredMapPreset::Custom;
     }
@@ -234,7 +237,7 @@ void print_usage(const char* argv0) {
         << "  --dt SEC                  default 0.10\n"
         << "  --simulate                run the selected hardware scenario against synthetic sensors\n"
         << "  --scenario MODE           structured | unstructured\n"
-        << "  --structured-map NAME     validation | circle | zigzag | hardware_track\n"
+        << "  --structured-map NAME     validation | circle | zigzag | hardware_track | figure_eight\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
         << "  --world-file PATH         load a custom exported `.thmap` world file\n"
         << "  --stream-host HOST        send live view snapshots to HOST\n"

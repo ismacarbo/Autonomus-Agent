@@ -268,29 +268,39 @@ std::vector<Vec2> make_indoor_circle_loop() {
 }
 
 std::vector<Vec2> make_hardware_road_track() {
-    constexpr int kStraightSamples = 9;
-    constexpr int kArcSamples = 19;
-    const Vec2 lower_start{0.1125, 0.075};
-    const Vec2 upper_start{0.1125, 0.225};
-    const Vec2 arc_center{0.1125, 0.150};
-    const double arc_radius = 0.075;
+    constexpr int kSamples = 28;
+    const Vec2 center{0.150, 0.150};
+    const double radius_x = 0.095;
+    const double radius_y = 0.075;
     std::vector<Vec2> track;
-    track.reserve(kStraightSamples + kArcSamples + 1);
+    track.reserve(kSamples);
 
-    for (int i = 0; i < kStraightSamples; ++i) {
-        const double alpha = static_cast<double>(i) / static_cast<double>(kStraightSamples - 1);
-        track.push_back(interpolate(lower_start, upper_start, alpha));
-    }
-    for (int i = 1; i < kArcSamples; ++i) {
-        const double alpha = static_cast<double>(i) / static_cast<double>(kArcSamples - 1);
-        const double theta = 0.5 * kPi - alpha * kPi;
+    for (int i = 0; i < kSamples; ++i) {
+        const double theta = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(kSamples);
         track.push_back({
-            arc_center.x + arc_radius * std::cos(theta),
-            arc_center.y + arc_radius * std::sin(theta),
+            center.x + radius_x * std::cos(theta),
+            center.y + radius_y * std::sin(theta),
         });
     }
-    track.push_back(track.front());
-    return track;
+    track = close_polyline_loop(std::move(track), 0.02);
+    return resample_closed_polyline(track, 0.015);
+}
+
+std::vector<Vec2> make_hardware_figure_eight_track() {
+    std::vector<Vec2> track = {
+        {0.150, 0.225},
+        {0.085, 0.220},
+        {0.055, 0.175},
+        {0.075, 0.105},
+        {0.150, 0.075},
+        {0.225, 0.105},
+        {0.245, 0.175},
+        {0.215, 0.220},
+    };
+    track = close_polyline_loop(std::move(track), 0.02);
+    track = chaikin_closed_polyline(track, 3);
+    track = close_polyline_loop(std::move(track), 0.02);
+    return resample_closed_polyline(track, 0.012);
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
@@ -690,6 +700,8 @@ const char* structured_map_preset_name(StructuredMapPreset preset) {
             return "Custom";
         case StructuredMapPreset::HardwareTrack:
             return "Hardware Track";
+        case StructuredMapPreset::FigureEight:
+            return "Figure Eight";
         default:
             return "Unknown";
     }
@@ -871,11 +883,22 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::HardwareTrack:
-            // Minimal indoor road validation: one short straight plus one
-            // semicircular bend, closed as a tiny D-shaped track in 30 cm.
+            // Minimal indoor road validation: a smooth oval loop inside a
+            // 30 cm workspace, smaller than Validation Road but still feasible
+            // for the real robot's indoor follower.
             world.bounds_ = {0.0, 0.0, 0.30, 0.30};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_road_track();
+            world.start_ = world.road_centerline_.front();
+            world.goal_ = world.start_;
+            world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+            break;
+        case StructuredMapPreset::FigureEight:
+            // Stress test for structured tracking: two small lobes in a figure
+            // eight, still bounded by the same 30 cm indoor workspace.
+            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
+            world.obstacles_.clear();
+            world.road_centerline_ = make_hardware_figure_eight_track();
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);

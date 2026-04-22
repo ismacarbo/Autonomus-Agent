@@ -39,6 +39,7 @@ enum class StructuredMapPreset {
     ZigZag = 2,
     Custom = 3,
     HardwareTrack = 4,
+    FigureEight = 5,
 };
 
 const char* structured_map_preset_name(StructuredMapPreset preset);
