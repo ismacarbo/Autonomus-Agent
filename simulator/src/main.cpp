@@ -68,10 +68,10 @@ enum WorkspaceSource {
     kWorkspaceSourceHardwarePlanner = 1,
 };
 
-constexpr double kHardwareStructuredMaxSpanM = 0.30;
-constexpr float kHardwareTrackDefaultScale = 0.42f;
-constexpr float kHardwareTrackMinScale = 0.35f;
-constexpr float kHardwareTrackMaxScale = 0.42f;
+constexpr double kHardwareStructuredMaxSpanM = 2.00;
+constexpr float kHardwareTrackDefaultScale = 1.00f;
+constexpr float kHardwareTrackMinScale = 0.85f;
+constexpr float kHardwareTrackMaxScale = 1.00f;
 
 enum class MapEditorHandleType {
     None = 0,
@@ -96,7 +96,7 @@ struct UiState {
     int hardware_listen_port = 9559;
     int hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
     int hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);
-    int hardware_structured_preset = static_cast<int>(StructuredMapPreset::HardwareTrack);
+    int hardware_structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
     float hardware_track_scale = kHardwareTrackDefaultScale;
     bool show_grid = true;
     bool show_trails = true;
@@ -172,22 +172,36 @@ Rect scale_rect_about(const Rect& rect, const Vec2& center, double scale) {
     };
 }
 
-double world_max_span(const WorldMap& world) {
-    const Rect bounds = world.bounds();
-    return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+Rect structured_content_bounds(const WorldMap& world) {
+    Rect bounds{
+        std::min(world.start().x, world.goal().x),
+        std::min(world.start().y, world.goal().y),
+        std::max(world.start().x, world.goal().x),
+        std::max(world.start().y, world.goal().y),
+    };
+    const auto include_point = [&](const Vec2& point) {
+        bounds.min_x = std::min(bounds.min_x, point.x);
+        bounds.min_y = std::min(bounds.min_y, point.y);
+        bounds.max_x = std::max(bounds.max_x, point.x);
+        bounds.max_y = std::max(bounds.max_y, point.y);
+    };
+    for (const Vec2& point : world.road_centerline()) {
+        include_point(point);
+    }
+    for (const Rect& obstacle : world.obstacles()) {
+        include_point({obstacle.min_x, obstacle.min_y});
+        include_point({obstacle.max_x, obstacle.max_y});
+    }
+    return bounds;
 }
 
-WorldMap scale_world_map(const WorldMap& source, double scale) {
+WorldMap scale_world_map_about(const WorldMap& source, const Vec2& center, double scale) {
     if (std::abs(scale - 1.0) <= 1e-6 || scale <= 0.0) {
         return source;
     }
 
     WorldMap scaled = source;
     const Rect bounds = source.bounds();
-    const Vec2 center{
-        (bounds.min_x + bounds.max_x) * 0.5,
-        (bounds.min_y + bounds.max_y) * 0.5,
-    };
 
     scaled.set_bounds(scale_rect_about(bounds, center, scale));
     scaled.set_start(scale_point_about(source.start(), center, scale));
@@ -209,16 +223,38 @@ WorldMap scale_world_map(const WorldMap& source, double scale) {
     return scaled;
 }
 
+WorldMap scale_world_map(const WorldMap& source, double scale) {
+    const Rect bounds = source.bounds();
+    const Vec2 center{
+        (bounds.min_x + bounds.max_x) * 0.5,
+        (bounds.min_y + bounds.max_y) * 0.5,
+    };
+    return scale_world_map_about(source, center, scale);
+}
+
 WorldMap fit_hardware_structured_world(WorldMap world) {
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;
     }
 
-    const double span = world_max_span(world);
-    if (!(span > kHardwareStructuredMaxSpanM)) {
-        return world;
-    }
-    return scale_world_map(world, kHardwareStructuredMaxSpanM / span);
+    constexpr double kRoadEdgeMarginM = 0.25;
+    const Rect content = structured_content_bounds(world);
+    const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
+    const double target_content_span = std::max(0.50, kHardwareStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
+    const Vec2 center{
+        (content.min_x + content.max_x) * 0.5,
+        (content.min_y + content.max_y) * 0.5,
+    };
+    const double scale = content_span > target_content_span ? target_content_span / content_span : 1.0;
+    WorldMap fitted = scale_world_map_about(world, center, scale);
+    const double half_span = 0.5 * kHardwareStructuredMaxSpanM;
+    fitted.set_bounds({
+        center.x - half_span,
+        center.y - half_span,
+        center.x + half_span,
+        center.y + half_span,
+    });
+    return fitted;
 }
 
 WorldMap apply_hardware_track_scale(const UiState& ui_state, WorldMap world) {
@@ -244,7 +280,7 @@ bool validate_hardware_structured_world(const WorldMap& world, std::string* erro
     const auto& road = world.road_centerline();
     if (road.size() < 6) {
         if (error_message != nullptr) {
-            *error_message = "Structured custom map rejected: the road collapsed to too few points. Reload Hardware Track and re-apply the resize/edit.";
+            *error_message = "Structured custom map rejected: the road collapsed to too few points. Reload the structured preset and re-apply the edit.";
         }
         return false;
     }
@@ -267,7 +303,7 @@ bool validate_hardware_structured_world(const WorldMap& world, std::string* erro
     const double bounds_span_y = bounds.max_y - bounds.min_y;
     if (std::max(road_span_x, road_span_y) < 0.12 || std::max(bounds_span_x, bounds_span_y) < 0.24) {
         if (error_message != nullptr) {
-            *error_message = "Structured custom map rejected: the edited road is too small for the micro indoor hardware viewport.";
+            *error_message = "Structured custom map rejected: the edited road is too small for the indoor hardware viewport.";
         }
         return false;
     }
@@ -3905,32 +3941,53 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             const StructuredMapPreset previous_preset =
                 static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset);
             const char* structured_items[] = {
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::ValidationRoad),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::CircleLoop),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::Custom),
             };
             int selection = 0;
             switch (previous_preset) {
-                case StructuredMapPreset::HardwareTrack:
+                case StructuredMapPreset::ValidationRoad:
                     selection = 0;
                     break;
-                case StructuredMapPreset::Custom:
+                case StructuredMapPreset::CircleLoop:
                     selection = 1;
+                    break;
+                case StructuredMapPreset::ZigZag:
+                    selection = 2;
+                    break;
+                case StructuredMapPreset::HardwareTrack:
+                    selection = 3;
+                    break;
+                case StructuredMapPreset::Custom:
+                    selection = 4;
                     break;
                 default:
                     selection = 0;
                     break;
             }
             if (ImGui::Combo("Structured Map", &selection, structured_items, IM_ARRAYSIZE(structured_items))) {
-                StructuredMapPreset next_preset = StructuredMapPreset::HardwareTrack;
+                StructuredMapPreset next_preset = StructuredMapPreset::ValidationRoad;
                 switch (selection) {
                     case 0:
-                        next_preset = StructuredMapPreset::HardwareTrack;
+                        next_preset = StructuredMapPreset::ValidationRoad;
                         break;
                     case 1:
+                        next_preset = StructuredMapPreset::CircleLoop;
+                        break;
+                    case 2:
+                        next_preset = StructuredMapPreset::ZigZag;
+                        break;
+                    case 3:
+                        next_preset = StructuredMapPreset::HardwareTrack;
+                        break;
+                    case 4:
                         next_preset = StructuredMapPreset::Custom;
                         break;
                     default:
-                        next_preset = StructuredMapPreset::HardwareTrack;
+                        next_preset = StructuredMapPreset::ValidationRoad;
                         break;
                 }
                 if (next_preset == StructuredMapPreset::Custom &&
@@ -3938,7 +3995,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                     ui_state->hardware_editor_world = make_world_from_mode(
                         EnvironmentMode::StructuredRoad,
                         UnstructuredMapPreset::Custom,
-                        previous_preset == StructuredMapPreset::Custom ? StructuredMapPreset::HardwareTrack : previous_preset,
+                        previous_preset == StructuredMapPreset::Custom ? StructuredMapPreset::ValidationRoad : previous_preset,
                         GateBehaviorMode::Static,
                         0);
                     ui_state->hardware_editor_dirty = false;
@@ -4143,24 +4200,16 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             }
             return true;
         };
-        if (hardware_structured_mode) {
+        if (hardware_structured_mode && hardware_track_selected) {
             float track_scale = ui_state->hardware_track_scale;
             if (ImGui::SliderFloat("Track Scale", &track_scale, kHardwareTrackMinScale, kHardwareTrackMaxScale, "%.2fx")) {
                 ui_state->hardware_track_scale = track_scale;
-                if (hardware_track_selected) {
-                    load_hardware_editor_from_selection(ui_state);
-                    queue_current_hardware_world(
-                        ui_state,
-                        hardware_server,
-                        "Hardware Track scale queued for the Raspberry runner.",
-                        "Hardware Track scale updated locally, but it could not be queued for the Raspberry runner.");
-                } else {
-                    ui_state->last_hardware_world_sync_status =
-                        "Hardware Track scale updated. It will apply the next time you load the Hardware Track preset.";
-                }
-            }
-            if (!hardware_track_selected) {
-                ImGui::TextDisabled("Custom structured map active.");
+                load_hardware_editor_from_selection(ui_state);
+                queue_current_hardware_world(
+                    ui_state,
+                    hardware_server,
+                    "Hardware Track scale queued for the Raspberry runner.",
+                    "Hardware Track scale updated locally, but it could not be queued for the Raspberry runner.");
             }
         }
         ImGui::Checkbox(hardware_structured_mode ? "Edit road by dragging" : "Edit map by dragging",

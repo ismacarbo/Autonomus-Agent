@@ -55,7 +55,7 @@ struct AppOptions {
     bool simulate = false;
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
-    StructuredMapPreset structured_preset = StructuredMapPreset::HardwareTrack;
+    StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
     std::string world_file;
     std::string stream_host;
     int stream_port = 0;
@@ -84,39 +84,67 @@ Rect scale_rect_about(const Rect& rect, const Vec2& center, double scale) {
     };
 }
 
+Rect structured_content_bounds(const WorldMap& world) {
+    Rect bounds{
+        std::min(world.start().x, world.goal().x),
+        std::min(world.start().y, world.goal().y),
+        std::max(world.start().x, world.goal().x),
+        std::max(world.start().y, world.goal().y),
+    };
+    const auto include_point = [&](const Vec2& point) {
+        bounds.min_x = std::min(bounds.min_x, point.x);
+        bounds.min_y = std::min(bounds.min_y, point.y);
+        bounds.max_x = std::max(bounds.max_x, point.x);
+        bounds.max_y = std::max(bounds.max_y, point.y);
+    };
+    for (const Vec2& point : world.road_centerline()) {
+        include_point(point);
+    }
+    for (const Rect& obstacle : world.obstacles()) {
+        include_point({obstacle.min_x, obstacle.min_y});
+        include_point({obstacle.max_x, obstacle.max_y});
+    }
+    return bounds;
+}
+
 WorldMap fit_structured_hardware_world(WorldMap world) {
-    constexpr double kStructuredMaxSpanM = 0.30;
+    constexpr double kStructuredMaxSpanM = 2.00;
+    constexpr double kRoadEdgeMarginM = 0.25;
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;
     }
 
-    const Rect bounds = world.bounds();
-    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
-    if (!(span > kStructuredMaxSpanM)) {
-        return world;
-    }
-
-    const double scale = kStructuredMaxSpanM / span;
+    const Rect content = structured_content_bounds(world);
+    const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
+    const double target_content_span = std::max(0.50, kStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
     const Vec2 center{
-        (bounds.min_x + bounds.max_x) * 0.5,
-        (bounds.min_y + bounds.max_y) * 0.5,
+        (content.min_x + content.max_x) * 0.5,
+        (content.min_y + content.max_y) * 0.5,
     };
-    world.set_bounds(scale_rect_about(bounds, center, scale));
-    world.set_start(scale_point_about(world.start(), center, scale));
-    world.set_goal(scale_point_about(world.goal(), center, scale));
-    for (Rect& obstacle : world.editable_obstacles()) {
-        obstacle = scale_rect_about(obstacle, center, scale);
+    const double scale = content_span > target_content_span ? target_content_span / content_span : 1.0;
+    if (std::abs(scale - 1.0) > 1e-6) {
+        world.set_start(scale_point_about(world.start(), center, scale));
+        world.set_goal(scale_point_about(world.goal(), center, scale));
+        for (Rect& obstacle : world.editable_obstacles()) {
+            obstacle = scale_rect_about(obstacle, center, scale);
+        }
+        for (GateSpec& gate : world.editable_gates()) {
+            gate.position = scale_point_about(gate.position, center, scale);
+            gate.anchor_position = scale_point_about(gate.anchor_position, center, scale);
+            gate.motion_amplitude.x *= scale;
+            gate.motion_amplitude.y *= scale;
+        }
+        for (Vec2& point : world.editable_road_centerline()) {
+            point = scale_point_about(point, center, scale);
+        }
     }
-    for (GateSpec& gate : world.editable_gates()) {
-        gate.position = scale_point_about(gate.position, center, scale);
-        gate.anchor_position = scale_point_about(gate.anchor_position, center, scale);
-        gate.motion_amplitude.x *= scale;
-        gate.motion_amplitude.y *= scale;
-    }
-    for (Vec2& point : world.editable_road_centerline()) {
-        point = scale_point_about(point, center, scale);
-    }
-    world.finalize_editor_changes();
+    const double half_span = 0.5 * kStructuredMaxSpanM;
+    world.set_bounds({
+        center.x - half_span,
+        center.y - half_span,
+        center.x + half_span,
+        center.y + half_span,
+    });
     return world;
 }
 
@@ -562,10 +590,15 @@ int run_simulated(const AppOptions& options,
         const bool compact_structured_world =
             runner.world().environment_mode() == EnvironmentMode::StructuredRoad &&
             world_span <= 0.75;
+        const bool indoor_structured_world =
+            runner.world().environment_mode() == EnvironmentMode::StructuredRoad &&
+            world_span <= 2.05;
         const double collision_padding =
             compact_structured_world && runner.world().obstacles().empty()
                 ? -0.20
-                : (compact_structured_world ? 0.0 : 0.05);
+                : (indoor_structured_world && runner.world().obstacles().empty()
+                       ? 0.0
+                       : (compact_structured_world ? 0.0 : 0.05));
         collision = runner.world().collides(
             thesis_sim::make_box_corners(
                 plant->state().position,
