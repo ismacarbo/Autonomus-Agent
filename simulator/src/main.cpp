@@ -1928,7 +1928,10 @@ bool queue_current_hardware_world(UiState* ui_state,
         return false;
     }
     WorldMap streamed_world = hardware_world_from_ui_selection(*ui_state);
-    streamed_world.finalize_editor_changes();
+    // `hardware_world_from_ui_selection()` already finalizes true custom maps.
+    // Avoid finalizing again here, otherwise built-in structured presets such as
+    // Hardware Track get converted into StructuredMapPreset::Custom before they
+    // are streamed to the Raspberry runner and later saved in reports.
     std::string validation_error;
     if (!validate_hardware_world(streamed_world, &validation_error)) {
         hardware_server->clear_pending_world();
