@@ -344,7 +344,10 @@ bool read_world(const std::vector<std::uint8_t>& data, std::size_t* offset, Worl
     restored.editable_obstacles() = std::move(obstacles);
     restored.editable_gates() = std::move(gates);
     restored.editable_road_centerline() = std::move(road_centerline);
-    restored.finalize_editor_changes();
+    // Do not finalize deserialized stream worlds here. The sender already
+    // sanitizes custom maps before queueing them; finalizing again would
+    // downgrade built-in structured presets (for example Hardware Track or
+    // Circle Loop) to Custom and can also re-close/open the centerline.
     if (env == EnvironmentMode::UnstructuredGates) {
         restored.set_gate_behavior(static_cast<GateBehaviorMode>(gate_behavior), gate_seed);
     }
