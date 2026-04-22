@@ -3727,20 +3727,25 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             const double heading_error_abs = std::abs(heading_error);
             const bool early_progress = structured_progress_s_ < std::max(0.05, 0.10 * structured_course_span_m(world_));
             const double enter_heading_rad =
-                tiny_indoor_loop ? deg_to_rad(26.0)
+                tiny_indoor_loop ? deg_to_rad(42.0)
                 : (micro_structured_world(world_) ? deg_to_rad(48.0) : deg_to_rad(62.0));
             const double min_turn_yaw_rate =
-                tiny_indoor_loop ? 0.18 : (micro_structured_world(world_) ? 0.35 : 0.25);
+                tiny_indoor_loop ? 0.14 : (micro_structured_world(world_) ? 0.35 : 0.25);
             const double yaw_gain =
-                tiny_indoor_loop ? 0.95 : (micro_structured_world(world_) ? 1.55 : 1.20);
+                tiny_indoor_loop ? 0.70 : (micro_structured_world(world_) ? 1.55 : 1.20);
             const bool allow_direct_yaw_acquire =
                 !closed_structured_loop ||
-                early_progress ||
-                std::abs(estimate_.speed) < 0.02;
-            if (allow_direct_yaw_acquire &&
-                (heading_error_abs > enter_heading_rad ||
-                 (early_progress &&
-                  heading_error_abs > deg_to_rad(tiny_indoor_loop ? 20.0 : 40.0)))) {
+                (tiny_indoor_loop ? early_progress : (early_progress || std::abs(estimate_.speed) < 0.02));
+            const bool severe_indoor_heading =
+                tiny_indoor_loop &&
+                closed_structured_loop &&
+                std::abs(estimate_.speed) < 0.012 &&
+                heading_error_abs > deg_to_rad(70.0);
+            if ((allow_direct_yaw_acquire &&
+                 (heading_error_abs > enter_heading_rad ||
+                  (early_progress &&
+                   heading_error_abs > deg_to_rad(tiny_indoor_loop ? 32.0 : 40.0)))) ||
+                severe_indoor_heading) {
                 use_direct_yaw_rate_command = true;
                 direct_yaw_rate_command = clamp_value(
                     -yaw_gain * heading_error,
@@ -3772,20 +3777,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             keep_tracking &&
             !use_direct_yaw_rate_command) {
             const double heading_stop_deg =
-                tiny_indoor_loop ? 28.0 : (micro_structured_world(world_) ? 32.0 : 38.0);
+                tiny_indoor_loop ? 55.0 : (micro_structured_world(world_) ? 32.0 : 38.0);
             const double heading_slow_deg =
-                tiny_indoor_loop ? 14.0 : (micro_structured_world(world_) ? 16.0 : 20.0);
+                tiny_indoor_loop ? 24.0 : (micro_structured_world(world_) ? 16.0 : 20.0);
             const double cross_stop_m =
                 tiny_indoor_loop ? 0.040 : (micro_structured_world(world_) ? 0.05 : 0.07);
             const double cross_slow_m =
                 tiny_indoor_loop ? 0.018 : (micro_structured_world(world_) ? 0.025 : 0.04);
-            if (tracker_heading_error_deg_ > heading_stop_deg ||
-                tracker_cross_track_error_ > cross_stop_m) {
+            if (tracker_cross_track_error_ > cross_stop_m) {
                 last_command_.target_speed = 0.0;
+            } else if (tracker_heading_error_deg_ > heading_stop_deg) {
+                last_command_.target_speed =
+                    tiny_indoor_loop ? std::min(std::max(last_command_.target_speed, 0.012), 0.018)
+                                     : 0.0;
             } else if (tracker_heading_error_deg_ > heading_slow_deg ||
                        tracker_cross_track_error_ > cross_slow_m) {
                 last_command_.target_speed =
-                    std::min(last_command_.target_speed, tiny_indoor_loop ? 0.030 : 0.04);
+                    std::min(std::max(last_command_.target_speed, tiny_indoor_loop ? 0.016 : 0.0),
+                             tiny_indoor_loop ? 0.030 : 0.04);
             }
         }
         if (have_reference_trajectory &&
@@ -3795,9 +3804,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 last_command_.target_speed = std::min(last_command_.target_speed, 0.040);
             }
             const double heading_floor_deg =
-                tiny_indoor_loop ? 10.0 : (micro_structured_world(world_) ? 10.0 : 14.0);
+                tiny_indoor_loop ? 18.0 : (micro_structured_world(world_) ? 10.0 : 14.0);
             const double cross_floor_m =
                 tiny_indoor_loop ? 0.015 : (micro_structured_world(world_) ? 0.02 : 0.03);
+            if (tiny_indoor_loop &&
+                tracker_heading_error_deg_ < 42.0 &&
+                tracker_cross_track_error_ < 0.025) {
+                last_command_.target_speed = std::max(last_command_.target_speed, 0.018);
+            }
             if (tracker_heading_error_deg_ < heading_floor_deg &&
                 tracker_cross_track_error_ < cross_floor_m) {
                 last_command_.target_speed = std::max(
@@ -4397,12 +4411,20 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     sim_time_ += bounded_dt;
     ++step_count_;
     if (structured_road_is_closed_loop(world_)) {
+        const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const double wrapped_track_s =
             std::isfinite(x0_.x) ? wrap_arc_length(x0_.x, cl_.end_point_s) : 0.0;
         const double goal_position_distance =
             distance(estimate_.position, structured_goal_ready_ ? structured_goal_position_ : world_.start());
-        const double progress_margin = std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.05, 0.20);
-        const double start_window = std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
+        const double progress_margin =
+            tiny_indoor_loop ? std::clamp(0.11 * cl_.end_point_s, 0.065, 0.10)
+                             : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.05, 0.20);
+        const double start_window =
+            tiny_indoor_loop ? std::clamp(0.10 * cl_.end_point_s, 0.065, 0.10)
+                             : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
+        const double goal_position_acceptance =
+            tiny_indoor_loop ? std::clamp(0.18 * structured_course_span_m(world_), 0.065, 0.09)
+                             : std::max(config_.goal_tolerance_m * 2.0, 0.35);
         const bool returned_to_start =
             wrapped_track_s <= start_window || wrapped_track_s >= std::max(cl_.end_point_s - start_window, 0.0);
         distance_to_goal_ = structured_goal_ready_
@@ -4410,8 +4432,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                                 : cl_.end_point_s;
         goal_reached_ = structured_goal_ready_ &&
                         structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
-                        (returned_to_start ||
-                         goal_position_distance < std::max(config_.goal_tolerance_m * 2.0, 0.35));
+                        (returned_to_start || goal_position_distance < goal_position_acceptance);
         if (goal_reached_) {
             distance_to_goal_ = 0.0;
         }
