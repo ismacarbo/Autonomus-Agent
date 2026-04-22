@@ -401,6 +401,7 @@ class HardwarePlannerRunner {
     HardwareControlCommand last_command_{};
     HardwarePlannerDiagnostics diagnostics_{};
     std::optional<MpcCommand> last_mpc_command_;
+    int structured_anchor_hint_index_ = 0;
 
     std::ofstream null_stream_;
 

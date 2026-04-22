@@ -273,9 +273,9 @@ std::vector<Vec2> make_hardware_paper_loop() {
         max_y = std::max(max_y, point.y);
     }
 
-    const double target_width = 0.34;
+    const double target_width = 0.24;
     const double scale = target_width / std::max(max_x - min_x, kEps);
-    const Vec2 target_center{0.35, 0.30};
+    const Vec2 target_center{0.28, 0.23};
     const Vec2 source_center{0.5 * (min_x + max_x), 0.5 * (min_y + max_y)};
     for (Vec2& point : seed) {
         point.x = target_center.x + (point.x - source_center.x) * scale;
@@ -857,13 +857,12 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
         case StructuredMapPreset::HardwareTrack:
             // Indoor validation loop shaped after the paper's structured-road example:
             // a larger left lobe, a tighter right lobe, and an S-like connector.
-            // Kept compact, but still expressed in real meters so the robot
-            // footprint and the streamed GUI map share the same scale.
-            world.bounds_ = {0.0, 0.0, 0.70, 0.60};
+            // Kept very compact for real desktop-floor tests in ~0.5 m space.
+            world.bounds_ = {0.0, 0.0, 0.52, 0.44};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_paper_loop();
             world.road_centerline_ =
-                rotate_closed_polyline(world.road_centerline_, find_nearest_point_index(world.road_centerline_, {0.40, 0.34}));
+                rotate_closed_polyline(world.road_centerline_, find_nearest_point_index(world.road_centerline_, {0.30, 0.25}));
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);

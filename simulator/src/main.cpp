@@ -68,9 +68,9 @@ enum WorkspaceSource {
     kWorkspaceSourceHardwarePlanner = 1,
 };
 
-constexpr double kHardwareStructuredMaxSpanM = 1.00;
-constexpr float kHardwareTrackDefaultScale = 1.00f;
-constexpr float kHardwareTrackMinScale = 0.85f;
+constexpr double kHardwareStructuredMaxSpanM = 0.60;
+constexpr float kHardwareTrackDefaultScale = 0.78f;
+constexpr float kHardwareTrackMinScale = 0.55f;
 constexpr float kHardwareTrackMaxScale = 1.00f;
 
 enum class MapEditorHandleType {
@@ -237,10 +237,10 @@ WorldMap fit_hardware_structured_world(WorldMap world) {
         return world;
     }
 
-    constexpr double kRoadEdgeMarginM = 0.25;
+    constexpr double kRoadEdgeMarginM = 0.08;
     const Rect content = structured_content_bounds(world);
     const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-    const double target_content_span = std::max(0.50, kHardwareStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
+    const double target_content_span = std::max(0.34, kHardwareStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
     const Vec2 center{
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,
@@ -1686,18 +1686,18 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
         return 1.45f;
     }
 
-    const Rect& bounds = world.bounds();
-    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
-    if (span <= 0.35) {
-        return 0.24f;
+    const Rect content = structured_content_bounds(world);
+    const double span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
+    if (span <= 0.36) {
+        return 0.16f;
     }
-    if (span <= 0.75) {
-        return 0.55f;
+    if (span <= 0.50) {
+        return 0.20f;
     }
-    if (span <= 5.0) {
-        return 2.10f;
+    if (span <= 0.80) {
+        return 0.28f;
     }
-    return 1.0f;
+    return 0.42f;
 }
 
 ImU32 hardware_vehicle_body_color_for_world(const WorldMap& world) {

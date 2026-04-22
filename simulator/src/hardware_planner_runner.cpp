@@ -1112,6 +1112,7 @@ void HardwarePlannerRunner::reset() {
     diagnostics_.dynamic_gap_gates = use_dynamic_gap_gates_;
     last_command_ = {};
     last_mpc_command_.reset();
+    structured_anchor_hint_index_ = 0;
 
     initialize_planner_state();
     sync_road_from_world();
@@ -3298,7 +3299,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             tracking_state,
             reference_trajectory_,
             planner_speed_ref_,
-            0);
+            structured_anchor_hint_index_);
         if (mpc_command.valid) {
             const double predicted_speed = clamp_value(
                 estimate_.speed + mpc_command.accel_cmd * safe_dt,
@@ -3326,6 +3327,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             tracker_heading_error_deg_ =
                 std::abs(mpc_command.heading_error) * 180.0 / kPi;
             last_mpc_command_ = mpc_command;
+            structured_anchor_hint_index_ = std::max(mpc_command.anchor_index, 0);
         } else {
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = clamp_value(
