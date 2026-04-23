@@ -34,6 +34,11 @@ from data_analisys.model_validation import (  # noqa: E402
     signal_series,
     yaw_rate_series,
 )
+from data_analisys.validation_presets import (  # noqa: E402
+    DEFAULT_PRESET,
+    list_presets,
+    load_preset_config,
+)
 
 try:
     from PyQt5 import QtCore, QtGui, QtWidgets
@@ -64,6 +69,36 @@ COLORS = [
     "#17becf",
     "#4c566a",
 ]
+VALIDATION_PRESETS = list_presets()
+
+
+def validation_notes_text(config: dict[str, Any] | None) -> str:
+    lines: list[str] = []
+    if config:
+        label = str(config.get("label") or "")
+        description = str(config.get("description") or "")
+        if label:
+            lines.append(f"Preset: {label}")
+        if description:
+            lines.append(description)
+        preset_notes = [str(note) for note in config.get("notes") or []]
+        if preset_notes:
+            lines.append("")
+            lines.append("Note scenario:")
+            lines.extend(f"- {note}" for note in preset_notes)
+        lines.append("")
+    lines.extend(
+        [
+            "Fitting attuale:",
+            "y[k+1] = a*y[k] + b*u[k] + c",
+            "",
+            "Per velocita: u e il PWM medio assoluto.",
+            "Per yaw-rate: u e il PWM differenziale.",
+            "c rappresenta un bias statico: attrito, trim, offset o drift residuo.",
+            "La stima e una regressione least-squares discreta di primo ordine.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,9 +161,11 @@ if QtWidgets is not None:
             self.validation_robot: RunReport | None = None
             self.validation_comparison: dict[str, Any] | None = None
             self.validation_fits: dict[str, Any] | None = None
+            self.validation_presets = VALIDATION_PRESETS
 
             self.setWindowTitle("Test Report Viewer - PyQt5")
             self._build_ui()
+            self.apply_validation_preset(DEFAULT_PRESET)
             self.refresh_reports()
 
         def _build_ui(self) -> None:
@@ -177,9 +214,12 @@ if QtWidgets is not None:
             quick_buttons = QtWidgets.QHBoxLayout()
             self.hardware_button = QtWidgets.QPushButton("hardware")
             self.hardware_button.clicked.connect(lambda: self.set_filter_token("hardware"))
+            self.structured_button = QtWidgets.QPushButton("structured")
+            self.structured_button.clicked.connect(lambda: self.set_filter_token("structured"))
             self.unstructured_button = QtWidgets.QPushButton("unstructured")
             self.unstructured_button.clicked.connect(lambda: self.set_filter_token("unstructured"))
             quick_buttons.addWidget(self.hardware_button)
+            quick_buttons.addWidget(self.structured_button)
             quick_buttons.addWidget(self.unstructured_button)
             sidebar_layout.addLayout(quick_buttons)
 
@@ -316,6 +356,10 @@ if QtWidgets is not None:
             self.analysis_window_combo = QtWidgets.QComboBox()
             self.analysis_window_combo.addItems(list(WINDOW_MODES))
             self.analysis_window_combo.setCurrentText("until_first_gate")
+            self.validation_preset_combo = QtWidgets.QComboBox()
+            for preset in self.validation_presets:
+                self.validation_preset_combo.addItem(preset.label, preset.name)
+            self.validation_preset_combo.currentIndexChanged.connect(lambda _: self.validation_preset_changed())
             self.custom_start_spin = QtWidgets.QDoubleSpinBox()
             self.custom_start_spin.setRange(0.0, 100000.0)
             self.custom_start_spin.setDecimals(3)
@@ -328,34 +372,36 @@ if QtWidgets is not None:
             self.grid_size_spin.setRange(20, 5000)
             self.grid_size_spin.setValue(250)
 
-            controls_layout.addWidget(QtWidgets.QLabel("Simulation baseline"), 0, 0)
-            controls_layout.addWidget(self.sim_baseline_edit, 0, 1)
-            controls_layout.addWidget(self.make_button("Browse", self.browse_sim_baseline), 0, 2)
-            controls_layout.addWidget(self.make_button("Use selected", self.use_selected_as_sim), 0, 3)
-            controls_layout.addWidget(QtWidgets.QLabel("Robot run"), 1, 0)
-            controls_layout.addWidget(self.robot_run_edit, 1, 1)
-            controls_layout.addWidget(self.make_button("Browse", self.browse_robot_run), 1, 2)
-            controls_layout.addWidget(self.make_button("Use selected", self.use_selected_as_robot), 1, 3)
-            controls_layout.addWidget(QtWidgets.QLabel("Output dir"), 2, 0)
-            controls_layout.addWidget(self.validation_output_edit, 2, 1)
-            controls_layout.addWidget(self.make_button("Browse", self.browse_validation_output), 2, 2)
-            controls_layout.addWidget(self.make_button("Open folder", self.open_validation_output), 2, 3)
-            controls_layout.addWidget(QtWidgets.QLabel("Analysis window"), 3, 0)
-            controls_layout.addWidget(self.analysis_window_combo, 3, 1)
-            controls_layout.addWidget(QtWidgets.QLabel("Custom start/end"), 3, 2)
+            controls_layout.addWidget(QtWidgets.QLabel("Preset"), 0, 0)
+            controls_layout.addWidget(self.validation_preset_combo, 0, 1)
+            controls_layout.addWidget(QtWidgets.QLabel("Simulation baseline"), 1, 0)
+            controls_layout.addWidget(self.sim_baseline_edit, 1, 1)
+            controls_layout.addWidget(self.make_button("Browse", self.browse_sim_baseline), 1, 2)
+            controls_layout.addWidget(self.make_button("Use selected", self.use_selected_as_sim), 1, 3)
+            controls_layout.addWidget(QtWidgets.QLabel("Robot run"), 2, 0)
+            controls_layout.addWidget(self.robot_run_edit, 2, 1)
+            controls_layout.addWidget(self.make_button("Browse", self.browse_robot_run), 2, 2)
+            controls_layout.addWidget(self.make_button("Use selected", self.use_selected_as_robot), 2, 3)
+            controls_layout.addWidget(QtWidgets.QLabel("Output dir"), 3, 0)
+            controls_layout.addWidget(self.validation_output_edit, 3, 1)
+            controls_layout.addWidget(self.make_button("Browse", self.browse_validation_output), 3, 2)
+            controls_layout.addWidget(self.make_button("Open folder", self.open_validation_output), 3, 3)
+            controls_layout.addWidget(QtWidgets.QLabel("Analysis window"), 4, 0)
+            controls_layout.addWidget(self.analysis_window_combo, 4, 1)
+            controls_layout.addWidget(QtWidgets.QLabel("Custom start/end"), 4, 2)
             custom_times = QtWidgets.QHBoxLayout()
             custom_times.addWidget(self.custom_start_spin)
             custom_times.addWidget(self.custom_end_spin)
-            controls_layout.addLayout(custom_times, 3, 3)
-            controls_layout.addWidget(QtWidgets.QLabel("Grid size"), 4, 0)
-            controls_layout.addWidget(self.grid_size_spin, 4, 1)
+            controls_layout.addLayout(custom_times, 4, 3)
+            controls_layout.addWidget(QtWidgets.QLabel("Grid size"), 5, 0)
+            controls_layout.addWidget(self.grid_size_spin, 5, 1)
             self.run_validation_button = self.make_button("Run validation", self.run_validation_from_ui)
-            controls_layout.addWidget(self.run_validation_button, 4, 2, 1, 2)
-            controls_layout.addWidget(QtWidgets.QLabel("Robot glob"), 5, 0)
-            controls_layout.addWidget(self.aggregate_glob_edit, 5, 1)
-            controls_layout.addWidget(QtWidgets.QLabel("Aggregate output"), 6, 0)
-            controls_layout.addWidget(self.aggregate_output_edit, 6, 1)
-            controls_layout.addWidget(self.make_button("Run aggregate", self.run_aggregate_from_ui), 6, 2, 1, 2)
+            controls_layout.addWidget(self.run_validation_button, 5, 2, 1, 2)
+            controls_layout.addWidget(QtWidgets.QLabel("Robot glob"), 6, 0)
+            controls_layout.addWidget(self.aggregate_glob_edit, 6, 1)
+            controls_layout.addWidget(QtWidgets.QLabel("Aggregate output"), 7, 0)
+            controls_layout.addWidget(self.aggregate_output_edit, 7, 1)
+            controls_layout.addWidget(self.make_button("Run aggregate", self.run_aggregate_from_ui), 7, 2, 1, 2)
             layout.addWidget(controls)
 
             self.validation_summary = QtWidgets.QLabel(
@@ -376,30 +422,73 @@ if QtWidgets is not None:
                 ]
             )
             self.validation_plot_combo.currentTextChanged.connect(self.update_validation_plot)
-            layout.addWidget(self.validation_plot_combo)
 
+            plot_panel = QtWidgets.QWidget()
+            plot_layout = QtWidgets.QVBoxLayout(plot_panel)
+            plot_layout.setContentsMargins(0, 0, 0, 0)
+            plot_layout.setSpacing(8)
+            plot_layout.addWidget(self.validation_plot_combo)
             self.validation_canvas = ComparisonCanvas()
-            layout.addWidget(self.validation_canvas, 1)
+            plot_layout.addWidget(self.validation_canvas, 1)
 
-            result_tabs = QtWidgets.QTabWidget()
+            self.validation_result_tabs = QtWidgets.QTabWidget()
             self.validation_metrics_table = QtWidgets.QTableWidget()
             self.validation_fit_table = QtWidgets.QTableWidget()
             self.validation_aggregate_table = QtWidgets.QTableWidget()
             self.validation_notes = QtWidgets.QTextEdit()
             self.validation_notes.setReadOnly(True)
-            self.validation_notes.setPlainText(
-                "Fitting attuale:\n"
-                "y[k+1] = a*y[k] + b*u[k] + c\n\n"
-                "Per velocita: u e il PWM medio assoluto.\n"
-                "Per yaw-rate: u e il PWM differenziale.\n"
-                "La stima e una regressione least-squares discreta di primo ordine."
-            )
-            result_tabs.addTab(self.validation_metrics_table, "Metrics")
-            result_tabs.addTab(self.validation_fit_table, "Fits")
-            result_tabs.addTab(self.validation_aggregate_table, "Aggregate")
-            result_tabs.addTab(self.validation_notes, "Fitting notes")
-            layout.addWidget(result_tabs)
+            self.validation_notes.setPlainText(validation_notes_text(None))
+            self.validation_result_tabs.addTab(self.validation_metrics_table, "Metrics")
+            self.validation_result_tabs.addTab(self.validation_fit_table, "Fits")
+            self.validation_result_tabs.addTab(self.validation_aggregate_table, "Aggregate")
+            self.validation_result_tabs.addTab(self.validation_notes, "Fitting notes")
+            self.validation_result_tabs.setMinimumHeight(250)
+
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+            splitter.setChildrenCollapsible(False)
+            splitter.addWidget(plot_panel)
+            splitter.addWidget(self.validation_result_tabs)
+            splitter.setStretchFactor(0, 3)
+            splitter.setStretchFactor(1, 2)
+            layout.addWidget(splitter, 1)
             return tab
+
+        def selected_preset_name(self) -> str:
+            preset_name = self.validation_preset_combo.currentData()
+            return str(preset_name or DEFAULT_PRESET)
+
+        def selected_preset_config(self) -> dict[str, Any]:
+            return load_preset_config(self.selected_preset_name())
+
+        def validation_preset_changed(self) -> None:
+            self.apply_validation_preset(self.selected_preset_name())
+
+        def apply_validation_preset(self, preset_name: str) -> None:
+            config = load_preset_config(preset_name)
+            simulation_baseline = config.get("simulation_baseline")
+            robot_run = config.get("robot_validation_run")
+            output_dir = config.get("output_dir")
+            aggregate_output_dir = config.get("aggregate_output_dir")
+            robot_glob = config.get("default_robot_glob")
+            analysis_window = config.get("default_analysis_window")
+
+            if simulation_baseline:
+                self.sim_baseline_edit.setText(str(simulation_baseline))
+            if robot_run:
+                self.robot_run_edit.setText(str(robot_run))
+            if output_dir:
+                self.validation_output_edit.setText(str(output_dir))
+            if aggregate_output_dir:
+                self.aggregate_output_edit.setText(str(aggregate_output_dir))
+            if robot_glob:
+                self.aggregate_glob_edit.setText(str(robot_glob))
+            if analysis_window in WINDOW_MODES:
+                self.analysis_window_combo.setCurrentText(str(analysis_window))
+
+            self.validation_notes.setPlainText(validation_notes_text(config))
+            label = str(config.get("label") or preset_name)
+            description = str(config.get("description") or "")
+            self.validation_summary.setText(f"Preset caricato: {label}. {description}".strip())
 
         def make_button(self, label: str, callback):
             button = QtWidgets.QPushButton(label)
@@ -576,6 +665,7 @@ if QtWidgets is not None:
             robot_path = Path(self.robot_run_edit.text().strip())
             output_dir = Path(self.validation_output_edit.text().strip())
             window_mode, custom_start, custom_end = self.selected_window_params()
+            preset_config = self.selected_preset_config()
             if not sim_path.exists():
                 self.show_error("Baseline mancante", f"Non trovo il report simulato:\n{sim_path}")
                 return
@@ -594,6 +684,8 @@ if QtWidgets is not None:
                     window_mode,
                     custom_start,
                     custom_end,
+                    scenario_label=str(preset_config.get("label") or self.selected_preset_name()),
+                    extra_notes=[str(note) for note in preset_config.get("notes") or []],
                 )
                 self.validation_sim = load_report(sim_path)
                 self.validation_robot = load_report(robot_path)
@@ -601,6 +693,7 @@ if QtWidgets is not None:
                 self.validation_fits = fits
                 self.populate_validation_tables()
                 self.update_validation_plot()
+                self.validation_result_tabs.setCurrentWidget(self.validation_fit_table)
                 self.validation_summary.setText(
                     f"Validazione completata ({window_mode}). Output: {output_dir.resolve()}"
                 )
@@ -622,6 +715,7 @@ if QtWidgets is not None:
             output_dir = Path(self.aggregate_output_edit.text().strip())
             robot_glob = self.aggregate_glob_edit.text().strip()
             window_mode, custom_start, custom_end = self.selected_window_params()
+            preset_config = self.selected_preset_config()
             if not sim_path.exists():
                 self.show_error("Baseline mancante", f"Non trovo il report simulato:\n{sim_path}")
                 return
@@ -639,8 +733,11 @@ if QtWidgets is not None:
                     custom_start,
                     custom_end,
                     self.grid_size_spin.value(),
+                    scenario_label=str(preset_config.get("label") or self.selected_preset_name()),
+                    extra_notes=[str(note) for note in preset_config.get("notes") or []],
                 )
                 self.populate_aggregate_table(aggregate.get("rows", []))
+                self.validation_result_tabs.setCurrentWidget(self.validation_aggregate_table)
                 self.validation_summary.setText(
                     f"Aggregato completato ({len(robot_runs)} run, {window_mode}). Output: {output_dir.resolve()}"
                 )
@@ -689,6 +786,7 @@ if QtWidgets is not None:
                         fmt(fit.get("dt_s"), "s"),
                         fmt(fit.get("a")),
                         fmt(fit.get("b")),
+                        fmt(fit.get("c")),
                         fmt(fit.get("gain")),
                         fmt(fit.get("tau_s"), "s"),
                         fmt(fit.get("rmse")),
@@ -697,7 +795,7 @@ if QtWidgets is not None:
                 )
             self.fill_table(
                 self.validation_fit_table,
-                ["fit", "signal", "samples", "dt", "a", "b", "gain", "tau", "rmse", "note"],
+                ["fit", "signal", "samples", "dt", "a", "b", "c", "gain", "tau", "rmse", "note"],
                 fit_rows,
             )
 
@@ -757,7 +855,7 @@ if QtWidgets is not None:
             super().__init__()
             self.report: RunReport | None = None
             self.chart_id = "gate_distance"
-            self.setMinimumHeight(500)
+            self.setMinimumHeight(320)
 
         def set_chart(self, report: RunReport | None, chart_id: str) -> None:
             self.report = report

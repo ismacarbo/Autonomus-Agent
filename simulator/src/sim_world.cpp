@@ -290,17 +290,18 @@ std::vector<Vec2> make_hardware_figure_eight_track() {
     constexpr int kSamples = 96;
     constexpr double kStartPhase = 0.5 * kPi;
     const Vec2 center{0.150, 0.150};
-    const double radius_x = 0.080;
-    const double radius_y = 0.050;
+    const double radius_x = 0.140;
+    const double radius_y = 0.085;
 
     std::vector<Vec2> track;
     track.reserve(kSamples);
     for (int i = 0; i < kSamples; ++i) {
         const double phase =
             kStartPhase + 2.0 * kPi * static_cast<double>(i) / static_cast<double>(kSamples);
-        // A 1:2 Lissajous curve yields a true figure-eight while keeping the
-        // start away from the center crossover, which is easier to track on
-        // the indoor hardware loop than the previous smoothed oval.
+        // A 1:2 Lissajous curve yields a true figure-eight. The lobes are kept
+        // large enough to use the indoor hardware workspace, reducing the
+        // extreme entry curvature that previously made the robot either
+        // understeer or pivot around the start point.
         track.push_back({
             center.x + radius_x * std::sin(phase),
             center.y + radius_y * std::sin(2.0 * phase),
@@ -1165,12 +1166,10 @@ std::vector<LidarHit> WorldMap::raycast(const Vec2& origin, double heading, int 
 }
 
 bool WorldMap::collides(const std::array<Vec2, 4>& polygon, double padding) const {
-    if (environment_mode_ != EnvironmentMode::StructuredRoad) {
-        const Rect padded_bounds = expand(bounds_, -padding);
-        for (const Vec2& corner : polygon) {
-            if (!point_in_rect(corner, padded_bounds)) {
-                return true;
-            }
+    const Rect padded_bounds = expand(bounds_, -padding);
+    for (const Vec2& corner : polygon) {
+        if (!point_in_rect(corner, padded_bounds)) {
+            return true;
         }
     }
 

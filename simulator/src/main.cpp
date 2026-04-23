@@ -47,6 +47,7 @@ using thesis_sim::UnstructuredMapPreset;
 using thesis_sim::Vec2;
 using thesis_sim::VehicleModelKind;
 using thesis_sim::VehicleSnapshot;
+using thesis_sim::VehicleTuningOverrides;
 using thesis_sim::WheelPose;
 using thesis_sim::WorldMap;
 
@@ -56,6 +57,7 @@ struct AppOptions {
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
+    VehicleTuningOverrides tuning_overrides;
 };
 
 struct CanvasTransform {
@@ -891,10 +893,14 @@ void write_geometry_json(std::ostream& out, const thesis_sim::VehicleGeometry& g
         << ",\"min_effective_pwm\":" << geometry.min_effective_pwm
         << ",\"wheel_speed_to_pwm_gain\":" << geometry.wheel_speed_to_pwm_gain
         << ",\"wheel_speed_to_pwm_bias\":" << geometry.wheel_speed_to_pwm_bias
+        << ",\"speed_estimate_per_pwm\":" << geometry.speed_estimate_per_pwm
         << ",\"left_pwm_scale\":" << geometry.left_pwm_scale
         << ",\"right_pwm_scale\":" << geometry.right_pwm_scale
+        << ",\"yaw_response_scale\":" << geometry.yaw_response_scale
         << ",\"linear_feedback_gain\":" << geometry.linear_feedback_gain
         << ",\"yaw_feedback_gain\":" << geometry.yaw_feedback_gain
+        << ",\"pwm_slew_rate\":" << geometry.pwm_slew_rate
+        << ",\"motor_time_constant\":" << geometry.motor_time_constant
         << ",\"encoder_ticks_per_revolution\":" << geometry.encoder_ticks_per_revolution
         << "}";
 }
@@ -1315,9 +1321,13 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
             << "\"time\":" << sample.time
             << ",\"speed\":" << sample.speed
             << ",\"accel\":" << sample.accel
+            << ",\"yaw\":" << sample.yaw
             << ",\"curvature\":" << sample.curvature
+            << ",\"yaw_rate\":" << sample.yaw_rate
             << ",\"steer_angle\":" << sample.steer_angle
             << ",\"target_steer_angle\":" << sample.target_steer_angle
+            << ",\"target_speed\":" << sample.target_speed
+            << ",\"target_yaw_rate\":" << sample.target_yaw_rate
             << ",\"left_wheel_speed\":" << sample.left_wheel_speed
             << ",\"right_wheel_speed\":" << sample.right_wheel_speed
             << ",\"left_pwm\":" << sample.left_pwm
@@ -1339,6 +1349,54 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
     out << "\n  ]\n";
     out << "}\n";
     return true;
+}
+
+bool parse_double_cli_arg(const std::string& arg,
+                          int* index,
+                          int argc,
+                          char** argv,
+                          const char* name,
+                          std::optional<double>* target) {
+    if (target == nullptr) {
+        return false;
+    }
+
+    const std::string flag = std::string("--") + name;
+    const std::string prefix = flag + "=";
+    if (arg == flag && index != nullptr && *index + 1 < argc) {
+        *target = std::atof(argv[++(*index)]);
+        return true;
+    }
+    if (arg.rfind(prefix, 0) == 0) {
+        *target = std::atof(arg.substr(prefix.size()).c_str());
+        return true;
+    }
+    return false;
+}
+
+bool has_tuning_overrides(const VehicleTuningOverrides& overrides) {
+    return overrides.min_effective_pwm.has_value() ||
+           overrides.speed_estimate_per_pwm.has_value() ||
+           overrides.pwm_slew_rate.has_value() ||
+           overrides.motor_time_constant.has_value() ||
+           overrides.max_linear_speed.has_value() ||
+           overrides.max_curvature.has_value() ||
+           overrides.max_steer_angle.has_value() ||
+           overrides.max_steer_rate.has_value() ||
+           overrides.max_yaw_rate.has_value() ||
+           overrides.linear_feedback_gain.has_value() ||
+           overrides.yaw_feedback_gain.has_value() ||
+           overrides.left_pwm_scale.has_value() ||
+           overrides.right_pwm_scale.has_value() ||
+           overrides.yaw_response_scale.has_value() ||
+           overrides.cruise_speed_limit.has_value();
+}
+
+void apply_sim_tuning_overrides(PlannerDrivenVehicleSim* sim, const AppOptions& options) {
+    if (sim == nullptr || !has_tuning_overrides(options.tuning_overrides)) {
+        return;
+    }
+    sim->set_tuning_overrides(options.tuning_overrides);
 }
 
 AppOptions parse_args(int argc, char** argv) {
@@ -1403,6 +1461,21 @@ AppOptions parse_args(int argc, char** argv) {
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
+        } else if (parse_double_cli_arg(arg, &i, argc, argv, "min-effective-pwm", &options.tuning_overrides.min_effective_pwm) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "speed-estimate-per-pwm", &options.tuning_overrides.speed_estimate_per_pwm) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "pwm-slew-rate", &options.tuning_overrides.pwm_slew_rate) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "motor-time-constant", &options.tuning_overrides.motor_time_constant) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "max-linear-speed", &options.tuning_overrides.max_linear_speed) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "max-curvature", &options.tuning_overrides.max_curvature) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "max-steer-angle", &options.tuning_overrides.max_steer_angle) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "max-steer-rate", &options.tuning_overrides.max_steer_rate) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "max-yaw-rate", &options.tuning_overrides.max_yaw_rate) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "linear-feedback-gain", &options.tuning_overrides.linear_feedback_gain) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "yaw-feedback-gain", &options.tuning_overrides.yaw_feedback_gain) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "left-pwm-scale", &options.tuning_overrides.left_pwm_scale) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "right-pwm-scale", &options.tuning_overrides.right_pwm_scale) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "yaw-response-scale", &options.tuning_overrides.yaw_response_scale) ||
+                   parse_double_cli_arg(arg, &i, argc, argv, "cruise-speed-limit", &options.tuning_overrides.cruise_speed_limit)) {
         } else if (arg == "--max-steps" && i + 1 < argc) {
             options.max_steps = std::atoi(argv[++i]);
         } else if (arg.rfind("--max-steps=", 0) == 0) {
@@ -1715,6 +1788,22 @@ ImU32 hardware_vehicle_body_color_for_world(const WorldMap& world) {
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
     return span <= 0.35 ? IM_COL32(238, 239, 226, 188) : kColorBody;
+}
+
+float simulation_vehicle_visual_scale_for_world(const WorldMap& world) {
+    if (world.environment_mode() == EnvironmentMode::StructuredRoad) {
+        return hardware_vehicle_visual_scale_for_world(world);
+    }
+
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    if (span <= 3.0) {
+        return 1.55f;
+    }
+    if (span <= 8.0) {
+        return 1.95f;
+    }
+    return 2.40f;
 }
 
 void draw_vehicle(ImDrawList* draw_list,
@@ -2366,11 +2455,17 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
         }
     }
 
-    draw_vehicle(draw_list, tx, sim.vehicle(), sim.geometry(), 2.60f);
+    const float vehicle_visual_scale = simulation_vehicle_visual_scale_for_world(sim.world());
+    draw_vehicle(draw_list,
+                 tx,
+                 sim.vehicle(),
+                 sim.geometry(),
+                 vehicle_visual_scale,
+                 hardware_vehicle_body_color_for_world(sim.world()));
     const Vec2 nav_pos = sim.navigation_position();
     const Vec2 nav_nose{
-        nav_pos.x + std::cos(sim.navigation_yaw()) * sim.geometry().body_length * 0.85,
-        nav_pos.y + std::sin(sim.navigation_yaw()) * sim.geometry().body_length * 0.85,
+        nav_pos.x + std::cos(sim.navigation_yaw()) * sim.geometry().body_length * 0.85 * vehicle_visual_scale,
+        nav_pos.y + std::sin(sim.navigation_yaw()) * sim.geometry().body_length * 0.85 * vehicle_visual_scale,
     };
     draw_list->AddCircle(world_to_screen(tx, nav_pos), 11.0f, kColorEstimateTrail, 0, 2.8f);
     draw_list->AddLine(world_to_screen(tx, nav_pos), world_to_screen(tx, nav_nose), kColorEstimateTrail, 3.2f);
@@ -4955,6 +5050,7 @@ int run_headless(const AppOptions& options) {
         options.structured_preset,
         GateBehaviorMode::Static,
         7));
+    apply_sim_tuning_overrides(&sim, options);
     const SimulationReport report = sim.run_headless(options.max_steps);
     const std::string status = report.goal_reached ? "goal_reached" : (report.collision ? "collision" : "timeout");
     const std::string report_path = default_report_path(sim, "headless");
@@ -5022,6 +5118,7 @@ int run_gui(const AppOptions& options) {
         options.structured_preset,
         GateBehaviorMode::Static,
         7));
+    apply_sim_tuning_overrides(&sim, options);
     HardwareViewerState hardware_view;
     LiveViewStreamServer hardware_server;
     bool running = true;

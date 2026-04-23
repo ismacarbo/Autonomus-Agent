@@ -34,13 +34,17 @@ double sign_of(double value) {
     return 0.0;
 }
 
+double bounded_yaw_response_scale(double value) {
+    return clamp_value(value, 0.05, 2.0);
+}
+
 class CarLikeBicycleModel final : public VehicleDynamicsModel {
   public:
     explicit CarLikeBicycleModel(VehicleGeometry geometry)
         : geometry_(std::move(geometry)),
-          A_(Eigen::MatrixXd::Identity(6, 6)),
-          B_(Eigen::MatrixXd::Zero(6, 2)),
-          state_vector_(Eigen::VectorXd::Zero(6)) {
+          A_(Eigen::MatrixXd::Identity(7, 7)),
+          B_(Eigen::MatrixXd::Zero(7, 2)),
+          state_vector_(Eigen::VectorXd::Zero(7)) {
         model_state_.internal_state = state_vector_;
     }
 
@@ -68,9 +72,10 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
         double& speed = state_vector_(0);
         double& accel = state_vector_(1);
         double& steer_angle = state_vector_(2);
-        double& drive_pwm = state_vector_(3);
-        double& rear_left_speed = state_vector_(4);
-        double& rear_right_speed = state_vector_(5);
+        double& left_pwm = state_vector_(3);
+        double& right_pwm = state_vector_(4);
+        double& rear_left_speed = state_vector_(5);
+        double& rear_right_speed = state_vector_(6);
 
         const double bounded_accel = clamp_value(
             input.accel_cmd,
@@ -80,28 +85,95 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
             input.steer_rate_cmd,
             -geometry_.max_steer_rate,
             geometry_.max_steer_rate);
+        const double previous_speed = speed;
 
-        accel = bounded_accel;
-        speed = clamp_value(speed + accel * dt, 0.0, geometry_.max_linear_speed);
+        accel = 0.0;
         steer_angle = clamp_value(
             steer_angle + bounded_steer_rate * dt,
             -geometry_.max_steer_angle,
             geometry_.max_steer_angle);
 
-        const double beta = std::atan2(
-            geometry_.cg_to_rear * std::tan(steer_angle),
-            std::max(geometry_.wheelbase, 1e-6));
-        const double yaw_rate = speed * std::cos(beta) * std::tan(steer_angle) /
-                                std::max(geometry_.wheelbase, 1e-6);
-        const double curvature = std::abs(speed) > 1e-4 ? yaw_rate / speed : 0.0;
-
-        position_.x += speed * std::cos(yaw_ + beta) * dt;
-        position_.y += speed * std::sin(yaw_ + beta) * dt;
-        yaw_ = wrap_angle(yaw_ + yaw_rate * dt);
-
         const double half_track = geometry_.track * 0.5;
-        rear_left_speed = speed * (1.0 - half_track * curvature);
-        rear_right_speed = speed * (1.0 + half_track * curvature);
+        const double requested_target_steer = clamp_value(
+            std::isfinite(input.target_steer_angle)
+                ? input.target_steer_angle
+                : std::atan(std::max(geometry_.wheelbase, 1e-6) * input.target_curvature),
+            -geometry_.max_steer_angle,
+            geometry_.max_steer_angle);
+        const double accel_based_target_speed =
+            clamp_value(previous_speed + bounded_accel * dt,
+                        -geometry_.max_linear_speed,
+                        geometry_.max_linear_speed);
+        const bool target_speed_valid =
+            std::isfinite(input.target_speed) && std::abs(input.target_speed) > 1e-4;
+        const double requested_target_speed =
+            target_speed_valid ? input.target_speed : accel_based_target_speed;
+        const double target_speed = clamp_value(
+            requested_target_speed,
+            -geometry_.max_linear_speed,
+            geometry_.max_linear_speed);
+        const double target_curvature = clamp_value(
+            std::tan(steer_angle) / std::max(geometry_.wheelbase, 1e-6),
+            -geometry_.max_curvature,
+            geometry_.max_curvature);
+        const double target_yaw_rate = clamp_value(
+            target_speed * target_curvature,
+            -geometry_.max_yaw_rate,
+            geometry_.max_yaw_rate);
+        const double target_left_wheel_speed = target_speed - target_yaw_rate * half_track;
+        const double target_right_wheel_speed = target_speed + target_yaw_rate * half_track;
+
+        const int ff_left_pwm = wheel_speed_to_pwm(target_left_wheel_speed, geometry_.left_pwm_scale);
+        const int ff_right_pwm = wheel_speed_to_pwm(target_right_wheel_speed, geometry_.right_pwm_scale);
+        const double yaw_response_scale = bounded_yaw_response_scale(geometry_.yaw_response_scale);
+        const double raw_measured_yaw_rate =
+            std::abs(geometry_.track) > 1e-6 ? (rear_right_speed - rear_left_speed) / geometry_.track : 0.0;
+        const double measured_yaw_rate_for_feedback = raw_measured_yaw_rate * yaw_response_scale;
+        const double measured_speed_for_feedback =
+            clamp_value(previous_speed,
+                        -std::max(geometry_.max_linear_speed * 1.35, 0.28),
+                        std::max(geometry_.max_linear_speed * 1.35, 0.28));
+        const int fb_linear = static_cast<int>(std::lround(
+            geometry_.linear_feedback_gain * (target_speed - measured_speed_for_feedback)));
+        const int fb_yaw = static_cast<int>(std::lround(
+            geometry_.yaw_feedback_gain * (target_yaw_rate - measured_yaw_rate_for_feedback)));
+        const int commanded_left_pwm = static_cast<int>(std::lround(clamp_value(
+            static_cast<double>(ff_left_pwm + fb_linear - fb_yaw),
+            -static_cast<double>(geometry_.max_pwm),
+            static_cast<double>(geometry_.max_pwm))));
+        const int commanded_right_pwm = static_cast<int>(std::lround(clamp_value(
+            static_cast<double>(ff_right_pwm + fb_linear + fb_yaw),
+            -static_cast<double>(geometry_.max_pwm),
+            static_cast<double>(geometry_.max_pwm))));
+        left_pwm = approach_pwm(left_pwm, static_cast<double>(commanded_left_pwm), dt);
+        right_pwm = approach_pwm(right_pwm, static_cast<double>(commanded_right_pwm), dt);
+
+        const double wheel_alpha = 1.0 - std::exp(-dt / std::max(geometry_.motor_time_constant, 1e-3));
+        const double left_target_from_pwm =
+            wheel_speed_from_pwm(static_cast<int>(std::lround(left_pwm)), geometry_.left_pwm_scale);
+        const double right_target_from_pwm =
+            wheel_speed_from_pwm(static_cast<int>(std::lround(right_pwm)), geometry_.right_pwm_scale);
+        rear_left_speed += wheel_alpha * (left_target_from_pwm - rear_left_speed);
+        rear_right_speed += wheel_alpha * (right_target_from_pwm - rear_right_speed);
+
+        speed = clamp_value(
+            0.5 * (rear_left_speed + rear_right_speed),
+            -geometry_.max_linear_speed,
+            geometry_.max_linear_speed);
+        const double raw_yaw_rate =
+            std::abs(geometry_.track) > 1e-6 ? (rear_right_speed - rear_left_speed) / geometry_.track : 0.0;
+        const double yaw_rate = raw_yaw_rate * yaw_response_scale;
+        const double curvature = std::abs(speed) > 1e-4 ? yaw_rate / speed : 0.0;
+        accel = clamp_value(
+            (speed - previous_speed) / std::max(dt, 1e-6),
+            -geometry_.max_decel,
+            geometry_.max_accel);
+
+        const double delta_yaw = yaw_rate * dt;
+        const double mid_yaw = wrap_angle(yaw_ + 0.5 * delta_yaw);
+        position_.x += speed * std::cos(mid_yaw) * dt;
+        position_.y += speed * std::sin(mid_yaw) * dt;
+        yaw_ = wrap_angle(yaw_ + delta_yaw);
 
         const double wheel_circumference = 2.0 * kPi * geometry_.wheel_radius;
         raw_left_ticks_ += (rear_left_speed * dt / wheel_circumference) *
@@ -116,15 +188,13 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
         left_ticks_total_ = left_ticks_now;
         right_ticks_total_ = right_ticks_now;
 
-        const int target_pwm = wheel_speed_to_pwm(speed);
-        drive_pwm = approach_pwm(drive_pwm, static_cast<double>(target_pwm), dt);
-
         update_model_state(
             dt * 1000.0,
             yaw_rate,
             curvature,
-            input.target_speed,
-            input.target_steer_angle);
+            target_speed,
+            requested_target_steer,
+            target_yaw_rate);
     }
 
     const VehicleGeometry& geometry() const override {
@@ -152,7 +222,6 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
         A_.setIdentity();
         B_.setZero();
         A_(0, 1) = dt;
-        A_(2, 2) = 1.0;
         B_(0, 0) = 0.5 * dt * dt;
         B_(1, 0) = dt;
         B_(2, 1) = dt;
@@ -169,19 +238,40 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
         return current;
     }
 
-    int wheel_speed_to_pwm(double speed_mps) const {
+    double wheel_speed_from_pwm(int pwm, double scale) const {
+        const double effective_pwm = std::abs(static_cast<double>(pwm));
+        if (effective_pwm < static_cast<double>(geometry_.min_effective_pwm) ||
+            geometry_.speed_estimate_per_pwm <= 0.0) {
+            return 0.0;
+        }
+        const double scaled_magnitude =
+            std::max(0.0, effective_pwm - static_cast<double>(geometry_.min_effective_pwm));
+        const double signed_speed =
+            scaled_magnitude * geometry_.speed_estimate_per_pwm * std::max(std::abs(scale), 1e-3);
+        return std::copysign(signed_speed, static_cast<double>(pwm));
+    }
+
+    int wheel_speed_to_pwm(double speed_mps, double scale) const {
         if (std::abs(speed_mps) < 1e-4) {
             return 0;
         }
-        const int magnitude = geometry_.max_pwm;
-        return static_cast<int>(std::lround(sign_of(speed_mps) * static_cast<double>(magnitude)));
+        const double scaled_speed = std::abs(speed_mps) * std::max(std::abs(scale), 1e-3);
+        const double pwm =
+            static_cast<double>(geometry_.min_effective_pwm) + geometry_.wheel_speed_to_pwm_bias +
+            geometry_.wheel_speed_to_pwm_gain * scaled_speed;
+        const int sign = speed_mps >= 0.0 ? 1 : -1;
+        return sign * static_cast<int>(std::lround(clamp_value(
+                          pwm,
+                          static_cast<double>(geometry_.min_effective_pwm),
+                          static_cast<double>(geometry_.max_pwm))));
     }
 
     void update_model_state(double encoder_dt_ms,
                             double yaw_rate_override = 0.0,
                             double curvature_override = 0.0,
                             double target_speed_override = 0.0,
-                            double target_steer_angle_override = 0.0) {
+                            double target_steer_angle_override = 0.0,
+                            double target_yaw_rate_override = 0.0) {
         model_state_.position = position_;
         model_state_.yaw = yaw_;
         model_state_.speed = state_vector_(0);
@@ -192,18 +282,17 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
             std::max(geometry_.wheelbase, 1e-6));
         model_state_.yaw_rate = yaw_rate_override;
         model_state_.curvature = curvature_override;
-        model_state_.left_wheel_speed = state_vector_(4);
-        model_state_.right_wheel_speed = state_vector_(5);
+        model_state_.left_wheel_speed = state_vector_(5);
+        model_state_.right_wheel_speed = state_vector_(6);
         model_state_.target_speed = target_speed_override;
         model_state_.target_steer_angle = target_steer_angle_override;
-        model_state_.target_yaw_rate = target_speed_override * std::tan(target_steer_angle_override) /
-                                       std::max(geometry_.wheelbase, 1e-6);
+        model_state_.target_yaw_rate = target_yaw_rate_override;
         model_state_.left_encoder_ticks = left_ticks_total_;
         model_state_.right_encoder_ticks = right_ticks_total_;
         model_state_.left_encoder_delta = left_tick_delta_;
         model_state_.right_encoder_delta = right_tick_delta_;
         model_state_.left_pwm = static_cast<int>(std::lround(state_vector_(3)));
-        model_state_.right_pwm = static_cast<int>(std::lround(state_vector_(3)));
+        model_state_.right_pwm = static_cast<int>(std::lround(state_vector_(4)));
         model_state_.encoder_dt_ms = encoder_dt_ms;
         model_state_.internal_state = state_vector_;
     }

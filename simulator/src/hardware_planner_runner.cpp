@@ -3870,10 +3870,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             double forward_curvature_limit =
                 0.82 / std::max(half_track, 1e-3);
             if (world_.structured_preset() == StructuredMapPreset::FigureEight) {
-                // The true figure-eight needs materially more curvature than the
-                // oval-like indoor loops. Keeping the old cap makes the robot
-                // understeer and drive almost straight through the first lobe.
-                forward_curvature_limit = std::max(forward_curvature_limit, 10.0);
+                // Keep the figure-eight below the point where one wheel needs
+                // to reverse continuously. On real hardware that tends to
+                // collapse into an in-place pivot instead of a clean lobe.
+                forward_curvature_limit = std::max(forward_curvature_limit, 7.0);
             }
             forward_curvature_limit = std::min(forward_curvature_limit, geometry_.max_curvature);
             const double forward_yaw_limit =

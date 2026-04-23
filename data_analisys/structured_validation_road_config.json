@@ -1,0 +1,29 @@
+{
+  "label": "Structured validation road",
+  "description": "Baseline strutturata per il tracciamento continuo sulla validation road.",
+  "simulation_baseline": "reports/thesis_planner_structured_validation_road_headless_20260423_170538_400.json",
+  "robot_validation_run": "reports/thesis_hardware_structured_validation_road_gui_manual_20260422_225340_371.json",
+  "default_robot_glob": "reports/thesis_hardware_structured_validation_road_gui_manual_20260422*.json",
+  "default_analysis_window": "full",
+  "output_dir": "data_analisys/outputs/structured_validation_road_model_validation",
+  "aggregate_output_dir": "data_analisys/outputs/structured_validation_road_model_validation_aggregate",
+  "notes": [
+    "I quattro run hardware del 22 aprile sono coerenti e si possono usare come prima baseline reale strutturata.",
+    "Il run 20260422_225340_371 e il migliore come compromesso tra distanza finale, heading RMS e yaw-rate RMS.",
+    "Qui conviene usare la finestra full: il riferimento resta attivo in modo continuo per tutta la run.",
+    "Per i run hardware structured il campo yaw_rate puo essere sottostimato rispetto allo yaw unwrap; la validazione deriva yaw_rate da yaw quando i due non integrano in modo coerente."
+  ],
+  "primary_signals": [
+    "speed",
+    "yaw_rate",
+    "distance_to_goal_norm",
+    "tracker_cross_track",
+    "tracker_heading_error_deg",
+    "planning_ms",
+    "step_ms"
+  ],
+  "initial_fit_models": [
+    "first_order_speed_from_pwm",
+    "first_order_yaw_rate_from_diff_pwm"
+  ]
+}

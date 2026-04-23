@@ -34,16 +34,17 @@ struct VehicleGeometry {
     double max_accel = 1.4;
     double max_decel = 1.8;
     int max_pwm = 255;
-    int min_effective_pwm = 45;
+    int min_effective_pwm = 55;
     double wheel_speed_to_pwm_gain = 190.0;
     double wheel_speed_to_pwm_bias = 28.0;
-    double speed_estimate_per_pwm = 0.0045;
+    double speed_estimate_per_pwm = 0.0016;
     double left_pwm_scale = 1.00;
     double right_pwm_scale = 1.00;
+    double yaw_response_scale = 1.00;
     double linear_feedback_gain = 75.0;
     double yaw_feedback_gain = 55.0;
-    double pwm_slew_rate = 800.0;
-    double motor_time_constant = 0.16;
+    double pwm_slew_rate = 450.0;
+    double motor_time_constant = 0.24;
     std::int32_t encoder_ticks_per_revolution = 360;
 };
 

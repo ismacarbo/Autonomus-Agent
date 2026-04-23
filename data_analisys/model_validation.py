@@ -24,13 +24,14 @@ from data_analisys.report_analysis import (
     time_series,
 )
 from data_analisys.svg_charts import write_grouped_bar_chart, write_time_series_chart
+from data_analisys.validation_presets import load_preset_config, list_presets, preset_names
 
 
 DEFAULT_SIM_BASELINE = Path("reports/thesis_planner_unstructured_wide_slalom_gui_auto_20260317_032610_597.json")
 DEFAULT_ROBOT_RUN = Path("reports/thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260418_181318_932.json")
 DEFAULT_OUTPUT_DIR = Path("data_analisys/outputs/unstructured_model_validation")
 DEFAULT_AGGREGATE_OUTPUT_DIR = Path("data_analisys/outputs/unstructured_model_validation_aggregate")
-DEFAULT_CONFIG = Path("data_analisys/unstructured_validation_config.json")
+DEFAULT_CONFIG: Path | None = None
 WINDOW_MODES = ("full", "until_first_gate", "longest_reference", "reference_only", "custom")
 
 
@@ -53,6 +54,7 @@ class FitResult:
     dt_s: float | None
     a: float | None
     b: float | None
+    c: float | None
     gain: float | None
     tau_s: float | None
     rmse: float | None
@@ -71,8 +73,10 @@ class WindowSelection:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create an unstructured simulation-vs-robot baseline comparison.",
+        description="Create a simulation-vs-robot baseline comparison.",
     )
+    parser.add_argument("--preset", choices=preset_names(), default=None)
+    parser.add_argument("--list-presets", action="store_true")
     parser.add_argument("--sim-baseline", type=Path, default=DEFAULT_SIM_BASELINE)
     parser.add_argument("--robot-run", type=Path, default=DEFAULT_ROBOT_RUN)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -97,7 +101,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    apply_config_defaults(args)
+    if args.list_presets:
+        for preset in list_presets():
+            print(f"{preset.name}: {preset.label}")
+            if preset.description:
+                print(f"  {preset.description}")
+        return 0
+
+    config = apply_config_defaults(args)
+    scenario_label = config.get("label")
+    extra_notes = [str(note) for note in config.get("notes") or []]
     if args.robot_glob:
         robot_runs = [Path(path) for path in sorted(glob.glob(args.robot_glob))]
         run_multi_run_validation(
@@ -108,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
             args.custom_start,
             args.custom_end,
             args.grid_size,
+            scenario_label=scenario_label,
+            extra_notes=extra_notes,
         )
         print(f"Wrote aggregate validation bundle to {args.aggregate_output_dir}")
         print(f"Simulation baseline: {args.sim_baseline}")
@@ -123,24 +138,35 @@ def main(argv: list[str] | None = None) -> int:
         args.window,
         args.custom_start,
         args.custom_end,
+        scenario_label=scenario_label,
+        extra_notes=extra_notes,
     )
 
-    print(f"Wrote unstructured model validation bundle to {args.output_dir}")
+    print(f"Wrote model validation bundle to {args.output_dir}")
     print(f"Simulation baseline: {args.sim_baseline}")
     print(f"Robot run: {args.robot_run}")
     return 0
 
 
-def apply_config_defaults(args: argparse.Namespace) -> None:
-    if args.config is None or not args.config.exists():
-        return
-    config = json.loads(args.config.read_text(encoding="utf-8"))
+def apply_config_defaults(args: argparse.Namespace) -> dict[str, Any]:
+    config: dict[str, Any] = {}
+    if args.preset:
+        config.update(load_preset_config(args.preset))
+
+    if args.config is not None and args.config.exists():
+        config.update(json.loads(args.config.read_text(encoding="utf-8")))
+
     if args.sim_baseline == DEFAULT_SIM_BASELINE and config.get("simulation_baseline"):
         args.sim_baseline = Path(config["simulation_baseline"])
     if args.robot_run == DEFAULT_ROBOT_RUN and config.get("robot_validation_run"):
         args.robot_run = Path(config["robot_validation_run"])
+    if args.output_dir == DEFAULT_OUTPUT_DIR and config.get("output_dir"):
+        args.output_dir = Path(config["output_dir"])
+    if args.aggregate_output_dir == DEFAULT_AGGREGATE_OUTPUT_DIR and config.get("aggregate_output_dir"):
+        args.aggregate_output_dir = Path(config["aggregate_output_dir"])
     if args.window == "full" and config.get("default_analysis_window"):
         args.window = config["default_analysis_window"]
+    return config
 
 
 def run_model_validation(
@@ -151,6 +177,8 @@ def run_model_validation(
     analysis_window: str = "full",
     custom_start: float | None = None,
     custom_end: float | None = None,
+    scenario_label: str | None = None,
+    extra_notes: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     sim_raw = load_report(sim_baseline)
     robot_raw = load_report(robot_run)
@@ -158,14 +186,32 @@ def run_model_validation(
     robot, robot_window = select_analysis_window(robot_raw, analysis_window, custom_start, custom_end)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    comparison = build_comparison(sim, robot, grid_size, analysis_window, sim_window, robot_window)
+    comparison = build_comparison(
+        sim,
+        robot,
+        grid_size,
+        analysis_window,
+        sim_window,
+        robot_window,
+        scenario_label=scenario_label,
+        extra_notes=extra_notes,
+    )
     fits = fit_reports(sim, robot)
 
     write_json(output_dir / "comparison.json", comparison)
     write_json(output_dir / "fit_results.json", fits)
     write_metrics_csv(output_dir / "comparison_metrics.csv", comparison)
     write_fit_csv(output_dir / "fit_results.csv", fits)
-    write_manifest(output_dir / "manifest.txt", sim_baseline, robot_run, analysis_window, sim_window, robot_window)
+    write_manifest(
+        output_dir / "manifest.txt",
+        sim_baseline,
+        robot_run,
+        analysis_window,
+        sim_window,
+        robot_window,
+        scenario_label=scenario_label,
+        extra_notes=extra_notes,
+    )
     write_plots(output_dir, sim, robot, comparison)
     return comparison, fits
 
@@ -178,6 +224,8 @@ def run_multi_run_validation(
     custom_start: float | None = None,
     custom_end: float | None = None,
     grid_size: int = 250,
+    scenario_label: str | None = None,
+    extra_notes: list[str] | None = None,
 ) -> dict[str, Any]:
     sim_raw = load_report(sim_baseline)
     sim, sim_window = select_analysis_window(sim_raw, analysis_window, custom_start, custom_end)
@@ -188,7 +236,16 @@ def run_multi_run_validation(
     for robot_path in robot_runs:
         robot_raw = load_report(robot_path)
         robot, robot_window = select_analysis_window(robot_raw, analysis_window, custom_start, custom_end)
-        comparison = build_comparison(sim, robot, grid_size, analysis_window, sim_window, robot_window)
+        comparison = build_comparison(
+            sim,
+            robot,
+            grid_size,
+            analysis_window,
+            sim_window,
+            robot_window,
+            scenario_label=scenario_label,
+            extra_notes=extra_notes,
+        )
         fits = fit_reports(sim, robot)
         errors = comparison["aligned_normalized_time_error"]
         tracking_robot = comparison["tracking_error"]["robot"]
@@ -203,6 +260,7 @@ def run_multi_run_validation(
             "robot_first_gate_completion_s": comparison["robot"]["summary"]["first_gate_completion_s"],
             "speed_rmse_vs_sim": errors["speed"]["rmse"],
             "yaw_rate_rmse_vs_sim": errors["yaw_rate"]["rmse"],
+            "yaw_unwrapped_rmse_vs_sim": errors["yaw_unwrapped"]["rmse"],
             "distance_norm_rmse_vs_sim": errors["distance_to_goal_norm"]["rmse"],
             "heading_rmse_vs_sim": errors["tracker_heading_error_deg"]["rmse"],
             "planning_rmse_vs_sim": errors["planning_ms"]["rmse"],
@@ -225,10 +283,12 @@ def run_multi_run_validation(
             "run_id": sim.run_id,
             "window": asdict(sim_window),
         },
+        "scenario_label": scenario_label,
         "analysis_window": analysis_window,
         "robot_run_count": len(rows),
         "rows": rows,
         "aggregate_stats": aggregate_rows(rows),
+        "notes": extra_notes,
     }
     write_json(output_dir / "aggregate_validation.json", aggregate)
     write_aggregate_csv(output_dir / "aggregate_validation.csv", rows)
@@ -350,12 +410,15 @@ def build_comparison(
     analysis_window: str = "full",
     sim_window: WindowSelection | None = None,
     robot_window: WindowSelection | None = None,
+    scenario_label: str | None = None,
+    extra_notes: list[str] | None = None,
 ) -> dict[str, Any]:
     sim_summary = summarize_report(sim)
     robot_summary = summarize_report(robot)
     signals = [
         "speed",
         "accel",
+        "yaw_unwrapped",
         "yaw_rate",
         "distance_to_goal_norm",
         "tracker_cross_track",
@@ -382,8 +445,12 @@ def build_comparison(
         "tracker_cross_track": asdict(stats_for_series(resolve_signal(sim, "tracker_cross_track"))),
         "tracker_heading_error_deg": asdict(stats_for_series(resolve_signal(sim, "tracker_heading_error_deg"))),
     }
+    notes = default_notes_for_scenario(sim.path, robot.path)
+    if extra_notes:
+        notes.extend(extra_notes)
 
     return {
+        "scenario_label": scenario_label,
         "simulation": {
             "path": str(sim.path),
             "run_id": sim.run_id,
@@ -409,12 +476,37 @@ def build_comparison(
             "simulation": sim_tracking,
             "robot": robot_tracking,
         },
-        "notes": [
-            "The first baseline compares normalized signal shapes because the simulated and physical unstructured maps are not the same environment.",
-            "distance_to_goal_norm is normalized by each run initial valid distance_to_goal value.",
-            "The PWM fits are first-order discrete approximations intended as fitting scaffolding, not final vehicle identification.",
-        ],
+        "signal_sources": {
+            "simulation": {
+                "yaw_rate": yaw_rate_source(sim),
+            },
+            "robot": {
+                "yaw_rate": yaw_rate_source(robot),
+            },
+        },
+        "notes": notes,
     }
+
+
+def default_notes_for_scenario(sim_path: Path, robot_path: Path) -> list[str]:
+    sim_name = sim_path.name.lower()
+    robot_name = robot_path.name.lower()
+    notes = [
+        "distance_to_goal_norm is normalized by each run initial valid distance_to_goal value.",
+        "yaw_rate is derived from unwrapped yaw when a report's yaw_rate field does not integrate consistently with yaw.",
+        "The PWM fits are first-order discrete approximations intended as fitting scaffolding, not final vehicle identification.",
+    ]
+    if "unstructured" in sim_name or "unstructured" in robot_name:
+        notes.insert(
+            0,
+            "The first baseline compares normalized signal shapes because the simulated and physical unstructured maps are not the same environment.",
+        )
+    else:
+        notes.insert(
+            0,
+            "The comparison uses normalized-time signal shapes to expose tracking and dynamic mismatches even when duration and scale differ.",
+        )
+    return notes
 
 
 def signal_series(report, key: str) -> list[tuple[float, float]]:
@@ -426,6 +518,8 @@ def signal_series(report, key: str) -> list[tuple[float, float]]:
 def resolve_signal(report, signal: str) -> list[tuple[float, float]]:
     if signal == "yaw_rate":
         return yaw_rate_series(report)
+    if signal == "yaw_unwrapped":
+        return unwrapped_yaw_series(report)
     if signal == "distance_to_goal_norm":
         return normalized_distance_to_goal(report)
     return time_series(report, signal)
@@ -433,6 +527,11 @@ def resolve_signal(report, signal: str) -> list[tuple[float, float]]:
 
 def yaw_rate_series(report) -> list[tuple[float, float]]:
     direct = time_series(report, "yaw_rate")
+    derived = yaw_rate_from_yaw_series(report)
+    if derived and direct and yaw_rate_inconsistent_with_yaw(report, direct):
+        return derived
+    if derived and not direct:
+        return derived
     if direct:
         return direct
     points: list[tuple[float, float]] = []
@@ -443,6 +542,90 @@ def yaw_rate_series(report) -> list[tuple[float, float]]:
         if time is not None and speed is not None and curvature is not None:
             points.append((time, speed * curvature))
     return points
+
+
+def yaw_rate_source(report) -> str:
+    direct = time_series(report, "yaw_rate")
+    derived = yaw_rate_from_yaw_series(report)
+    if derived and direct and yaw_rate_inconsistent_with_yaw(report, direct):
+        return "derived_from_unwrapped_yaw"
+    if derived and not direct:
+        return "derived_from_unwrapped_yaw"
+    if direct:
+        return "reported_yaw_rate"
+    if time_series(report, "speed") and time_series(report, "curvature"):
+        return "speed_times_curvature"
+    return "unavailable"
+
+
+def yaw_rate_from_yaw_series(report) -> list[tuple[float, float]]:
+    yaw_points = unwrapped_yaw_series(report)
+    if len(yaw_points) < 2:
+        return []
+
+    rates: list[tuple[float, float]] = []
+    for index, (time, yaw) in enumerate(yaw_points):
+        if index == 0:
+            next_time, next_yaw = yaw_points[index + 1]
+            dt = next_time - time
+            dyaw = next_yaw - yaw
+        elif index == len(yaw_points) - 1:
+            prev_time, prev_yaw = yaw_points[index - 1]
+            dt = time - prev_time
+            dyaw = yaw - prev_yaw
+        else:
+            prev_time, prev_yaw = yaw_points[index - 1]
+            next_time, next_yaw = yaw_points[index + 1]
+            dt = next_time - prev_time
+            dyaw = next_yaw - prev_yaw
+        if dt > 1e-9:
+            rates.append((time, dyaw / dt))
+    return rates
+
+
+def yaw_rate_inconsistent_with_yaw(report, direct: list[tuple[float, float]]) -> bool:
+    yaw_points = unwrapped_yaw_series(report)
+    if len(yaw_points) < 2 or len(direct) < 2:
+        return False
+    yaw_delta = yaw_points[-1][1] - yaw_points[0][1]
+    direct_integral = integrate_time_series(direct)
+    tolerance = max(0.50, 0.35 * abs(yaw_delta))
+    return abs(yaw_delta) > 0.75 and abs(direct_integral - yaw_delta) > tolerance
+
+
+def unwrapped_yaw_series(report) -> list[tuple[float, float]]:
+    raw = time_series(report, "yaw")
+    if not raw:
+        return []
+    points: list[tuple[float, float]] = []
+    previous: float | None = None
+    for time, yaw in raw:
+        if previous is None:
+            unwrapped = yaw
+        else:
+            unwrapped = previous + wrap_angle(yaw - wrap_angle(previous))
+        points.append((time, unwrapped))
+        previous = unwrapped
+    return points
+
+
+def integrate_time_series(points: list[tuple[float, float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+    total = 0.0
+    for (t0, v0), (t1, v1) in zip(points, points[1:]):
+        dt = t1 - t0
+        if dt > 0.0:
+            total += 0.5 * (v0 + v1) * dt
+    return total
+
+
+def wrap_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
 
 
 def normalized_distance_to_goal(report) -> list[tuple[float, float]]:
@@ -561,7 +744,20 @@ def fit_first_order_response(
 ) -> FitResult:
     aligned = align_on_times(input_points, output_points)
     if len(aligned) < 4:
-        return FitResult(signal_name, "pwm", "output", len(aligned), None, None, None, None, None, None, "not enough samples")
+        return FitResult(
+            signal_name,
+            "pwm",
+            "output",
+            len(aligned),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "not enough samples",
+        )
 
     times = [row[0] for row in aligned]
     inputs = [row[1] for row in aligned]
@@ -588,7 +784,20 @@ def fit_first_order_response(
     vector = [sx1y, sx2y, sy]
     solved = solve_3x3(matrix, vector)
     if solved is None:
-        return FitResult(signal_name, "pwm", "output", len(aligned), median_dt(times), None, None, None, None, None, "singular least-squares system")
+        return FitResult(
+            signal_name,
+            "pwm",
+            "output",
+            len(aligned),
+            median_dt(times),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "singular least-squares system",
+        )
     a, b, c = solved
     predictions = [a * yy + b * uu + c for yy, uu in zip(x1, x2)]
     rmse = math.sqrt(sum((pred - real) ** 2 for pred, real in zip(predictions, y)) / len(y))
@@ -598,7 +807,7 @@ def fit_first_order_response(
     if dt is not None and 0.0 < a < 1.0:
         tau = -dt / math.log(a)
     note = "first-order discrete fit y[k+1] = a*y[k] + b*u[k] + c"
-    return FitResult(signal_name, "pwm", "output", len(aligned), dt, a, b, gain, tau, rmse, note)
+    return FitResult(signal_name, "pwm", "output", len(aligned), dt, a, b, c, gain, tau, rmse, note)
 
 
 def align_on_times(
@@ -693,21 +902,24 @@ def write_manifest(
     analysis_window: str,
     sim_window: WindowSelection,
     robot_window: WindowSelection,
+    scenario_label: str | None = None,
+    extra_notes: list[str] | None = None,
 ) -> None:
+    title = "Simulation-vs-robot model validation"
+    if scenario_label:
+        title = f"{scenario_label} - model validation"
     lines = [
-        "Unstructured simulation-vs-robot model validation",
+        title,
         "",
         f"Simulation baseline: {sim_baseline}",
         f"Robot run: {robot_run}",
         f"Analysis window: {analysis_window}",
         f"Simulation selected samples: {sim_window.output_samples}/{sim_window.input_samples} ({sim_window.note})",
         f"Robot selected samples: {robot_window.output_samples}/{robot_window.input_samples} ({robot_window.note})",
-        "",
-        "Interpretation:",
-        "- The current default simulation and robot runs are not the same physical map.",
-        "- Use normalized-time and normalized-distance comparisons for the first thesis baseline.",
-        "- For final validation, rerun simulation and hardware with the same gate/map protocol.",
     ]
+    if extra_notes:
+        lines.extend(["", "Notes:"])
+        lines.extend(f"- {note}" for note in extra_notes)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -715,6 +927,7 @@ def aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     metrics = [
         "speed_rmse_vs_sim",
         "yaw_rate_rmse_vs_sim",
+        "yaw_unwrapped_rmse_vs_sim",
         "distance_norm_rmse_vs_sim",
         "heading_rmse_vs_sim",
         "robot_speed_target_rms",
@@ -762,6 +975,7 @@ def write_aggregate_plots(output_dir: Path, rows: list[dict[str, Any]]) -> None:
         groups=[
             {"label": "speed", "values": [row["speed_rmse_vs_sim"] for row in rows], "color": "#1f77b4"},
             {"label": "yaw-rate", "values": [row["yaw_rate_rmse_vs_sim"] for row in rows], "color": "#d62728"},
+            {"label": "yaw", "values": [row.get("yaw_unwrapped_rmse_vs_sim") for row in rows], "color": "#9467bd"},
             {"label": "distance", "values": [row["distance_norm_rmse_vs_sim"] for row in rows], "color": "#2ca02c"},
         ],
     )
@@ -802,6 +1016,16 @@ def write_plots(output_dir: Path, sim, robot, comparison: dict[str, Any]) -> Non
         ],
     )
     write_time_series_chart(
+        output_dir / "yaw_unwrapped_comparison.svg",
+        title="Simulation vs robot unwrapped yaw",
+        x_label="normalized time",
+        y_label="yaw [rad]",
+        series=[
+            {"label": sim_label, "points": normalize_time(resolve_signal(sim, "yaw_unwrapped")), "color": "#1f77b4"},
+            {"label": robot_label, "points": normalize_time(resolve_signal(robot, "yaw_unwrapped")), "color": "#d62728"},
+        ],
+    )
+    write_time_series_chart(
         output_dir / "distance_to_goal_normalized.svg",
         title="Normalized distance-to-goal",
         x_label="normalized time",
@@ -836,7 +1060,7 @@ def write_plots(output_dir: Path, sim, robot, comparison: dict[str, Any]) -> Non
         ],
     )
 
-    categories = ["speed", "yaw_rate", "distance", "cross_track", "heading"]
+    categories = ["speed", "yaw_rate", "yaw", "distance", "cross_track", "heading"]
     errors = comparison["aligned_normalized_time_error"]
     write_grouped_bar_chart(
         output_dir / "aligned_error_summary.svg",
@@ -849,6 +1073,7 @@ def write_plots(output_dir: Path, sim, robot, comparison: dict[str, Any]) -> Non
                 "values": [
                     errors["speed"]["rmse"],
                     errors["yaw_rate"]["rmse"],
+                    errors["yaw_unwrapped"]["rmse"],
                     errors["distance_to_goal_norm"]["rmse"],
                     errors["tracker_cross_track"]["rmse"],
                     errors["tracker_heading_error_deg"]["rmse"],

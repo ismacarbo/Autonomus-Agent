@@ -25,7 +25,9 @@ Dalla UI puoi:
 - aprire un report tramite file picker o percorso manuale
 - cambiare grafico senza rigenerare gli SVG batch
 - lanciare la validazione modello nella tab `Model validation`
+- scegliere un preset di baseline: `unstructured`, `structured_validation_road`, `structured_figure_eight`
 - confrontare baseline simulata e run reale con metriche, fit e plot nella stessa finestra
+- vedere sempre i tab `Metrics`, `Fits`, `Aggregate` e `Fitting notes` nella sezione `Model validation`
 - scegliere la finestra di analisi: `full`, `until_first_gate`, `longest_reference`, `reference_only`, `custom`
 - lanciare un aggregato multi-run con un glob sui report reali
 
@@ -118,6 +120,39 @@ python -m data_analisys.model_validation \
   --window until_first_gate
 ```
 
+Preset disponibili:
+
+```bash
+python -m data_analisys.model_validation --list-presets
+```
+
+Esempi strutturati:
+
+```bash
+python -m data_analisys.model_validation --preset structured_validation_road
+
+python -m data_analisys.model_validation \
+  --preset structured_validation_road \
+  --robot-glob 'reports/thesis_hardware_structured_validation_road_gui_manual_20260422*.json'
+
+python -m data_analisys.model_validation --preset structured_figure_eight
+```
+
+Sweep di tuning structured:
+
+```bash
+python -m data_analisys.tune_structured_sim --limit 8
+```
+
+Lo sweep usa il simulatore headless sulla `validation road`, applica override del plant
+e classifica i candidati rispetto alla baseline reale structured.
+
+Note sui preset strutturati:
+
+- `structured_validation_road` e gia una baseline buona e coerente
+- `structured_figure_eight` e provvisorio ma utile per iniziare a leggere il mismatch
+- nei report del 22-23 aprile non c'e un `circle_loop` hardware nominato esplicitamente; il test structured piu vicino salvato in JSON e `figure_eight`
+
 Finestre disponibili:
 
 - `full`: tutta la run
@@ -164,6 +199,7 @@ Per ora vengono stimati:
 
 Dai parametri ricaviamo anche:
 
+- `c`, mostrato anche nella app, utile per leggere deadzone residua, attrito statico o trim
 - `gain = b / (1 - a)`, se il sistema e stabile
 - `tau = -dt / log(a)`, una costante di tempo approssimata quando `0 < a < 1`
 - `rmse`, errore medio quadratico della previsione one-step

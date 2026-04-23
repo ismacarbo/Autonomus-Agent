@@ -1,9 +1,12 @@
 {
+  "label": "Unstructured gate baseline",
   "description": "First unstructured simulation-vs-real baseline for model validation and tracking-error analysis.",
   "simulation_baseline": "reports/thesis_planner_unstructured_wide_slalom_gui_auto_20260317_032610_597.json",
   "robot_validation_run": "reports/thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260418_181318_932.json",
   "default_analysis_window": "until_first_gate",
   "default_robot_glob": "reports/thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260418*.json",
+  "output_dir": "data_analisys/outputs/unstructured_model_validation",
+  "aggregate_output_dir": "data_analisys/outputs/unstructured_model_validation_aggregate",
   "notes": [
     "The default simulation and hardware reports are not the same physical map.",
     "Use this as a fitting-ready scaffold and as a first baseline of unstructured behavior.",

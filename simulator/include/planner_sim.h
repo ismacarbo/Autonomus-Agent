@@ -63,8 +63,10 @@ struct TelemetrySample {
     double time = 0.0;
     double speed = 0.0;
     double accel = 0.0;
+    double yaw = 0.0;
     double jerk = 0.0;
     double curvature = 0.0;
+    double yaw_rate = 0.0;
     double command_r = 0.0;
     double steer_angle = 0.0;
     double target_steer_angle = 0.0;
@@ -112,6 +114,24 @@ struct SimConfig {
     std::uint32_t gate_seed = 7;
     VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     TrackingControllerMode tracking_controller = TrackingControllerMode::MpcPathFollower;
+};
+
+struct VehicleTuningOverrides {
+    std::optional<double> min_effective_pwm;
+    std::optional<double> speed_estimate_per_pwm;
+    std::optional<double> pwm_slew_rate;
+    std::optional<double> motor_time_constant;
+    std::optional<double> max_linear_speed;
+    std::optional<double> max_curvature;
+    std::optional<double> max_steer_angle;
+    std::optional<double> max_steer_rate;
+    std::optional<double> max_yaw_rate;
+    std::optional<double> linear_feedback_gain;
+    std::optional<double> yaw_feedback_gain;
+    std::optional<double> left_pwm_scale;
+    std::optional<double> right_pwm_scale;
+    std::optional<double> yaw_response_scale;
+    std::optional<double> cruise_speed_limit;
 };
 
 struct SimulationReport {
@@ -184,6 +204,8 @@ class PlannerDrivenVehicleSim {
     void set_gate_behavior(GateBehaviorMode mode, std::uint32_t seed);
     void regenerate_gate_layout(std::uint32_t seed);
     void set_vehicle_stack(VehicleModelKind model, TrackingControllerMode controller);
+    void set_tuning_overrides(const VehicleTuningOverrides& overrides);
+    const VehicleTuningOverrides& tuning_overrides() const { return tuning_overrides_; }
 
   private:
     void rebuild_vehicle_model();
@@ -209,6 +231,7 @@ class PlannerDrivenVehicleSim {
     WorldMap world_;
     SimConfig config_;
     VehicleGeometry geometry_;
+    VehicleTuningOverrides tuning_overrides_;
     std::unique_ptr<VehicleDynamicsModel> vehicle_model_;
 
     sim_info sim_{};

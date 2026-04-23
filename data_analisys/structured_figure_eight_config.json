@@ -1,0 +1,28 @@
+{
+  "label": "Structured figure eight",
+  "description": "Baseline strutturata provvisoria per la pista figure-eight, utile come proxy del test circle finche non c'e un circle_loop hardware pulito.",
+  "simulation_baseline": "reports/thesis_planner_structured_figure_eight_headless_20260423_001746_215.json",
+  "robot_validation_run": "reports/thesis_hardware_structured_figure_eight_gui_manual_20260422_235941_672.json",
+  "default_robot_glob": "reports/thesis_hardware_structured_figure_eight_gui_manual_2026042*.json",
+  "default_analysis_window": "full",
+  "output_dir": "data_analisys/outputs/structured_figure_eight_model_validation",
+  "aggregate_output_dir": "data_analisys/outputs/structured_figure_eight_model_validation_aggregate",
+  "notes": [
+    "Questo preset e ancora provvisorio: il robot arriva a distance_to_goal zero nel run 20260422_235941_672, ma l'errore heading resta alto.",
+    "Nei report del 22-23 aprile non ho trovato un hardware circle_loop nominato esplicitamente; il run structured piu vicino come dinamica chiusa e figure_eight.",
+    "Usalo per costruire la pipeline e leggere le discrepanze, non ancora come validazione finale del modello."
+  ],
+  "primary_signals": [
+    "speed",
+    "yaw_rate",
+    "distance_to_goal_norm",
+    "tracker_cross_track",
+    "tracker_heading_error_deg",
+    "planning_ms",
+    "step_ms"
+  ],
+  "initial_fit_models": [
+    "first_order_speed_from_pwm",
+    "first_order_yaw_rate_from_diff_pwm"
+  ]
+}
