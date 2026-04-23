@@ -3233,6 +3233,16 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     planned_trajectory_.clear();
     reference_trajectory_.clear();
     diagnostics_.planner_has_reference = false;
+    const auto assign_structured_centerline_fallback = [&]() {
+        if (world_.environment_mode() != EnvironmentMode::StructuredRoad ||
+            world_.road_centerline().size() < 2) {
+            return false;
+        }
+        planned_trajectory_ = world_.road_centerline();
+        reference_trajectory_ = build_reference_waypoints(planned_trajectory_, planner_speed_ref_);
+        diagnostics_.planner_has_reference = reference_trajectory_.size() >= 2;
+        return diagnostics_.planner_has_reference;
+    };
     diagnostics_.chosen_gate_distance =
         chosen_gate_index_ >= 0 && chosen_gate_index_ < static_cast<int>(gates_.size())
             ? distance_to_gate_point(gates_[static_cast<size_t>(chosen_gate_index_)], estimate_.position)
@@ -3244,9 +3254,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
 
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
         (!has_planner_clothoid || world_.road_centerline().size() < 2)) {
-        planned_trajectory_ = world_.road_centerline();
-        reference_trajectory_ = build_reference_waypoints(planned_trajectory_, planner_speed_ref_);
-        diagnostics_.planner_has_reference = reference_trajectory_.size() >= 2;
+        assign_structured_centerline_fallback();
         return;
     }
 
@@ -3305,6 +3313,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
 
     const bool unstructured = world_.environment_mode() == EnvironmentMode::UnstructuredGates;
     const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
+    const bool micro_loop = micro_structured_world(world_);
     const double lookahead_distance =
         unstructured ? 22.0
         : (closed_structured_loop
@@ -3327,7 +3336,12 @@ void HardwarePlannerRunner::update_selected_trajectory() {
             s_end = cl_.end_point_s;
         }
     }
-    if (!(s_end > s_start + 0.10)) {
+    const double min_reference_span =
+        closed_structured_loop
+            ? (tiny_indoor_loop ? 0.04 : (micro_loop ? 0.06 : 0.10))
+            : 0.10;
+    if (!(s_end > s_start + min_reference_span)) {
+        assign_structured_centerline_fallback();
         return;
     }
 
@@ -3340,6 +3354,9 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         closed_structured_loop);
     planned_trajectory_ = extract_reference_positions(reference_trajectory_);
     diagnostics_.planner_has_reference = reference_trajectory_.size() >= 2;
+    if (!diagnostics_.planner_has_reference) {
+        assign_structured_centerline_fallback();
+    }
 }
 
 void HardwarePlannerRunner::compute_control_command(double dt) {
