@@ -235,11 +235,11 @@ std::vector<Vec2> make_zigzag_road() {
 std::vector<Vec2> make_validation_loop() {
     constexpr int kSamples = 28;
     // Keep the same oval shape as the original 40 cm validation loop, but
-    // shrink it uniformly to a 30 cm indoor workspace so hardware captures
+    // shrink it uniformly to a 50%-scale indoor loop so hardware captures
     // can run in tighter rooms without manual repositioning.
     const Vec2 center{0.15, 0.15};
-    const double radius_x = 0.0975;  // 0.13 * 0.75
-    const double radius_y = 0.0825;  // 0.11 * 0.75
+    const double radius_x = 0.0650;  // 0.13 * 0.50
+    const double radius_y = 0.0550;  // 0.11 * 0.50
     std::vector<Vec2> loop;
     loop.reserve(kSamples);
     for (int i = 0; i < kSamples; ++i) {
@@ -249,8 +249,8 @@ std::vector<Vec2> make_validation_loop() {
             center.y + radius_y * std::sin(theta),
         });
     }
-    loop = close_polyline_loop(std::move(loop), 0.02);
-    return resample_closed_polyline(loop, 0.015);
+    loop = close_polyline_loop(std::move(loop), 0.015);
+    return resample_closed_polyline(loop, 0.010);
 }
 
 std::vector<Vec2> make_indoor_circle_loop() {

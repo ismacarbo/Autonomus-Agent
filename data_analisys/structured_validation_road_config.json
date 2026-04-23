@@ -1,14 +1,14 @@
 {
   "label": "Structured validation road",
   "description": "Baseline strutturata per il tracciamento continuo sulla validation road.",
-  "simulation_baseline": "reports/thesis_planner_structured_validation_road_headless_20260423_235259_640.json",
+  "simulation_baseline": "reports/thesis_planner_structured_validation_road_headless_20260424_000057_844.json",
   "robot_validation_run": "reports/thesis_hardware_structured_validation_road_gui_manual_20260422_225340_371.json",
   "default_robot_glob": "reports/thesis_hardware_structured_validation_road_gui_manual_20260422*.json",
   "default_analysis_window": "full",
   "output_dir": "data_analisys/outputs/structured_validation_road_model_validation",
   "aggregate_output_dir": "data_analisys/outputs/structured_validation_road_model_validation_aggregate",
   "notes": [
-    "Dal 23 aprile sera la validation road e stata ristretta a 0.30 x 0.30 m con scala geometrica uniforme 0.75x per adattarla al workspace indoor reale.",
+    "Dal 24 aprile la validation road usa una geometria compatta 0.50x della pista originale per adattarsi al workspace indoor reale senza riposizionamenti manuali.",
     "I quattro run hardware del 22 aprile restano utili come riferimento storico, ma non vanno usati come validazione finale della nuova validation road compatta.",
     "Il run 20260422_225340_371 e il migliore come compromesso tra distanza finale, heading RMS e yaw-rate RMS.",
     "Qui conviene usare la finestra full: il riferimento resta attivo in modo continuo per tutta la run.",
