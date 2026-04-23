@@ -145,7 +145,8 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
     const bool compact = compact_structured_world(world);
     const bool micro = micro_structured_world(world);
     const bool validation_road = world.structured_preset() == StructuredMapPreset::ValidationRoad;
-    const double speed_cap = micro ? 0.025 : (validation_road ? 0.03 : (compact ? 0.08 : 0.35));
+    const double speed_cap = micro ? (validation_road ? 0.020 : 0.025)
+                                   : (validation_road ? 0.03 : (compact ? 0.08 : 0.35));
     const double speed_per_pwm = micro ? 0.0010 : (compact ? 0.0012 : 0.0016);
     const double motor_tau = micro ? 0.16 : 0.18;
     const double pwm_slew = micro ? 420.0 : (compact ? 480.0 : 450.0);
@@ -162,7 +163,8 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
         geometry->wheel_radius = 0.016;
         geometry->yaw_response_scale = 0.45;
         geometry->linear_feedback_gain = std::max(geometry->linear_feedback_gain, 105.0);
-        geometry->yaw_feedback_gain = std::max(geometry->yaw_feedback_gain, 95.0);
+        geometry->yaw_feedback_gain =
+            std::max(geometry->yaw_feedback_gain, validation_road ? 150.0 : 95.0);
     } else if (compact) {
         geometry->wheelbase = 0.09;
         geometry->cg_to_front = 0.045;
@@ -496,9 +498,14 @@ void PlannerDrivenVehicleSim::reset() {
     geometry_ = VehicleGeometry{};
     apply_hardware_like_vehicle_tuning(world_, &geometry_, &config_);
     if (micro_structured_world(world_)) {
+        const bool validation_road =
+            world_.environment_mode() == EnvironmentMode::StructuredRoad &&
+            world_.structured_preset() == StructuredMapPreset::ValidationRoad;
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.35);
-        geometry_.max_steer_rate = std::max(geometry_.max_steer_rate, 8.00);
-        geometry_.max_curvature = std::max(geometry_.max_curvature, 16.0);
+        geometry_.max_steer_rate =
+            std::max(geometry_.max_steer_rate, validation_road ? 12.0 : 8.00);
+        geometry_.max_curvature =
+            std::max(geometry_.max_curvature, validation_road ? 20.0 : 16.0);
         geometry_.max_yaw_rate = std::max(geometry_.max_yaw_rate, 8.0);
     } else if (compact_structured_world(world_)) {
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.25);

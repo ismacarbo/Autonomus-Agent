@@ -234,9 +234,12 @@ std::vector<Vec2> make_zigzag_road() {
 
 std::vector<Vec2> make_validation_loop() {
     constexpr int kSamples = 28;
-    const Vec2 center{0.20, 0.20};
-    const double radius_x = 0.13;
-    const double radius_y = 0.11;
+    // Keep the same oval shape as the original 40 cm validation loop, but
+    // shrink it uniformly to a 30 cm indoor workspace so hardware captures
+    // can run in tighter rooms without manual repositioning.
+    const Vec2 center{0.15, 0.15};
+    const double radius_x = 0.0975;  // 0.13 * 0.75
+    const double radius_y = 0.0825;  // 0.11 * 0.75
     std::vector<Vec2> loop;
     loop.reserve(kSamples);
     for (int i = 0; i < kSamples; ++i) {
@@ -246,8 +249,8 @@ std::vector<Vec2> make_validation_loop() {
             center.y + radius_y * std::sin(theta),
         });
     }
-    loop = close_polyline_loop(std::move(loop), 0.03);
-    return resample_closed_polyline(loop, 0.02);
+    loop = close_polyline_loop(std::move(loop), 0.02);
+    return resample_closed_polyline(loop, 0.015);
 }
 
 std::vector<Vec2> make_indoor_circle_loop() {
@@ -872,7 +875,7 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
     switch (preset) {
         case StructuredMapPreset::ValidationRoad:
         case StructuredMapPreset::Custom:
-            world.bounds_ = {0.0, 0.0, 0.40, 0.40};
+            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
             world.road_centerline_ = close_polyline_loop(make_validation_loop(), 0.45);
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
