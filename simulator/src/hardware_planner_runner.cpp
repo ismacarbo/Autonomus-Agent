@@ -2302,6 +2302,16 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     if (!use_dynamic_gap_gates_) {
         return;
     }
+    if (config_.gap_extraction.complete_after_first_gap &&
+        passed_unstructured_gap_count_ > 0) {
+        gates_.clear();
+        gate_specs_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+        return;
+    }
 
     const std::vector<gate> previous_gates = gates_;
     const std::vector<GateSpec> previous_gate_specs = gate_specs_;
@@ -3102,6 +3112,18 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         startup_scan_elapsed_s_ = 0.0;
         startup_scan_direction_ = 1.0;
         startup_scan_complete_ = false;
+        return;
+    }
+    if (config_.gap_extraction.complete_after_first_gap &&
+        passed_unstructured_gap_count_ > 0) {
+        clear_locked_gap_goal();
+        gates_.clear();
+        gate_specs_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+        startup_scan_complete_ = true;
         return;
     }
 
@@ -4601,7 +4623,11 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             distance_to_goal_ = 0.0;
         }
     } else if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
-        if (locked_gap_goal_.has_value()) {
+        if (config_.gap_extraction.complete_after_first_gap &&
+            passed_unstructured_gap_count_ > 0) {
+            distance_to_goal_ = 0.0;
+            goal_reached_ = true;
+        } else if (locked_gap_goal_.has_value()) {
             const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
             const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
             const double crossing_margin =
@@ -4641,7 +4667,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                 ++passed_unstructured_gap_count_;
                 clear_locked_gap_goal();
                 distance_to_goal_ = 0.0;
-                goal_reached_ = false;
+                goal_reached_ = config_.gap_extraction.complete_after_first_gap;
             }
         } else if (chosen_gate_index_ >= 0 && chosen_gate_index_ < static_cast<int>(gate_specs_.size())) {
             distance_to_goal_ =
