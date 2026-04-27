@@ -2839,14 +2839,14 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 {right_boundary.hit.x - lidar_origin.x, right_boundary.hit.y - lidar_origin.y},
                 center_axis);
             const double aperture_distance =
-                std::max(left_boundary_distance, right_boundary_distance);
+                0.5 * (left_boundary_distance + right_boundary_distance);
             if (!std::isfinite(aperture_distance) || aperture_distance <= 0.0) {
                 return;
             }
             const double aperture_margin = clamp_value(
                 config_.gap_extraction.gap_aperture_target_margin_m,
-                0.06,
-                0.30);
+                0.03,
+                0.18);
             nominal_target_distance = aperture_distance + aperture_margin;
         }
         const double target_distance = clamp_value(
@@ -3173,19 +3173,13 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         startup_scan_complete_ = true;
     } else {
         startup_scan_elapsed_s_ += std::max(dt, 0.0);
-        startup_scan_complete_ =
-            startup_scan_elapsed_s_ >= std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
+        const double startup_scan_duration =
+            std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
+        startup_scan_complete_ = startup_scan_elapsed_s_ >= startup_scan_duration;
 
         if (!startup_scan_complete_ &&
             perception_map_ready() &&
             !gate_specs_.empty()) {
-            const double front_open_threshold = std::max(
-                config_.gap_extraction.free_distance_threshold_m,
-                config_.localization.obstacle_stop_distance_m + 0.08);
-            const bool front_is_open =
-                estimate_.front_lidar_distance <= 0.0 ||
-                estimate_.front_lidar_distance >= front_open_threshold;
-
             bool have_forward_candidate = false;
             for (const GateSpec& spec : gate_specs_) {
                 const double heading_error = std::abs(
@@ -3196,7 +3190,10 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }
             }
 
-            if (front_is_open || have_forward_candidate) {
+            const double min_scan_before_lock_s =
+                std::min(0.35, 0.5 * startup_scan_duration);
+            if (have_forward_candidate &&
+                startup_scan_elapsed_s_ >= min_scan_before_lock_s) {
                 startup_scan_complete_ = true;
             }
         }
@@ -3818,9 +3815,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
             const double search_heading =
-                std::abs(best_heading) > config_.gap_extraction.recovery_escape_turn_min_heading_rad
-                    ? best_heading
-                    : startup_scan_direction_ * 0.35;
+                startup_scan_direction_ *
+                (no_reference_close_obstacle ? 0.52 : 0.42);
             direct_yaw_rate_command = clamp_value(
                 1.2 * search_heading,
                 -0.55 * config_.drive.max_yaw_rate,
