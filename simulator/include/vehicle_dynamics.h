@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -12,6 +13,7 @@ namespace thesis_sim {
 
 enum class VehicleModelKind {
     CarLikeBicycle = 0,
+    TrackedVehicle = 1,
 };
 
 const char* vehicle_model_kind_name(VehicleModelKind kind);
@@ -78,6 +80,7 @@ struct VehicleControlInput {
     double accel_cmd = 0.0;
     double steer_rate_cmd = 0.0;
     double target_speed = 0.0;
+    double target_yaw_rate = std::numeric_limits<double>::quiet_NaN();
     double target_curvature = 0.0;
     double target_steer_angle = 0.0;
 };
@@ -97,5 +100,6 @@ class VehicleDynamicsModel {
 };
 
 std::unique_ptr<VehicleDynamicsModel> make_four_wheel_car_model(const VehicleGeometry& geometry = {});
+std::unique_ptr<VehicleDynamicsModel> make_tracked_vehicle_model(const VehicleGeometry& geometry = {});
 
 }  // namespace thesis_sim

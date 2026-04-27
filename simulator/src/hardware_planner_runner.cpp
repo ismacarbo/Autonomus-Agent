@@ -2703,9 +2703,22 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
-    auto add_true_gap_sector_candidate = [&](int start_index, int end_index) {
+    const double min_depth_contrast = std::max(
+        config_.gap_extraction.min_gap_depth_contrast_m,
+        0.35 * required_gap_width);
+
+    auto add_gap_sector_candidate = [&](int start_index,
+                                        int end_index,
+                                        int left_boundary_index,
+                                        int right_boundary_index,
+                                        bool require_depth_contrast,
+                                        double range_jump_bonus) {
         if (start_index < 0 || end_index < start_index ||
-            end_index >= static_cast<int>(beams.size())) {
+            end_index >= static_cast<int>(beams.size()) ||
+            left_boundary_index < 0 ||
+            right_boundary_index >= static_cast<int>(beams.size()) ||
+            left_boundary_index >= start_index ||
+            right_boundary_index <= end_index) {
             return;
         }
 
@@ -2729,32 +2742,36 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return;
         }
 
-        const int left_boundary_index = start_index - 1;
-        const int right_boundary_index = end_index + 1;
+        const ScanBeam& left_boundary = beams[static_cast<size_t>(left_boundary_index)];
+        const ScanBeam& right_boundary = beams[static_cast<size_t>(right_boundary_index)];
         const bool have_left_obstacle =
-            left_boundary_index >= 0 &&
-            beams[static_cast<size_t>(left_boundary_index)].distance < free_threshold;
+            left_boundary.distance < planning_range - 0.03 &&
+            left_boundary.distance < config_.localization.max_range_m - 0.03;
         const bool have_right_obstacle =
-            right_boundary_index < static_cast<int>(beams.size()) &&
-            beams[static_cast<size_t>(right_boundary_index)].distance < free_threshold;
-
-        if (!(have_left_obstacle && have_right_obstacle)) {
+            right_boundary.distance < planning_range - 0.03 &&
+            right_boundary.distance < config_.localization.max_range_m - 0.03;
+        if (!have_left_obstacle || !have_right_obstacle) {
             return;
         }
 
-        const double gap_width = distance(
-            beams[static_cast<size_t>(left_boundary_index)].hit,
-            beams[static_cast<size_t>(right_boundary_index)].hit);
+        const double depth_contrast =
+            min_sector_distance - std::max(left_boundary.distance, right_boundary.distance);
+        const bool near_obstacle_boundaries =
+            left_boundary.distance < free_threshold &&
+            right_boundary.distance < free_threshold;
+        if (require_depth_contrast &&
+            !near_obstacle_boundaries &&
+            depth_contrast < min_depth_contrast) {
+            return;
+        }
+
+        const double gap_width = distance(left_boundary.hit, right_boundary.hit);
         if (!(gap_width >= required_gap_width)) {
             return;
         }
 
-        const double left_gap_angle = have_left_obstacle
-            ? beams[static_cast<size_t>(left_boundary_index)].local_angle
-            : start_angle - 0.5 * beam_angle_resolution;
-        const double right_gap_angle = have_right_obstacle
-            ? beams[static_cast<size_t>(right_boundary_index)].local_angle
-            : end_angle + 0.5 * beam_angle_resolution;
+        const double left_gap_angle = left_boundary.local_angle;
+        const double right_gap_angle = right_boundary.local_angle;
         const double center_local_angle = wrap_angle(0.5 * (left_gap_angle + right_gap_angle));
         if (std::abs(center_local_angle) > 0.88 * kPi) {
             return;
@@ -2782,13 +2799,28 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             (gap_width - required_gap_width) / std::max(required_gap_width, 0.05),
             0.0,
             1.5);
+        const double depth_score = clamp_value(
+            depth_contrast / std::max(config_.gap_extraction.max_target_distance_m, 0.10),
+            0.0,
+            1.4);
         const double forward_alignment = 0.5 * (1.0 + std::cos(center_local_angle));
         const double goal_alignment = have_global_goal
             ? 0.5 * (1.0 + std::cos(wrap_angle(center_world_angle - goal_heading)))
             : forward_alignment;
         try_add_candidate(
             target,
-            1.80 * width_score + 1.30 * goal_alignment + 0.90 * forward_alignment);
+            range_jump_bonus + 1.80 * width_score + 0.85 * depth_score +
+                1.30 * goal_alignment + 0.90 * forward_alignment);
+    };
+
+    auto add_true_gap_sector_candidate = [&](int start_index, int end_index) {
+        add_gap_sector_candidate(
+            start_index,
+            end_index,
+            start_index - 1,
+            end_index + 1,
+            false,
+            0.0);
     };
 
     int free_sector_start = -1;
@@ -2807,6 +2839,39 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     }
     if (free_sector_start >= 0) {
         add_true_gap_sector_candidate(free_sector_start, static_cast<int>(beams.size()) - 1);
+    }
+
+    int range_jump_sector_start = -1;
+    int range_jump_left_boundary = -1;
+    for (int i = 1; i < static_cast<int>(beams.size()); ++i) {
+        const double opening_jump =
+            beams[static_cast<size_t>(i)].distance -
+            beams[static_cast<size_t>(i - 1)].distance;
+        const double closing_jump =
+            beams[static_cast<size_t>(i - 1)].distance -
+            beams[static_cast<size_t>(i)].distance;
+
+        if (range_jump_sector_start < 0) {
+            if (opening_jump >= min_depth_contrast &&
+                beams[static_cast<size_t>(i - 1)].distance < planning_range - 0.03) {
+                range_jump_sector_start = i;
+                range_jump_left_boundary = i - 1;
+            }
+            continue;
+        }
+
+        if (closing_jump >= min_depth_contrast &&
+            beams[static_cast<size_t>(i)].distance < planning_range - 0.03) {
+            add_gap_sector_candidate(
+                range_jump_sector_start,
+                i - 1,
+                range_jump_left_boundary,
+                i,
+                true,
+                0.45);
+            range_jump_sector_start = -1;
+            range_jump_left_boundary = -1;
+        }
     }
 
     if (candidates.empty()) {

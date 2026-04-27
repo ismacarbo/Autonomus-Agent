@@ -57,6 +57,7 @@ struct AppOptions {
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
+    VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     VehicleTuningOverrides tuning_overrides;
 };
 
@@ -110,6 +111,7 @@ struct UiState {
     int environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
     int unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
     int structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
+    int vehicle_model = static_cast<int>(VehicleModelKind::CarLikeBicycle);
     WorldMap scenario_editor_world;
     bool scenario_editor_dirty = false;
     WorldMap hardware_editor_world;
@@ -546,6 +548,7 @@ void sync_ui_state_from_sim(UiState* ui_state, const PlannerDrivenVehicleSim& si
     ui_state->environment_mode = static_cast<int>(sim.environment_mode());
     ui_state->unstructured_preset = static_cast<int>(sim.world().unstructured_preset());
     ui_state->structured_preset = static_cast<int>(sim.world().structured_preset());
+    ui_state->vehicle_model = static_cast<int>(sim.vehicle_model_kind());
     ui_state->gate_seed_input = static_cast<int>(sim.gate_seed());
     ui_state->scenario_editor_world = sim.world();
     ui_state->scenario_editor_dirty = false;
@@ -709,6 +712,9 @@ std::string default_report_path(const PlannerDrivenVehicleSim& sim, const char* 
                                         ? thesis_sim::structured_map_preset_name(sim.world().structured_preset())
                                         : thesis_sim::unstructured_map_preset_name(sim.world().unstructured_preset());
     name << "_" << slugify(preset_name);
+    if (sim.vehicle_model_kind() != VehicleModelKind::CarLikeBicycle) {
+        name << "_" << slugify(thesis_sim::vehicle_model_kind_name(sim.vehicle_model_kind()));
+    }
     name << "_" << source_tag << "_"
          << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
          << "_" << std::setw(3) << std::setfill('0') << millis
@@ -883,7 +889,11 @@ void write_geometry_json(std::ostream& out, const thesis_sim::VehicleGeometry& g
         << ",\"track\":" << geometry.track
         << ",\"body_length\":" << geometry.body_length
         << ",\"body_width\":" << geometry.body_width
+        << ",\"wheel_length\":" << geometry.wheel_length
+        << ",\"wheel_width\":" << geometry.wheel_width
         << ",\"wheel_radius\":" << geometry.wheel_radius
+        << ",\"max_steer_angle\":" << geometry.max_steer_angle
+        << ",\"max_steer_rate\":" << geometry.max_steer_rate
         << ",\"max_curvature\":" << geometry.max_curvature
         << ",\"max_linear_speed\":" << geometry.max_linear_speed
         << ",\"max_yaw_rate\":" << geometry.max_yaw_rate
@@ -1461,6 +1471,22 @@ AppOptions parse_args(int argc, char** argv) {
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
+        } else if (arg == "--vehicle-model" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            if (value == "tracked" || value == "tracked_vehicle" || value == "skid" ||
+                value == "skid_steer" || value == "tank") {
+                options.vehicle_model = VehicleModelKind::TrackedVehicle;
+            } else {
+                options.vehicle_model = VehicleModelKind::CarLikeBicycle;
+            }
+        } else if (arg.rfind("--vehicle-model=", 0) == 0) {
+            const std::string value = arg.substr(std::strlen("--vehicle-model="));
+            if (value == "tracked" || value == "tracked_vehicle" || value == "skid" ||
+                value == "skid_steer" || value == "tank") {
+                options.vehicle_model = VehicleModelKind::TrackedVehicle;
+            } else {
+                options.vehicle_model = VehicleModelKind::CarLikeBicycle;
+            }
         } else if (parse_double_cli_arg(arg, &i, argc, argv, "min-effective-pwm", &options.tuning_overrides.min_effective_pwm) ||
                    parse_double_cli_arg(arg, &i, argc, argv, "speed-estimate-per-pwm", &options.tuning_overrides.speed_estimate_per_pwm) ||
                    parse_double_cli_arg(arg, &i, argc, argv, "pwm-slew-rate", &options.tuning_overrides.pwm_slew_rate) ||
@@ -1823,22 +1849,46 @@ void draw_vehicle(ImDrawList* draw_list,
     draw_list->AddConvexPolyFilled(body.data(), static_cast<int>(body.size()), body_color);
     draw_list->AddPolyline(body.data(), static_cast<int>(body.size()), IM_COL32(20, 22, 26, 255), ImDrawFlags_Closed, 2.5f);
 
-    for (const WheelPose& wheel : vehicle.wheels) {
-        const Vec2 scaled_wheel_center{
-            vehicle.position.x + (wheel.center.x - vehicle.position.x) * visual_scale,
-            vehicle.position.y + (wheel.center.y - vehicle.position.y) * visual_scale,
-        };
-        const auto wheel_box = thesis_sim::make_box_corners(
-            scaled_wheel_center,
-            wheel.yaw,
-            geometry.wheel_length * visual_scale,
-            geometry.wheel_width * visual_scale);
-        std::array<ImVec2, 4> wheel_points{};
-        for (size_t i = 0; i < wheel_points.size(); ++i) {
-            wheel_points[i] = world_to_screen(tx, wheel_box[i]);
+    const bool render_tracks = vehicle.model_name.find("Tracked") != std::string::npos;
+    if (render_tracks) {
+        const double half_track = geometry.track * 0.5;
+        for (double side : {1.0, -1.0}) {
+            const Vec2 local_center{0.0, side * half_track};
+            const Vec2 global_offset = thesis_sim::rotate(local_center, vehicle.yaw);
+            const Vec2 track_center{
+                vehicle.position.x + global_offset.x * visual_scale,
+                vehicle.position.y + global_offset.y * visual_scale,
+            };
+            const auto track_box = thesis_sim::make_box_corners(
+                track_center,
+                vehicle.yaw,
+                geometry.wheel_length * visual_scale,
+                geometry.wheel_width * visual_scale);
+            std::array<ImVec2, 4> track_points{};
+            for (size_t i = 0; i < track_points.size(); ++i) {
+                track_points[i] = world_to_screen(tx, track_box[i]);
+            }
+            draw_list->AddConvexPolyFilled(track_points.data(), static_cast<int>(track_points.size()), kColorWheel);
+            draw_list->AddPolyline(track_points.data(), static_cast<int>(track_points.size()), IM_COL32(204, 207, 208, 255), ImDrawFlags_Closed, 1.4f);
         }
-        draw_list->AddConvexPolyFilled(wheel_points.data(), static_cast<int>(wheel_points.size()), kColorWheel);
-        draw_list->AddPolyline(wheel_points.data(), static_cast<int>(wheel_points.size()), IM_COL32(200, 203, 207, 255), ImDrawFlags_Closed, 1.2f);
+    } else {
+        for (const WheelPose& wheel : vehicle.wheels) {
+            const Vec2 scaled_wheel_center{
+                vehicle.position.x + (wheel.center.x - vehicle.position.x) * visual_scale,
+                vehicle.position.y + (wheel.center.y - vehicle.position.y) * visual_scale,
+            };
+            const auto wheel_box = thesis_sim::make_box_corners(
+                scaled_wheel_center,
+                wheel.yaw,
+                geometry.wheel_length * visual_scale,
+                geometry.wheel_width * visual_scale);
+            std::array<ImVec2, 4> wheel_points{};
+            for (size_t i = 0; i < wheel_points.size(); ++i) {
+                wheel_points[i] = world_to_screen(tx, wheel_box[i]);
+            }
+            draw_list->AddConvexPolyFilled(wheel_points.data(), static_cast<int>(wheel_points.size()), kColorWheel);
+            draw_list->AddPolyline(wheel_points.data(), static_cast<int>(wheel_points.size()), IM_COL32(200, 203, 207, 255), ImDrawFlags_Closed, 1.2f);
+        }
     }
 
     const Vec2 nose{
@@ -4632,6 +4682,22 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             ui_state->paused = true;
         }
 
+        const char* vehicle_items[] = {
+            thesis_sim::vehicle_model_kind_name(VehicleModelKind::CarLikeBicycle),
+            thesis_sim::vehicle_model_kind_name(VehicleModelKind::TrackedVehicle),
+        };
+        int vehicle_selection = ui_state->vehicle_model == static_cast<int>(VehicleModelKind::TrackedVehicle) ? 1 : 0;
+        if (ImGui::Combo("Vehicle Model", &vehicle_selection, vehicle_items, IM_ARRAYSIZE(vehicle_items))) {
+            const VehicleModelKind next_model =
+                vehicle_selection == 1 ? VehicleModelKind::TrackedVehicle : VehicleModelKind::CarLikeBicycle;
+            sim.set_vehicle_stack(next_model, sim.tracking_controller_mode());
+            sync_ui_state_from_sim(ui_state, sim);
+            ui_state->paused = true;
+        }
+        if (sim.vehicle_model_kind() == VehicleModelKind::TrackedVehicle) {
+            ImGui::TextWrapped("Tracked mode maps the planner reference to body speed and yaw-rate, then drives the left/right track plant with encoder-style odometry.");
+        }
+
         if (sim.environment_mode() == EnvironmentMode::UnstructuredGates) {
             if (sim.world().unstructured_preset() == UnstructuredMapPreset::Custom) {
                 ImGui::TextWrapped("Manual gate editor active: place gates and obstacles yourself, then let the planner reach each gate with the motion primitives on top of the mapped free space.");
@@ -5044,12 +5110,15 @@ void render_workspace(PlannerDrivenVehicleSim& sim,
 }
 
 int run_headless(const AppOptions& options) {
+    thesis_sim::SimConfig sim_config;
+    sim_config.vehicle_model = options.vehicle_model;
     PlannerDrivenVehicleSim sim(make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,
         options.structured_preset,
         GateBehaviorMode::Static,
-        7));
+        7),
+        sim_config);
     apply_sim_tuning_overrides(&sim, options);
     const SimulationReport report = sim.run_headless(options.max_steps);
     const std::string status = report.goal_reached ? "goal_reached" : (report.collision ? "collision" : "timeout");
@@ -5112,12 +5181,15 @@ int run_gui(const AppOptions& options) {
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
 
+    thesis_sim::SimConfig sim_config;
+    sim_config.vehicle_model = options.vehicle_model;
     PlannerDrivenVehicleSim sim(make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,
         options.structured_preset,
         GateBehaviorMode::Static,
-        7));
+        7),
+        sim_config);
     apply_sim_tuning_overrides(&sim, options);
     HardwareViewerState hardware_view;
     LiveViewStreamServer hardware_server;

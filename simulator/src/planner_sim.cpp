@@ -161,7 +161,7 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
         geometry->wheel_length = 0.022;
         geometry->wheel_width = 0.010;
         geometry->wheel_radius = 0.016;
-        geometry->yaw_response_scale = 0.45;
+        geometry->yaw_response_scale = 0.46;
         geometry->linear_feedback_gain = std::max(geometry->linear_feedback_gain, 105.0);
         geometry->yaw_feedback_gain =
             std::max(geometry->yaw_feedback_gain, validation_road ? 150.0 : 95.0);
@@ -185,6 +185,94 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
     geometry->pwm_slew_rate = std::min(geometry->pwm_slew_rate, pwm_slew);
     geometry->max_linear_speed = std::min(geometry->max_linear_speed, speed_cap);
     config->cruise_speed_limit = std::min(config->cruise_speed_limit, speed_cap);
+}
+
+void apply_tracked_vehicle_tuning(const WorldMap& world,
+                                  VehicleGeometry* geometry,
+                                  SimConfig* config) {
+    if (geometry == nullptr || config == nullptr) {
+        return;
+    }
+
+    const bool compact = compact_structured_world(world);
+    const bool micro = micro_structured_world(world);
+    const bool validation_road =
+        world.environment_mode() == EnvironmentMode::StructuredRoad &&
+        world.structured_preset() == StructuredMapPreset::ValidationRoad;
+
+    if (micro) {
+        geometry->wheelbase = 0.085;
+        geometry->cg_to_front = 0.0425;
+        geometry->cg_to_rear = 0.0425;
+        geometry->track = 0.070;
+        geometry->body_length = 0.110;
+        geometry->body_width = 0.085;
+        geometry->wheel_length = 0.090;
+        geometry->wheel_width = 0.018;
+        geometry->wheel_radius = 0.016;
+        geometry->max_linear_speed = validation_road ? 0.024 : 0.032;
+        geometry->max_yaw_rate = 7.5;
+        geometry->max_curvature = validation_road ? 22.0 : 18.0;
+        geometry->max_steer_angle = 1.35;
+        geometry->max_steer_rate = validation_road ? 12.0 : 8.0;
+        geometry->speed_estimate_per_pwm = 0.0010;
+        geometry->motor_time_constant = 0.18;
+        geometry->pwm_slew_rate = 430.0;
+        geometry->yaw_response_scale = 0.72;
+        geometry->linear_feedback_gain = 120.0;
+        geometry->yaw_feedback_gain = validation_road ? 150.0 : 115.0;
+        config->cruise_speed_limit = std::min(config->cruise_speed_limit, geometry->max_linear_speed);
+    } else if (compact) {
+        geometry->wheelbase = 0.105;
+        geometry->cg_to_front = 0.0525;
+        geometry->cg_to_rear = 0.0525;
+        geometry->track = 0.085;
+        geometry->body_length = 0.135;
+        geometry->body_width = 0.095;
+        geometry->wheel_length = 0.110;
+        geometry->wheel_width = 0.022;
+        geometry->wheel_radius = 0.017;
+        geometry->max_linear_speed = 0.070;
+        geometry->max_yaw_rate = 6.0;
+        geometry->max_curvature = 16.0;
+        geometry->max_steer_angle = 1.25;
+        geometry->max_steer_rate = 8.0;
+        geometry->speed_estimate_per_pwm = 0.0012;
+        geometry->motor_time_constant = 0.20;
+        geometry->pwm_slew_rate = 460.0;
+        geometry->yaw_response_scale = 0.78;
+        geometry->linear_feedback_gain = 105.0;
+        geometry->yaw_feedback_gain = 125.0;
+        config->cruise_speed_limit = std::min(config->cruise_speed_limit, geometry->max_linear_speed);
+    } else {
+        geometry->wheelbase = 0.260;
+        geometry->cg_to_front = 0.130;
+        geometry->cg_to_rear = 0.130;
+        geometry->track = 0.280;
+        geometry->body_length = 0.340;
+        geometry->body_width = 0.240;
+        geometry->wheel_length = 0.285;
+        geometry->wheel_width = 0.055;
+        geometry->wheel_radius = 0.040;
+        geometry->max_linear_speed = 0.42;
+        geometry->max_yaw_rate = 2.40;
+        geometry->max_curvature = 7.0;
+        geometry->max_steer_angle = 1.25;
+        geometry->max_steer_rate = 4.5;
+        geometry->speed_estimate_per_pwm = 0.0015;
+        geometry->motor_time_constant = 0.24;
+        geometry->pwm_slew_rate = 420.0;
+        geometry->yaw_response_scale = 0.86;
+        geometry->linear_feedback_gain = 80.0;
+        geometry->yaw_feedback_gain = 70.0;
+        config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.26);
+    }
+
+    geometry->min_effective_pwm = std::max(geometry->min_effective_pwm, 50);
+    geometry->wheel_speed_to_pwm_gain = 190.0;
+    geometry->wheel_speed_to_pwm_bias = 28.0;
+    geometry->max_accel = std::min(geometry->max_accel, compact ? 0.9 : 1.1);
+    geometry->max_decel = std::min(geometry->max_decel, compact ? 1.1 : 1.4);
 }
 
 void apply_vehicle_tuning_overrides(const VehicleTuningOverrides& overrides,
@@ -450,6 +538,16 @@ double planner_speed_limit(double cruise_speed_limit, double curvature) {
     return clamp_value(curvature_limit, 0.15, cruise_speed_limit);
 }
 
+double tracked_vehicle_speed_floor(const WorldMap& world, const VehicleGeometry& geometry) {
+    if (micro_structured_world(world)) {
+        return std::min(geometry.max_linear_speed, 0.018);
+    }
+    if (compact_structured_world(world)) {
+        return std::min(geometry.max_linear_speed, 0.035);
+    }
+    return std::min(geometry.max_linear_speed, 0.12);
+}
+
 bool structured_road_is_closed_loop(const WorldMap& world) {
     return world.environment_mode() == EnvironmentMode::StructuredRoad &&
            points_form_closed_loop(world.road_centerline(), 0.45);
@@ -496,7 +594,12 @@ PlannerDrivenVehicleSim::PlannerDrivenVehicleSim(WorldMap world, SimConfig confi
 
 void PlannerDrivenVehicleSim::reset() {
     geometry_ = VehicleGeometry{};
-    apply_hardware_like_vehicle_tuning(world_, &geometry_, &config_);
+    config_.cruise_speed_limit = SimConfig{}.cruise_speed_limit;
+    if (config_.vehicle_model == VehicleModelKind::TrackedVehicle) {
+        apply_tracked_vehicle_tuning(world_, &geometry_, &config_);
+    } else {
+        apply_hardware_like_vehicle_tuning(world_, &geometry_, &config_);
+    }
     if (micro_structured_world(world_)) {
         const bool validation_road =
             world_.environment_mode() == EnvironmentMode::StructuredRoad &&
@@ -652,9 +755,17 @@ void PlannerDrivenVehicleSim::reset() {
 }
 
 void PlannerDrivenVehicleSim::rebuild_vehicle_model() {
-    config_.vehicle_model = VehicleModelKind::CarLikeBicycle;
     config_.tracking_controller = TrackingControllerMode::MpcPathFollower;
-    vehicle_model_ = make_four_wheel_car_model(geometry_);
+    switch (config_.vehicle_model) {
+        case VehicleModelKind::TrackedVehicle:
+            vehicle_model_ = make_tracked_vehicle_model(geometry_);
+            break;
+        case VehicleModelKind::CarLikeBicycle:
+        default:
+            config_.vehicle_model = VehicleModelKind::CarLikeBicycle;
+            vehicle_model_ = make_four_wheel_car_model(geometry_);
+            break;
+    }
 }
 
 void PlannerDrivenVehicleSim::load_world(WorldMap world) {
@@ -1070,19 +1181,27 @@ void PlannerDrivenVehicleSim::update_vehicle_snapshot() {
     vehicle_.model_name = vehicle_model_->name();
     vehicle_.body_corners = make_box_corners(vehicle_.position, vehicle_.yaw, geometry_.body_length, geometry_.body_width);
 
-    const std::array<Vec2, 4> wheel_local{{
-        {geometry_.wheelbase * 0.5, geometry_.track * 0.5},
-        {geometry_.wheelbase * 0.5, -geometry_.track * 0.5},
-        {-geometry_.wheelbase * 0.5, geometry_.track * 0.5},
-        {-geometry_.wheelbase * 0.5, -geometry_.track * 0.5},
-    }};
+    const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+    const std::array<Vec2, 4> wheel_local = tracked_vehicle
+        ? std::array<Vec2, 4>{{
+              {0.0, geometry_.track * 0.5},
+              {0.0, -geometry_.track * 0.5},
+              {0.0, geometry_.track * 0.5},
+              {0.0, -geometry_.track * 0.5},
+          }}
+        : std::array<Vec2, 4>{{
+              {geometry_.wheelbase * 0.5, geometry_.track * 0.5},
+              {geometry_.wheelbase * 0.5, -geometry_.track * 0.5},
+              {-geometry_.wheelbase * 0.5, geometry_.track * 0.5},
+              {-geometry_.wheelbase * 0.5, -geometry_.track * 0.5},
+          }};
 
     for (size_t i = 0; i < wheel_local.size(); ++i) {
         const Vec2 global_offset = rotate(wheel_local[i], vehicle_.yaw);
         vehicle_.wheels[i].center = {vehicle_.position.x + global_offset.x, vehicle_.position.y + global_offset.y};
         const bool is_left = wheel_local[i].y >= 0.0;
         const bool is_front = wheel_local[i].x > 0.0;
-        vehicle_.wheels[i].steering = config_.vehicle_model == VehicleModelKind::CarLikeBicycle && is_front;
+        vehicle_.wheels[i].steering = !tracked_vehicle && is_front;
         vehicle_.wheels[i].yaw = vehicle_.yaw + (vehicle_.wheels[i].steering ? vehicle_.steer_angle : 0.0);
         vehicle_.wheels[i].speed = is_left ? vehicle_.left_wheel_speed : vehicle_.right_wheel_speed;
     }
@@ -1184,10 +1303,12 @@ void PlannerDrivenVehicleSim::set_sensor_suite(bool imu_enabled,
 }
 
 void PlannerDrivenVehicleSim::set_vehicle_stack(VehicleModelKind model, TrackingControllerMode controller) {
-    (void)model;
-    (void)controller;
-    config_.vehicle_model = VehicleModelKind::CarLikeBicycle;
-    config_.tracking_controller = TrackingControllerMode::MpcPathFollower;
+    config_.vehicle_model =
+        model == VehicleModelKind::TrackedVehicle ? VehicleModelKind::TrackedVehicle
+                                                  : VehicleModelKind::CarLikeBicycle;
+    config_.tracking_controller =
+        controller == TrackingControllerMode::PlannerCommand ? TrackingControllerMode::PlannerCommand
+                                                             : TrackingControllerMode::MpcPathFollower;
     reset();
 }
 
@@ -1426,11 +1547,19 @@ void PlannerDrivenVehicleSim::step() {
     control.jerk_cmd = last_j_;
     control.planner_r_cmd = last_r_;
     control.target_speed = planner_speed_ref_;
+    const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+    double tracking_desired_speed = planner_speed_ref_;
+    if (tracked_vehicle && reference_trajectory_.size() >= 2) {
+        tracking_desired_speed = std::max(
+            tracking_desired_speed,
+            tracked_vehicle_speed_floor(world_, geometry_));
+    }
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
 
     const auto tracking_start = std::chrono::steady_clock::now();
-    if (config_.vehicle_model == VehicleModelKind::CarLikeBicycle) {
+    if (config_.vehicle_model == VehicleModelKind::CarLikeBicycle ||
+        tracked_vehicle) {
         const VehicleModelState tracking_state = build_tracking_state(
             vehicle_model_->state(),
             navigation_position_,
@@ -1445,13 +1574,30 @@ void PlannerDrivenVehicleSim::step() {
                 geometry_,
                 tracking_state,
                 reference_trajectory_,
-                planner_speed_ref_,
+                tracking_desired_speed,
                 0);
             if (mpc_command.valid) {
                 control.accel_cmd = mpc_command.accel_cmd;
-                control.steer_rate_cmd = mpc_command.steer_rate_cmd;
                 control.target_speed = mpc_command.target_speed;
-                control.target_steer_angle = mpc_command.target_steer_angle;
+                const double target_curvature = clamp_value(
+                    std::tan(mpc_command.target_steer_angle) / std::max(geometry_.wheelbase, 1e-6),
+                    -geometry_.max_curvature,
+                    geometry_.max_curvature);
+                control.target_curvature = target_curvature;
+                if (tracked_vehicle) {
+                    control.target_yaw_rate = clamp_value(
+                        mpc_command.target_speed * target_curvature -
+                            1.15 * mpc_command.heading_error -
+                            0.20 * mpc_command.cross_track_error,
+                        -geometry_.max_yaw_rate,
+                        geometry_.max_yaw_rate);
+                    control.target_steer_angle = 0.0;
+                    control.steer_rate_cmd = 0.0;
+                } else {
+                    control.steer_rate_cmd = mpc_command.steer_rate_cmd;
+                    control.target_steer_angle = mpc_command.target_steer_angle;
+                    control.target_yaw_rate = control.target_speed * control.target_curvature;
+                }
                 tracker_cross_track_error_ = std::abs(mpc_command.cross_track_error);
                 tracker_heading_error_deg_ = std::abs(mpc_command.heading_error) * 180.0 / 3.14159265358979323846;
                 last_mpc_command_ = mpc_command;
@@ -1461,14 +1607,29 @@ void PlannerDrivenVehicleSim::step() {
         } else {
             const double target_curvature = !reference_trajectory_.empty() ? reference_trajectory_.front().curvature : 0.0;
             control.accel_cmd = clamp_value(
-                (planner_speed_ref_ - tracking_state.speed) / std::max(config_.dt, 1e-3),
+                (tracking_desired_speed - tracking_state.speed) / std::max(config_.dt, 1e-3),
                 -geometry_.max_decel,
                 geometry_.max_accel);
-            control.target_steer_angle = steer_from_curvature(geometry_, target_curvature);
-            control.steer_rate_cmd = clamp_value(
-                (control.target_steer_angle - tracking_state.steer_angle) / std::max(config_.dt, 1e-3),
-                -geometry_.max_steer_rate,
-                geometry_.max_steer_rate);
+            control.target_speed = tracking_desired_speed;
+            control.target_curvature = clamp_value(
+                target_curvature,
+                -geometry_.max_curvature,
+                geometry_.max_curvature);
+            if (tracked_vehicle) {
+                control.target_yaw_rate = clamp_value(
+                    tracking_desired_speed * control.target_curvature,
+                    -geometry_.max_yaw_rate,
+                    geometry_.max_yaw_rate);
+                control.target_steer_angle = 0.0;
+                control.steer_rate_cmd = 0.0;
+            } else {
+                control.target_steer_angle = steer_from_curvature(geometry_, target_curvature);
+                control.steer_rate_cmd = clamp_value(
+                    (control.target_steer_angle - tracking_state.steer_angle) / std::max(config_.dt, 1e-3),
+                    -geometry_.max_steer_rate,
+                    geometry_.max_steer_rate);
+                control.target_yaw_rate = control.target_speed * control.target_curvature;
+            }
             last_mpc_command_.reset();
         }
     } else {

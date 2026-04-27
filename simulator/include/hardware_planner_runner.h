@@ -77,6 +77,7 @@ struct GapExtractionConfig {
     double free_distance_threshold_m = 0.34;
     double min_gap_width_m = 0.38;
     double min_gap_angle_rad = 0.16;
+    double min_gap_depth_contrast_m = 0.16;
     double planning_max_range_m = 3.0;
     double target_distance_scale = 0.72;
     double min_target_distance_m = 0.28;
