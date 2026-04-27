@@ -2712,6 +2712,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                                         int left_boundary_index,
                                         int right_boundary_index,
                                         bool require_depth_contrast,
+                                        bool target_near_aperture,
                                         double range_jump_bonus) {
         if (start_index < 0 || end_index < start_index ||
             end_index >= static_cast<int>(beams.size()) ||
@@ -2787,8 +2788,28 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
 
         const double center_world_angle = wrap_angle(estimate_.yaw + center_local_angle);
+        const Vec2 center_axis{std::cos(center_world_angle), std::sin(center_world_angle)};
+        double nominal_target_distance = config_.gap_extraction.target_distance_scale * support_distance;
+        if (target_near_aperture) {
+            const double left_boundary_distance = dot_product(
+                {left_boundary.hit.x - lidar_origin.x, left_boundary.hit.y - lidar_origin.y},
+                center_axis);
+            const double right_boundary_distance = dot_product(
+                {right_boundary.hit.x - lidar_origin.x, right_boundary.hit.y - lidar_origin.y},
+                center_axis);
+            const double aperture_distance =
+                std::max(left_boundary_distance, right_boundary_distance);
+            if (!std::isfinite(aperture_distance) || aperture_distance <= 0.0) {
+                return;
+            }
+            const double aperture_margin = clamp_value(
+                config_.gap_extraction.gap_aperture_target_margin_m,
+                0.5 * geometry_.body_length,
+                0.45);
+            nominal_target_distance = aperture_distance + aperture_margin;
+        }
         const double target_distance = clamp_value(
-            config_.gap_extraction.target_distance_scale * support_distance,
+            nominal_target_distance,
             min_target_distance,
             target_distance_cap);
         const Vec2 target{
@@ -2819,6 +2840,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             end_index,
             start_index - 1,
             end_index + 1,
+            false,
             false,
             0.0);
     };
@@ -2867,6 +2889,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 i - 1,
                 range_jump_left_boundary,
                 i,
+                true,
                 true,
                 0.45);
             range_jump_sector_start = -1;

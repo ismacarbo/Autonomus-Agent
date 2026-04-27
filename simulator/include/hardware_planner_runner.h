@@ -78,6 +78,7 @@ struct GapExtractionConfig {
     double min_gap_width_m = 0.38;
     double min_gap_angle_rad = 0.16;
     double min_gap_depth_contrast_m = 0.16;
+    double gap_aperture_target_margin_m = 0.22;
     double planning_max_range_m = 3.0;
     double target_distance_scale = 0.72;
     double min_target_distance_m = 0.28;
