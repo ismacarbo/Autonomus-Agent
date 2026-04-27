@@ -212,10 +212,18 @@ Vec2 normalize_with_fallback(const Vec2& value, const Vec2& fallback) {
     return {1.0, 0.0};
 }
 
-bool is_inside_bounds(const WorldMap& world, const Vec2& position) {
+bool is_inside_bounds(const WorldMap& world, const Vec2& position, double margin) {
     const Rect& bounds = world.bounds();
-    return position.x >= bounds.min_x && position.x <= bounds.max_x &&
-           position.y >= bounds.min_y && position.y <= bounds.max_y;
+    const double min_x = bounds.min_x - margin;
+    const double max_x = bounds.max_x + margin;
+    const double min_y = bounds.min_y - margin;
+    const double max_y = bounds.max_y + margin;
+    return position.x >= min_x && position.x <= max_x &&
+           position.y >= min_y && position.y <= max_y;
+}
+
+bool is_inside_bounds(const WorldMap& world, const Vec2& position) {
+    return is_inside_bounds(world, position, 0.0);
 }
 
 Vec2 clamp_point_to_bounds(const WorldMap& world, const Vec2& position, double margin = 0.0) {
@@ -1488,6 +1496,26 @@ bool HardwarePlannerRunner::unstructured_perception_only_mode() const {
     return world_.environment_mode() == EnvironmentMode::UnstructuredGates;
 }
 
+bool HardwarePlannerRunner::dynamic_gap_point_allowed(const Vec2& position) const {
+    if (!dynamic_gap_mode_enabled()) {
+        return is_inside_bounds(world_, position);
+    }
+    return is_inside_bounds(
+        world_,
+        position,
+        std::max(config_.gap_extraction.dynamic_bounds_margin_m, 0.0));
+}
+
+Vec2 HardwarePlannerRunner::clamp_dynamic_gap_point(const Vec2& position) const {
+    if (!dynamic_gap_mode_enabled()) {
+        return clamp_point_to_bounds(world_, position);
+    }
+    return clamp_point_to_bounds(
+        world_,
+        position,
+        -std::max(config_.gap_extraction.dynamic_bounds_margin_m, 0.0));
+}
+
 bool HardwarePlannerRunner::lidar_enabled_for_current_mode() const {
     return world_.environment_mode() != EnvironmentMode::StructuredRoad;
 }
@@ -2018,13 +2046,13 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
                     estimate_.position.y + correction_delta.y * scale,
                 };
             }
-            corrected_position = clamp_point_to_bounds(world_, corrected_position);
+            corrected_position = clamp_dynamic_gap_point(corrected_position);
         }
 
         estimator_.update_lidar_pose(corrected_position, best_yaw, !yaw_offset_initialized_);
         sync_estimate_from_ekf_state();
-        if (unstructured_perception_mode && !is_inside_bounds(world_, estimate_.position)) {
-            estimator_.update_lidar_pose(clamp_point_to_bounds(world_, estimate_.position),
+        if (unstructured_perception_mode && !dynamic_gap_point_allowed(estimate_.position)) {
+            estimator_.update_lidar_pose(clamp_dynamic_gap_point(estimate_.position),
                                          estimate_.yaw,
                                          false);
             sync_estimate_from_ekf_state();
@@ -2043,12 +2071,12 @@ double HardwarePlannerRunner::score_candidate_pose(const Vec2& position,
         return score_candidate_pose_against_perception_map(position, yaw, scan);
     }
 
-    if (!is_inside_bounds(world_, position)) {
+    if (!dynamic_gap_point_allowed(position)) {
         return std::numeric_limits<double>::infinity();
     }
 
     const Vec2 origin = lidar_origin_world(position, yaw, config_.localization);
-    if (!is_inside_bounds(world_, origin)) {
+    if (!dynamic_gap_point_allowed(origin)) {
         return std::numeric_limits<double>::infinity();
     }
 
@@ -2100,12 +2128,12 @@ double HardwarePlannerRunner::score_candidate_pose_against_perception_map(
         return std::numeric_limits<double>::infinity();
     }
 
-    if (!is_inside_bounds(world_, position)) {
+    if (!dynamic_gap_point_allowed(position)) {
         return std::numeric_limits<double>::infinity();
     }
 
     const Vec2 origin = lidar_origin_world(position, yaw, config_.localization);
-    if (!is_inside_bounds(world_, origin)) {
+    if (!dynamic_gap_point_allowed(origin)) {
         return std::numeric_limits<double>::infinity();
     }
     const double local_radius = config_.localization.max_range_m + 0.40;
@@ -2614,7 +2642,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         std::max(config_.gap_extraction.gap_goal_tolerance_m * 1.15, 0.24));
 
     auto try_add_candidate = [&](const Vec2& target, double base_score) {
-        if (!is_inside_bounds(world_, target)) {
+        if (!dynamic_gap_point_allowed(target)) {
             return;
         }
 
@@ -3128,7 +3156,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     }
 
     if (locked_gap_goal_.has_value()) {
-        if (!is_inside_bounds(world_, *locked_gap_goal_)) {
+        if (!dynamic_gap_point_allowed(*locked_gap_goal_)) {
             clear_locked_gap_goal();
             startup_scan_complete_ = false;
         } else {
@@ -3776,7 +3804,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             best_heading = 0.0;
             best_sector_clearance = forward_sector_clearance;
         }
-        if (passed_unstructured_gap_count_ > 0) {
+        const double no_reference_close_clearance = std::max(
+            config_.localization.obstacle_stop_distance_m + 0.04,
+            config_.localization.min_valid_range_m + 0.12);
+        const bool no_reference_close_obstacle =
+            estimate_.min_lidar_distance > 0.0 &&
+            estimate_.min_lidar_distance < no_reference_close_clearance &&
+            diagnostics_.close_lidar_points > 0;
+        if (passed_unstructured_gap_count_ > 0 || no_reference_close_obstacle) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;

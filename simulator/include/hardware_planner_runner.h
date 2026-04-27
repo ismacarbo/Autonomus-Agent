@@ -111,6 +111,7 @@ struct GapExtractionConfig {
     int occupancy_decay_steps = 36;
     double target_clearance_radius_m = 0.14;
     double path_clearance_radius_m = 0.09;
+    double dynamic_bounds_margin_m = 1.50;
 };
 
 struct PerceptionOccupancyCell {
@@ -372,6 +373,8 @@ class HardwarePlannerRunner {
     bool dynamic_gap_mode_enabled() const;
     bool perception_map_ready() const;
     bool unstructured_perception_only_mode() const;
+    bool dynamic_gap_point_allowed(const Vec2& position) const;
+    Vec2 clamp_dynamic_gap_point(const Vec2& position) const;
     bool scan_supports_target(const Vec2& target, const std::vector<RPLidarA1::ScanPoint>& scan) const;
     bool perception_map_supports_target(const Vec2& origin, const Vec2& target) const;
 
