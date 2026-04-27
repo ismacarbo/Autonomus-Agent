@@ -91,7 +91,7 @@ struct GapExtractionConfig {
     double gap_goal_acceptance_radius_m = 0.36;
     double gap_goal_acceptance_lateral_slack_m = 0.10;
     double gap_goal_cruise_speed_mps = 0.16;
-    bool complete_after_first_gap = true;
+    int min_passed_gates_to_complete = 2;
     int locked_gap_grace_frames = 18;
     double locked_gap_soft_hold_heading_rad = 2.35;
     double gap_acquire_enter_heading_rad = 0.14;
@@ -370,6 +370,7 @@ class HardwarePlannerRunner {
     int wheel_speed_to_pwm(double wheel_speed_mps, double scale) const;
     int planning_interval_steps() const;
     int count_passed_gates() const;
+    int required_unstructured_gap_pass_count() const;
     bool dynamic_gap_mode_enabled() const;
     bool perception_map_ready() const;
     bool unstructured_perception_only_mode() const;

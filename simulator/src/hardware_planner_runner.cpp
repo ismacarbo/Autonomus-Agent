@@ -1483,6 +1483,10 @@ int HardwarePlannerRunner::planning_interval_steps() const {
     return std::max(config_.control_interval_steps, 1);
 }
 
+int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
+    return std::max(config_.gap_extraction.min_passed_gates_to_complete, 1);
+}
+
 bool HardwarePlannerRunner::dynamic_gap_mode_enabled() const {
     return world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
            config_.gap_extraction.enabled;
@@ -2330,8 +2334,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     if (!use_dynamic_gap_gates_) {
         return;
     }
-    if (config_.gap_extraction.complete_after_first_gap &&
-        passed_unstructured_gap_count_ > 0) {
+    if (passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
         gates_.clear();
         gate_specs_.clear();
         visible_gate_indices_.clear();
@@ -3142,8 +3145,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         startup_scan_complete_ = false;
         return;
     }
-    if (config_.gap_extraction.complete_after_first_gap &&
-        passed_unstructured_gap_count_ > 0) {
+    if (passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
         clear_locked_gap_goal();
         gates_.clear();
         gate_specs_.clear();
@@ -4658,8 +4660,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             distance_to_goal_ = 0.0;
         }
     } else if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
-        if (config_.gap_extraction.complete_after_first_gap &&
-            passed_unstructured_gap_count_ > 0) {
+        if (passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
             distance_to_goal_ = 0.0;
             goal_reached_ = true;
         } else if (locked_gap_goal_.has_value()) {
@@ -4667,42 +4668,25 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
             const double crossing_margin =
                 std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
-            const double acceptance_radius = std::max(
-                config_.gap_extraction.gap_goal_acceptance_radius_m,
-                config_.gap_extraction.gap_goal_tolerance_m);
-            const double acceptance_lateral_limit =
+            const double pass_lateral_limit =
                 locked_gap_corridor_half_width_m_ +
                 std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
-            const double gate_heading_local = std::abs(
-                wrap_angle(angle_to(estimate_.position, *locked_gap_goal_) - estimate_.yaw));
-            const double gap_distance = distance(estimate_.position, *locked_gap_goal_);
-            const bool gate_is_close_and_behind =
-                gap_distance <= std::max(config_.gap_extraction.gap_goal_tolerance_m * 1.35, 0.26) &&
-                lateral_offset <=
-                    locked_gap_corridor_half_width_m_ +
-                    std::max(config_.gap_extraction.target_clearance_radius_m, 0.05) &&
-                gate_heading_local >= 95.0 * kPi / 180.0;
-            const bool gate_is_within_acceptance_neighborhood =
-                gap_distance <= acceptance_radius &&
-                (lateral_offset <= acceptance_lateral_limit ||
-                 longitudinal_progress >= -0.05 ||
-                 gate_heading_local >= 80.0 * kPi / 180.0);
             const double crossing_distance = std::max(crossing_margin - longitudinal_progress, 0.0);
-            const double proximity_distance = std::max(gap_distance - acceptance_radius, 0.0);
-            distance_to_goal_ = std::min(crossing_distance, proximity_distance);
-            goal_reached_ =
-                lateral_offset <= locked_gap_corridor_half_width_m_ &&
+            const double lateral_distance =
+                std::max(lateral_offset - pass_lateral_limit, 0.0);
+            distance_to_goal_ = std::max(crossing_distance, lateral_distance);
+            const bool gate_crossed =
+                lateral_offset <= pass_lateral_limit &&
                 longitudinal_progress >= crossing_margin;
-            goal_reached_ =
-                goal_reached_ || gate_is_close_and_behind || gate_is_within_acceptance_neighborhood;
-            if (goal_reached_) {
+            if (gate_crossed) {
                 const Vec2 completed_gap = *locked_gap_goal_;
                 locked_gap_crossed_ = true;
                 passed_unstructured_gap_positions_.push_back(completed_gap);
                 ++passed_unstructured_gap_count_;
                 clear_locked_gap_goal();
-                distance_to_goal_ = 0.0;
-                goal_reached_ = config_.gap_extraction.complete_after_first_gap;
+                goal_reached_ =
+                    passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count();
+                distance_to_goal_ = goal_reached_ ? 0.0 : -1.0;
             }
         } else if (chosen_gate_index_ >= 0 && chosen_gate_index_ < static_cast<int>(gate_specs_.size())) {
             distance_to_goal_ =
