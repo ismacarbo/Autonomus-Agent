@@ -78,7 +78,7 @@ struct GapExtractionConfig {
     double min_gap_width_m = 0.38;
     double min_gap_angle_rad = 0.16;
     double min_gap_depth_contrast_m = 0.16;
-    double gap_aperture_target_margin_m = 0.22;
+    double gap_aperture_target_margin_m = 0.12;
     double planning_max_range_m = 3.0;
     double target_distance_scale = 0.72;
     double min_target_distance_m = 0.28;
@@ -88,7 +88,7 @@ struct GapExtractionConfig {
     double startup_scan_yaw_rate = 0.70;
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
-    double gap_goal_acceptance_radius_m = 0.32;
+    double gap_goal_acceptance_radius_m = 0.36;
     double gap_goal_acceptance_lateral_slack_m = 0.10;
     double gap_goal_cruise_speed_mps = 0.16;
     int locked_gap_grace_frames = 18;

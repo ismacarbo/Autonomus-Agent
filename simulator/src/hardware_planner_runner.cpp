@@ -2804,8 +2804,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             }
             const double aperture_margin = clamp_value(
                 config_.gap_extraction.gap_aperture_target_margin_m,
-                0.5 * geometry_.body_length,
-                0.45);
+                0.06,
+                0.30);
             nominal_target_distance = aperture_distance + aperture_margin;
         }
         const double target_distance = clamp_value(
@@ -3754,7 +3754,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             best_heading = 0.0;
             best_sector_clearance = forward_sector_clearance;
         }
-        if (best_sector_clearance > forward_creep_clearance) {
+        if (passed_unstructured_gap_count_ > 0) {
+            gap_recovery_turn_active_ = true;
+            use_gap_recovery_turn = true;
+            use_direct_yaw_rate_command = true;
+            const double search_heading =
+                std::abs(best_heading) > config_.gap_extraction.recovery_escape_turn_min_heading_rad
+                    ? best_heading
+                    : startup_scan_direction_ * 0.35;
+            direct_yaw_rate_command = clamp_value(
+                1.2 * search_heading,
+                -0.55 * config_.drive.max_yaw_rate,
+                0.55 * config_.drive.max_yaw_rate);
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+            last_mpc_command_.reset();
+        } else if (best_sector_clearance > forward_creep_clearance) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
