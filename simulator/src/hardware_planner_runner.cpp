@@ -2660,6 +2660,27 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return;
         }
 
+        const double candidate_world_angle = angle_to(lidar_origin, target);
+        const double candidate_local_angle = wrap_angle(candidate_world_angle - estimate_.yaw);
+        const double centerline_half_angle = clamp_value(
+            std::atan2(0.5 * geometry_.body_width, std::max(target_distance, 0.10)),
+            5.0 * kPi / 180.0,
+            14.0 * kPi / 180.0);
+        const double centerline_clearance = sector_min_clearance(
+            lidar_hits_,
+            estimate_.yaw,
+            candidate_local_angle,
+            centerline_half_angle,
+            planning_range);
+        const bool object_before_target =
+            centerline_clearance + 0.04 < target_distance &&
+            centerline_clearance <
+                std::max(config_.localization.obstacle_stop_distance_m + 0.10,
+                         config_.localization.min_valid_range_m + 0.14);
+        if (object_before_target) {
+            return;
+        }
+
         if (!grid_segment_is_clear(local_grid, lidar_origin, target)) {
             return;
         }
@@ -2681,8 +2702,6 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return;
         }
 
-        const double candidate_world_angle = angle_to(lidar_origin, target);
-        const double candidate_local_angle = wrap_angle(candidate_world_angle - estimate_.yaw);
         const double abs_candidate_local_angle = std::abs(candidate_local_angle);
         const double distance_score = clamp_value(
             (target_distance - min_target_distance) /
@@ -3882,7 +3901,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     } else if (!handled_gap_priority_tracking) {
         gap_recovery_turn_active_ = false;
     }
-    if (config_.planner_safety_stop_enabled &&
+    const bool dynamic_gap_safety_stop_enabled =
+        use_dynamic_gap_gates_ && have_reference_trajectory;
+    if ((config_.planner_safety_stop_enabled || dynamic_gap_safety_stop_enabled) &&
         !scanning_startup &&
         !use_gap_recovery_turn &&
         (lidar_front_blocked || lidar_side_clearance_blocked)) {
@@ -3892,6 +3913,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         commanded_steer_angle_ = 0.0;
         last_command_.target_speed = 0.0;
         last_command_.target_curvature = 0.0;
+        last_mpc_command_.reset();
+        if (dynamic_gap_safety_stop_enabled && locked_gap_goal_.has_value()) {
+            clear_locked_gap_goal();
+            gates_.clear();
+            gate_specs_.clear();
+            visible_gate_indices_.clear();
+            chosen_gate_index_ = -1;
+            reference_trajectory_.clear();
+            planned_trajectory_.clear();
+            diagnostics_.candidate_gates = 0;
+            diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+            diagnostics_.planner_has_reference = false;
+        }
     }
 
     if (world_.environment_mode() == EnvironmentMode::StructuredRoad && !safety_stop_active_) {

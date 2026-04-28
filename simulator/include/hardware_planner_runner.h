@@ -109,8 +109,8 @@ struct GapExtractionConfig {
     int max_persistent_points = 6000;
     int occupancy_confirm_hits = 2;
     int occupancy_decay_steps = 36;
-    double target_clearance_radius_m = 0.14;
-    double path_clearance_radius_m = 0.09;
+    double target_clearance_radius_m = 0.18;
+    double path_clearance_radius_m = 0.12;
     double dynamic_bounds_margin_m = 1.50;
 };
 
