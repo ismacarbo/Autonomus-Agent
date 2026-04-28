@@ -4661,19 +4661,21 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             goal_reached_ = true;
         } else if (locked_gap_goal_.has_value()) {
             const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
+            const double crossing_progress =
+                longitudinal_progress + std::max(geometry_.cg_to_front, 0.0);
             const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
             const double crossing_margin =
                 std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
             const double pass_lateral_limit =
                 locked_gap_corridor_half_width_m_ +
                 std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
-            const double crossing_distance = std::max(crossing_margin - longitudinal_progress, 0.0);
+            const double crossing_distance = std::max(crossing_margin - crossing_progress, 0.0);
             const double lateral_distance =
                 std::max(lateral_offset - pass_lateral_limit, 0.0);
             distance_to_goal_ = std::max(crossing_distance, lateral_distance);
             const bool gate_crossed =
                 lateral_offset <= pass_lateral_limit &&
-                longitudinal_progress >= crossing_margin;
+                crossing_progress >= crossing_margin;
             if (gate_crossed) {
                 const Vec2 completed_gap = *locked_gap_goal_;
                 locked_gap_crossed_ = true;
