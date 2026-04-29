@@ -3046,7 +3046,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 free_sector_start - 1,
                 i,
                 false,
-                false,
+                true,
                 0.0,
             });
             free_sector_start = -1;
@@ -3059,7 +3059,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             free_sector_start - 1,
             static_cast<int>(beams.size()),
             false,
-            false,
+            true,
             0.0,
         });
     }
@@ -3506,22 +3506,25 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
         startup_scan_complete_ = startup_scan_elapsed_s_ >= startup_scan_duration;
 
-        if (!strict_locked_motion &&
-            !startup_scan_complete_ &&
+        if (!startup_scan_complete_ &&
             perception_map_ready() &&
             !gate_specs_.empty()) {
             bool have_forward_candidate = false;
             for (const GateSpec& spec : gate_specs_) {
                 const double heading_error = std::abs(
                     wrap_angle(angle_to(estimate_.position, spec.position) - estimate_.yaw));
-                if (heading_error <= 28.0 * kPi / 180.0) {
+                const double forward_lock_angle = strict_locked_motion
+                    ? 72.0 * kPi / 180.0
+                    : 28.0 * kPi / 180.0;
+                if (heading_error <= forward_lock_angle) {
                     have_forward_candidate = true;
                     break;
                 }
             }
 
-            const double min_scan_before_lock_s =
-                std::min(0.35, 0.5 * startup_scan_duration);
+            const double min_scan_before_lock_s = strict_locked_motion
+                ? clamp_value(0.40 * startup_scan_duration, 0.55, 0.85)
+                : std::min(0.35, 0.5 * startup_scan_duration);
             if (have_forward_candidate &&
                 startup_scan_elapsed_s_ >= min_scan_before_lock_s) {
                 startup_scan_complete_ = true;
@@ -4776,17 +4779,20 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     const double corridor_half_width = std::max(
         0.5 * geometry_.body_width + config_.gap_extraction.path_clearance_radius_m,
         config_.gap_extraction.target_clearance_radius_m);
-    const double corridor_half_angle = clamp_value(
-        std::atan2(corridor_half_width, std::max(target_distance, 0.10)),
-        4.0 * kPi / 180.0,
-        std::max(config_.gap_extraction.min_gap_angle_rad * 0.55, 16.0 * kPi / 180.0));
     const double corridor_margin = std::max(0.04, target_clearance_radius * 0.55);
+    const Vec2 target_delta{
+        target.x - lidar_origin.x,
+        target.y - lidar_origin.y,
+    };
+    const Vec2 target_axis{
+        target_delta.x / target_distance,
+        target_delta.y / target_distance,
+    };
+    const double corridor_half_width_sq = corridor_half_width * corridor_half_width;
     double best_angle_delta = std::numeric_limits<double>::infinity();
     double best_range = 0.0;
     int support_beams = 0;
     int free_support_beams = 0;
-    int corridor_beams = 0;
-    int corridor_clear_beams = 0;
 
     for (const RPLidarA1::ScanPoint& point : scan) {
         if (point.distance_m <= 0.0 ||
@@ -4802,6 +4808,19 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
         if (obstacle_endpoint) {
             const Vec2 hit = scan_point_world_hit(point, estimate_.position, estimate_.yaw);
             if (distance_sq(hit, target) <= target_clearance_sq) {
+                return false;
+            }
+            const Vec2 relative_hit{
+                hit.x - lidar_origin.x,
+                hit.y - lidar_origin.y,
+            };
+            const double along = dot_product(relative_hit, target_axis);
+            const double lateral_sq = std::max(
+                0.0,
+                dot_product(relative_hit, relative_hit) - along * along);
+            if (along > config_.localization.min_valid_range_m &&
+                along + corridor_margin < target_distance &&
+                lateral_sq <= corridor_half_width_sq) {
                 return false;
             }
         }
@@ -4822,15 +4841,6 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
                 ++free_support_beams;
             }
         }
-
-        if (angle_delta <= corridor_half_angle) {
-            ++corridor_beams;
-            if (point.distance_m + corridor_margin >= target_distance) {
-                ++corridor_clear_beams;
-            } else {
-                return false;
-            }
-        }
     }
 
     const double angular_tolerance = std::max(config_.gap_extraction.min_gap_angle_rad * 0.5, 10.0 * kPi / 180.0);
@@ -4843,14 +4853,6 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
     }
 
     if (support_beams >= 2 && free_support_beams < support_beams) {
-        return false;
-    }
-
-    if (corridor_beams < 2) {
-        return false;
-    }
-
-    if (corridor_clear_beams < corridor_beams) {
         return false;
     }
 
