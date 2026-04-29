@@ -1204,6 +1204,8 @@ void HardwarePlannerRunner::reset() {
     reference_trajectory_.clear();
     visible_gate_indices_.clear();
     passed_unstructured_gap_positions_.clear();
+    dynamic_gap_tracks_.clear();
+    next_dynamic_gap_track_id_ = 1;
     lidar_hits_.clear();
     lidar_map_points_.clear();
     lidar_occupancy_cells_.clear();
@@ -1254,6 +1256,8 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     if (dynamic_gap_mode_enabled()) {
         gates_.clear();
         gate_specs_.clear();
+        dynamic_gap_tracks_.clear();
+        next_dynamic_gap_track_id_ = 1;
     } else {
         sync_gate_specs_from_world(true);
     }
@@ -1490,6 +1494,11 @@ int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
 bool HardwarePlannerRunner::dynamic_gap_mode_enabled() const {
     return world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
            config_.gap_extraction.enabled;
+}
+
+bool HardwarePlannerRunner::strict_locked_gate_motion_enabled() const {
+    return dynamic_gap_mode_enabled() &&
+           config_.gap_extraction.strict_locked_gate_motion;
 }
 
 bool HardwarePlannerRunner::perception_map_ready() const {
@@ -2332,9 +2341,11 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     diagnostics_.candidate_gates = 0;
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
     if (!use_dynamic_gap_gates_) {
+        dynamic_gap_tracks_.clear();
         return;
     }
     if (passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
+        dynamic_gap_tracks_.clear();
         gates_.clear();
         gate_specs_.clear();
         visible_gate_indices_.clear();
@@ -2351,6 +2362,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     struct ScanBeam {
         double local_angle = 0.0;
         double world_angle = 0.0;
+        double raw_distance = 0.0;
         double distance = 0.0;
         Vec2 hit;
     };
@@ -2361,7 +2373,23 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         double center_local_angle = 0.0;
         double center_world_angle = 0.0;
         double progress_score = 0.0;
+        double gap_width = 0.0;
+        double centerline_clearance = 0.0;
+        int track_id = -1;
+        int track_hits = 0;
+        double track_score = 0.0;
+        bool temporally_confirmed = false;
         Vec2 target;
+    };
+
+    struct FreeSpaceSector {
+        int start_index = -1;
+        int end_index = -1;
+        int left_boundary_index = -1;
+        int right_boundary_index = -1;
+        bool require_depth_contrast = false;
+        bool target_near_aperture = false;
+        double score_bonus = 0.0;
     };
 
     if (scan.empty()) {
@@ -2385,6 +2413,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             local_angle,
             world_angle,
             point.distance_m,
+            point.distance_m,
             {
                 lidar_origin.x + std::cos(world_angle) * point.distance_m,
                 lidar_origin.y + std::sin(world_angle) * point.distance_m,
@@ -2399,6 +2428,77 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     std::sort(beams.begin(), beams.end(), [](const ScanBeam& a, const ScanBeam& b) {
         return a.local_angle < b.local_angle;
     });
+
+    const int median_window = std::max(1, config_.gap_extraction.median_filter_window | 1);
+    if (median_window > 1 && beams.size() >= static_cast<size_t>(median_window)) {
+        const int half_window = median_window / 2;
+        std::vector<double> filtered_ranges(beams.size(), 0.0);
+        std::vector<double> samples;
+        samples.reserve(static_cast<size_t>(median_window));
+        for (size_t i = 0; i < beams.size(); ++i) {
+            samples.clear();
+            const int start = std::max<int>(0, static_cast<int>(i) - half_window);
+            const int end = std::min<int>(
+                static_cast<int>(beams.size()) - 1,
+                static_cast<int>(i) + half_window);
+            for (int j = start; j <= end; ++j) {
+                samples.push_back(beams[static_cast<size_t>(j)].raw_distance);
+            }
+            const size_t median_index = samples.size() / 2U;
+            std::nth_element(
+                samples.begin(),
+                samples.begin() + static_cast<std::ptrdiff_t>(median_index),
+                samples.end());
+            filtered_ranges[i] = samples[median_index];
+        }
+        for (size_t i = 0; i < beams.size(); ++i) {
+            ScanBeam& beam = beams[i];
+            beam.distance = filtered_ranges[i];
+            beam.hit = {
+                lidar_origin.x + std::cos(beam.world_angle) * beam.distance,
+                lidar_origin.y + std::sin(beam.world_angle) * beam.distance,
+            };
+        }
+    }
+
+    const double outlier_far_spike_delta =
+        std::max(config_.gap_extraction.outlier_filter_far_spike_delta_m, 0.0);
+    if (outlier_far_spike_delta > 1e-6 && beams.size() >= 3U) {
+        const double neighbor_delta =
+            std::max(config_.gap_extraction.outlier_filter_neighbor_delta_m, 0.0);
+        const double max_angle_step =
+            std::max(config_.gap_extraction.outlier_filter_max_angle_step_rad, 1e-3);
+        std::vector<double> corrected_ranges(beams.size(), 0.0);
+        for (size_t i = 0; i < beams.size(); ++i) {
+            corrected_ranges[i] = beams[i].distance;
+        }
+        for (size_t i = 1; i + 1 < beams.size(); ++i) {
+            const ScanBeam& left = beams[i - 1U];
+            const ScanBeam& center = beams[i];
+            const ScanBeam& right = beams[i + 1U];
+            const double left_angle_step = std::abs(center.local_angle - left.local_angle);
+            const double right_angle_step = std::abs(right.local_angle - center.local_angle);
+            if (left_angle_step > max_angle_step || right_angle_step > max_angle_step) {
+                continue;
+            }
+            if (std::abs(left.distance - right.distance) > neighbor_delta) {
+                continue;
+            }
+            const double neighbor_range = std::max(left.distance, right.distance);
+            if (center.distance - neighbor_range <= outlier_far_spike_delta) {
+                continue;
+            }
+            corrected_ranges[i] = neighbor_range;
+        }
+        for (size_t i = 0; i < beams.size(); ++i) {
+            ScanBeam& beam = beams[i];
+            beam.distance = corrected_ranges[i];
+            beam.hit = {
+                lidar_origin.x + std::cos(beam.world_angle) * beam.distance,
+                lidar_origin.y + std::sin(beam.world_angle) * beam.distance,
+            };
+        }
+    }
 
     const double min_target_distance = clamp_value(
         config_.gap_extraction.min_target_distance_m,
@@ -2618,6 +2718,10 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
 
         clear_locked_gap_goal();
+        if (strict_locked_gate_motion_enabled()) {
+            restart_unstructured_scan();
+            return;
+        }
     }
 
     double beam_angle_resolution = 2.0 * kPi / static_cast<double>(std::max<size_t>(beams.size(), 360U));
@@ -2644,7 +2748,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         config_.gap_extraction.gap_goal_acceptance_radius_m,
         std::max(config_.gap_extraction.gap_goal_tolerance_m * 1.15, 0.24));
 
-    auto try_add_candidate = [&](const Vec2& target, double base_score) {
+    auto try_add_candidate = [&](const Vec2& target, double base_score, double observed_gap_width) {
         if (!dynamic_gap_point_allowed(target)) {
             return;
         }
@@ -2748,6 +2852,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             candidate_local_angle,
             candidate_world_angle,
             progress_score,
+            observed_gap_width,
+            centerline_clearance,
+            -1,
+            0,
+            0.0,
+            false,
             target,
         });
     };
@@ -2759,7 +2869,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             persisted_distance <= std::max(max_target_distance * 1.2, 1.1) &&
             grid_segment_is_clear(local_grid, lidar_origin, target) &&
             scan_supports_target(target, scan)) {
-            try_add_candidate(target, 1.40);
+            try_add_candidate(target, 1.40, config_.gap_extraction.min_gap_width_m);
         }
     }
 
@@ -2891,20 +3001,11 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         try_add_candidate(
             target,
             range_jump_bonus + 1.80 * width_score + 0.85 * depth_score +
-                1.30 * goal_alignment + 0.90 * forward_alignment);
+                1.30 * goal_alignment + 0.90 * forward_alignment,
+            gap_width);
     };
 
-    auto add_true_gap_sector_candidate = [&](int start_index, int end_index) {
-        add_gap_sector_candidate(
-            start_index,
-            end_index,
-            start_index - 1,
-            end_index + 1,
-            false,
-            false,
-            0.0);
-    };
-
+    std::vector<FreeSpaceSector> free_space_sectors;
     int free_sector_start = -1;
     for (int i = 0; i < static_cast<int>(beams.size()); ++i) {
         const bool beam_is_free = beams[static_cast<size_t>(i)].distance >= free_threshold;
@@ -2915,12 +3016,28 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             continue;
         }
         if (free_sector_start >= 0) {
-            add_true_gap_sector_candidate(free_sector_start, i - 1);
+            free_space_sectors.push_back({
+                free_sector_start,
+                i - 1,
+                free_sector_start - 1,
+                i,
+                false,
+                false,
+                0.0,
+            });
             free_sector_start = -1;
         }
     }
     if (free_sector_start >= 0) {
-        add_true_gap_sector_candidate(free_sector_start, static_cast<int>(beams.size()) - 1);
+        free_space_sectors.push_back({
+            free_sector_start,
+            static_cast<int>(beams.size()) - 1,
+            free_sector_start - 1,
+            static_cast<int>(beams.size()),
+            false,
+            false,
+            0.0,
+        });
     }
 
     int range_jump_sector_start = -1;
@@ -2944,24 +3061,62 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
         if (closing_jump >= min_depth_contrast &&
             beams[static_cast<size_t>(i)].distance < planning_range - 0.03) {
-            add_gap_sector_candidate(
+            free_space_sectors.push_back({
                 range_jump_sector_start,
                 i - 1,
                 range_jump_left_boundary,
                 i,
                 true,
                 true,
-                0.45);
+                0.45,
+            });
             range_jump_sector_start = -1;
             range_jump_left_boundary = -1;
         }
     }
 
+    for (const FreeSpaceSector& sector : free_space_sectors) {
+        add_gap_sector_candidate(
+            sector.start_index,
+            sector.end_index,
+            sector.left_boundary_index,
+            sector.right_boundary_index,
+            sector.require_depth_contrast,
+            sector.target_near_aperture,
+            sector.score_bonus);
+    }
+
     if (candidates.empty()) {
+        for (DynamicGapTrack& track : dynamic_gap_tracks_) {
+            ++track.misses;
+            track.score = std::max(0.0, track.score - config_.gap_extraction.gap_track_miss_decay);
+        }
+        dynamic_gap_tracks_.erase(
+            std::remove_if(
+                dynamic_gap_tracks_.begin(),
+                dynamic_gap_tracks_.end(),
+                [&](const DynamicGapTrack& track) {
+                    return track.misses > std::max(config_.gap_extraction.gap_track_max_misses, 1) ||
+                           track.score <= 0.0;
+                }),
+            dynamic_gap_tracks_.end());
+
         gates_.clear();
         gate_specs_.clear();
+        bool persisted_track_held = false;
+        if (persisted_spec.has_value()) {
+            for (const DynamicGapTrack& track : dynamic_gap_tracks_) {
+                if (distance(track.position, persisted_spec->position) <=
+                        std::max(config_.gap_extraction.gap_track_match_radius_m, 0.08) &&
+                    track.score >= std::max(config_.gap_extraction.gap_track_hold_score, 0.1)) {
+                    persisted_track_held = true;
+                    break;
+                }
+            }
+        }
         if (persisted_spec.has_value() &&
             persisted_gate.has_value() &&
+            persisted_track_held &&
             grid_segment_is_clear(local_grid, lidar_origin, persisted_spec->position) &&
             scan_supports_target(persisted_spec->position, scan)) {
             GateSpec spec = *persisted_spec;
@@ -3001,6 +3156,118 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         if (std::abs(a.score - b.score) > 1e-6) {
             return a.score > b.score;
         }
+        return a.target_distance < b.target_distance;
+    });
+
+    std::vector<bool> track_matched(dynamic_gap_tracks_.size(), false);
+    const double track_match_radius = std::max(config_.gap_extraction.gap_track_match_radius_m, 0.08);
+    const double track_confirm_score = std::max(config_.gap_extraction.gap_track_confirm_score, 0.1);
+    const double track_hold_score = std::max(config_.gap_extraction.gap_track_hold_score, 0.1);
+    const int track_min_hits = std::max(config_.gap_extraction.gap_track_min_hits, 1);
+    for (TargetCandidate& candidate : candidates) {
+        int best_track_index = -1;
+        double best_track_cost = std::numeric_limits<double>::infinity();
+        for (size_t i = 0; i < dynamic_gap_tracks_.size(); ++i) {
+            if (track_matched[i]) {
+                continue;
+            }
+            const DynamicGapTrack& track = dynamic_gap_tracks_[i];
+            const double target_delta = distance(candidate.target, track.position);
+            if (target_delta > track_match_radius) {
+                continue;
+            }
+            const double heading_delta =
+                std::abs(wrap_angle(candidate.center_world_angle - track.heading));
+            if (heading_delta > 0.75) {
+                continue;
+            }
+            const double track_cost = target_delta + 0.10 * heading_delta;
+            if (track_cost < best_track_cost) {
+                best_track_cost = track_cost;
+                best_track_index = static_cast<int>(i);
+            }
+        }
+
+        DynamicGapTrack* track = nullptr;
+        if (best_track_index >= 0) {
+            track = &dynamic_gap_tracks_[static_cast<size_t>(best_track_index)];
+            track_matched[static_cast<size_t>(best_track_index)] = true;
+            const double alpha = clamp_value(
+                0.35 + 0.25 * clamp_value(candidate.score / 8.0, 0.0, 1.0),
+                0.30,
+                0.60);
+            track->position.x = (1.0 - alpha) * track->position.x + alpha * candidate.target.x;
+            track->position.y = (1.0 - alpha) * track->position.y + alpha * candidate.target.y;
+            track->heading = angle_to(lidar_origin, track->position);
+            track->score = clamp_value(
+                track->score + config_.gap_extraction.gap_track_hit_gain +
+                    0.18 * clamp_value(candidate.score, 0.0, 8.0),
+                0.0,
+                8.0);
+            track->hits += 1;
+            track->misses = 0;
+            track->last_seen_step = step_count_;
+        } else {
+            DynamicGapTrack new_track{};
+            new_track.id = next_dynamic_gap_track_id_++;
+            new_track.position = candidate.target;
+            new_track.heading = candidate.center_world_angle;
+            new_track.score = clamp_value(
+                config_.gap_extraction.gap_track_hit_gain +
+                    0.18 * clamp_value(candidate.score, 0.0, 8.0),
+                0.0,
+                8.0);
+            new_track.hits = 1;
+            new_track.misses = 0;
+            new_track.last_seen_step = step_count_;
+            dynamic_gap_tracks_.push_back(new_track);
+            track_matched.push_back(true);
+            track = &dynamic_gap_tracks_.back();
+        }
+
+        track->candidate_score = candidate.score;
+        track->target_distance = distance(lidar_origin, track->position);
+        track->gap_width = std::max(track->gap_width, candidate.gap_width);
+
+        candidate.target = track->position;
+        candidate.center_world_angle = angle_to(lidar_origin, candidate.target);
+        candidate.center_local_angle = wrap_angle(candidate.center_world_angle - estimate_.yaw);
+        candidate.target_distance = distance(lidar_origin, candidate.target);
+        candidate.track_id = track->id;
+        candidate.track_hits = track->hits;
+        candidate.track_score = track->score;
+        const bool held_by_previous_gate =
+            persisted_spec.has_value() &&
+            distance(candidate.target, persisted_spec->position) <= 0.18 &&
+            track->score >= track_hold_score;
+        candidate.temporally_confirmed =
+            (track->hits >= track_min_hits && track->score >= track_confirm_score) ||
+            held_by_previous_gate;
+        candidate.score += 0.35 * track->score + 0.08 * static_cast<double>(track->hits);
+    }
+
+    for (size_t i = 0; i < dynamic_gap_tracks_.size(); ++i) {
+        if (i < track_matched.size() && track_matched[i]) {
+            continue;
+        }
+        DynamicGapTrack& track = dynamic_gap_tracks_[i];
+        ++track.misses;
+        track.score = std::max(0.0, track.score - config_.gap_extraction.gap_track_miss_decay);
+    }
+    dynamic_gap_tracks_.erase(
+        std::remove_if(
+            dynamic_gap_tracks_.begin(),
+            dynamic_gap_tracks_.end(),
+            [&](const DynamicGapTrack& track) {
+                return track.misses > std::max(config_.gap_extraction.gap_track_max_misses, 1) ||
+                       track.score <= 0.0;
+            }),
+        dynamic_gap_tracks_.end());
+
+    std::sort(candidates.begin(), candidates.end(), [](const TargetCandidate& a, const TargetCandidate& b) {
+        if (std::abs(a.score - b.score) > 1e-6) {
+            return a.score > b.score;
+        }
         if (std::abs(a.progress_score - b.progress_score) > 1e-6) {
             return a.progress_score > b.progress_score;
         }
@@ -3012,6 +3279,9 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const int gate_limit = std::max(1, config_.gap_extraction.max_candidate_gates);
     for (size_t i = 0; i < candidates.size() && static_cast<int>(gate_specs_.size()) < gate_limit; ++i) {
         const TargetCandidate& candidate = candidates[i];
+        if (!candidate.temporally_confirmed) {
+            continue;
+        }
         if (!scan_supports_target(candidate.target, scan)) {
             continue;
         }
@@ -3066,6 +3336,22 @@ void HardwarePlannerRunner::clear_locked_gap_goal() {
     locked_gap_corridor_half_width_m_ = 0.0;
     locked_gap_crossed_ = false;
     locked_gap_invalid_streak_ = 0;
+}
+
+void HardwarePlannerRunner::restart_unstructured_scan() {
+    clear_locked_gap_goal();
+    startup_scan_elapsed_s_ = 0.0;
+    startup_scan_complete_ = false;
+    gap_recovery_turn_active_ = false;
+    gates_.clear();
+    gate_specs_.clear();
+    visible_gate_indices_.clear();
+    chosen_gate_index_ = -1;
+    reference_trajectory_.clear();
+    planned_trajectory_.clear();
+    diagnostics_.candidate_gates = 0;
+    diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+    diagnostics_.planner_has_reference = false;
 }
 
 void HardwarePlannerRunner::set_locked_gap_goal(const Vec2& target) {
@@ -3178,8 +3464,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
 
     if (locked_gap_goal_.has_value()) {
         if (!dynamic_gap_point_allowed(*locked_gap_goal_)) {
-            clear_locked_gap_goal();
-            startup_scan_complete_ = false;
+            restart_unstructured_scan();
         } else {
             startup_scan_complete_ = true;
             publish_locked_gap_goal();
@@ -3187,6 +3472,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         }
     }
 
+    const bool strict_locked_motion = strict_locked_gate_motion_enabled();
     const bool startup_scan_enabled = config_.gap_extraction.startup_scan_duration_s > 1e-3;
     if (!startup_scan_enabled) {
         startup_scan_complete_ = true;
@@ -3196,7 +3482,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
         startup_scan_complete_ = startup_scan_elapsed_s_ >= startup_scan_duration;
 
-        if (!startup_scan_complete_ &&
+        if (!strict_locked_motion &&
+            !startup_scan_complete_ &&
             perception_map_ready() &&
             !gate_specs_.empty()) {
             bool have_forward_candidate = false;
@@ -3215,6 +3502,11 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 startup_scan_elapsed_s_ >= min_scan_before_lock_s) {
                 startup_scan_complete_ = true;
             }
+        }
+        if (strict_locked_motion &&
+            startup_scan_complete_ &&
+            (!perception_map_ready() || gate_specs_.empty())) {
+            startup_scan_complete_ = false;
         }
     }
 
@@ -3236,6 +3528,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     if (!startup_scan_complete_ || !perception_map_ready() || gate_specs_.empty()) {
         chosen_gate_index_ = -1;
         diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
+        if (strict_locked_motion) {
+            startup_scan_complete_ = false;
+        }
         return;
     }
 
@@ -3339,6 +3634,7 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
 
     if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
         if (startup_scan_active() ||
+            (strict_locked_gate_motion_enabled() && !locked_gap_goal_.has_value()) ||
             chosen_gate_index_ < 0 ||
             chosen_gate_index_ >= static_cast<int>(gate_specs_.size())) {
             planner_accel_ref_ = 0.0;
@@ -3414,7 +3710,9 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         return;
     }
 
-    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates && chosen_gate_index_ < 0) {
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        (chosen_gate_index_ < 0 ||
+         (strict_locked_gate_motion_enabled() && !locked_gap_goal_.has_value()))) {
         return;
     }
     if (!has_planner_clothoid) {
@@ -3555,6 +3853,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     bool use_direct_yaw_rate_command = false;
     double direct_yaw_rate_command = 0.0;
     const bool scanning_startup = startup_scan_active();
+    const bool strict_locked_motion = strict_locked_gate_motion_enabled();
 
     VehicleModelState tracking_state = build_tracking_state(
         estimate_.position,
@@ -3686,6 +3985,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (!scanning_startup &&
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
+        (!strict_locked_motion || locked_gap_goal_.has_value()) &&
         have_motion_heading) {
         const double heading_threshold =
             gap_recovery_turn_active_
@@ -3708,7 +4008,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             const double turn_in_place_heading = std::max(
                 config_.gap_extraction.gap_acquire_turn_in_place_heading_rad,
                 heading_threshold + 0.02);
-            if (motion_sector_clearance > gap_acquire_forward_clearance &&
+            if (!strict_locked_motion &&
+                motion_sector_clearance > gap_acquire_forward_clearance &&
                 std::abs(heading_error) < turn_in_place_heading) {
                 const double heading_scale = clamp_value(
                     (turn_in_place_heading - std::abs(heading_error)) /
@@ -3741,6 +4042,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         !scanning_startup &&
         lidar_front_blocked_for_recovery &&
         use_dynamic_gap_gates_ &&
+        (!strict_locked_motion || locked_gap_goal_.has_value()) &&
         chosen_gate_index_ >= 0 &&
         chosen_gate_index_ < static_cast<int>(gate_specs_.size()) &&
         estimate_.min_lidar_distance > recovery_turn_clearance) {
@@ -3770,6 +4072,20 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                !scanning_startup &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
+        if (strict_locked_motion) {
+            gap_recovery_turn_active_ = true;
+            use_gap_recovery_turn = true;
+            use_direct_yaw_rate_command = true;
+            direct_yaw_rate_command = startup_scan_direction_ * clamp_value(
+                std::abs(config_.gap_extraction.startup_scan_yaw_rate),
+                0.0,
+                0.65 * config_.drive.max_yaw_rate);
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+            last_mpc_command_.reset();
+        } else {
         const double heading_limit = clamp_value(
             config_.gap_extraction.recovery_heading_search_half_angle_rad,
             0.45,
@@ -3898,6 +4214,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         } else {
             gap_recovery_turn_active_ = false;
         }
+        }
     } else if (!handled_gap_priority_tracking) {
         gap_recovery_turn_active_ = false;
     }
@@ -3915,16 +4232,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_curvature = 0.0;
         last_mpc_command_.reset();
         if (dynamic_gap_safety_stop_enabled && locked_gap_goal_.has_value()) {
-            clear_locked_gap_goal();
-            gates_.clear();
-            gate_specs_.clear();
-            visible_gate_indices_.clear();
-            chosen_gate_index_ = -1;
-            reference_trajectory_.clear();
-            planned_trajectory_.clear();
-            diagnostics_.candidate_gates = 0;
-            diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
-            diagnostics_.planner_has_reference = false;
+            dynamic_gap_tracks_.clear();
+            next_dynamic_gap_track_id_ = 1;
+            restart_unstructured_scan();
         }
     }
 
@@ -4047,6 +4357,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             }
         }
         commanded_speed_ = last_command_.target_speed;
+    }
+
+    if (strict_locked_motion && !locked_gap_goal_.has_value()) {
+        commanded_speed_ = 0.0;
+        last_command_.target_speed = 0.0;
+        if (!use_direct_yaw_rate_command) {
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_curvature = 0.0;
+        }
+        last_mpc_command_.reset();
     }
 
     last_command_.target_speed = clamp_value(
@@ -4617,15 +4937,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         estimate_.front_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
         lidar_hits_.clear();
         if (dynamic_gap_mode_enabled()) {
-            clear_locked_gap_goal();
-            startup_scan_elapsed_s_ = 0.0;
-            startup_scan_complete_ = false;
-            gates_.clear();
-            gate_specs_.clear();
-            visible_gate_indices_.clear();
-            chosen_gate_index_ = -1;
-            planned_trajectory_.clear();
-            reference_trajectory_.clear();
+            restart_unstructured_scan();
         }
         if (!lidar_enabled) {
             lidar_map_points_.clear();
@@ -4715,9 +5027,22 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                 locked_gap_crossed_ = true;
                 passed_unstructured_gap_positions_.push_back(completed_gap);
                 ++passed_unstructured_gap_count_;
-                clear_locked_gap_goal();
                 goal_reached_ =
                     passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count();
+                if (goal_reached_) {
+                    clear_locked_gap_goal();
+                    gates_.clear();
+                    gate_specs_.clear();
+                    visible_gate_indices_.clear();
+                    chosen_gate_index_ = -1;
+                    reference_trajectory_.clear();
+                    planned_trajectory_.clear();
+                    diagnostics_.candidate_gates = 0;
+                    diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+                    diagnostics_.planner_has_reference = false;
+                } else {
+                    restart_unstructured_scan();
+                }
                 distance_to_goal_ = goal_reached_ ? 0.0 : -1.0;
             }
         } else if (chosen_gate_index_ >= 0 && chosen_gate_index_ < static_cast<int>(gate_specs_.size())) {

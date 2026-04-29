@@ -74,6 +74,10 @@ struct LidarLocalizationConfig {
 
 struct GapExtractionConfig {
     bool enabled = true;
+    int median_filter_window = 5;
+    double outlier_filter_far_spike_delta_m = 0.35;
+    double outlier_filter_neighbor_delta_m = 0.18;
+    double outlier_filter_max_angle_step_rad = 0.08;
     double free_distance_threshold_m = 0.34;
     double min_gap_width_m = 0.38;
     double min_gap_angle_rad = 0.16;
@@ -84,8 +88,9 @@ struct GapExtractionConfig {
     double min_target_distance_m = 0.28;
     double max_target_distance_m = 1.35;
     int max_candidate_gates = 5;
-    double startup_scan_duration_s = 1.20;
-    double startup_scan_yaw_rate = 0.70;
+    bool strict_locked_gate_motion = true;
+    double startup_scan_duration_s = 1.80;
+    double startup_scan_yaw_rate = 0.60;
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
     double gap_goal_acceptance_radius_m = 0.36;
@@ -112,11 +117,31 @@ struct GapExtractionConfig {
     double target_clearance_radius_m = 0.18;
     double path_clearance_radius_m = 0.12;
     double dynamic_bounds_margin_m = 1.50;
+    double gap_track_match_radius_m = 0.28;
+    double gap_track_confirm_score = 2.35;
+    double gap_track_hold_score = 1.20;
+    double gap_track_hit_gain = 0.85;
+    double gap_track_miss_decay = 0.42;
+    int gap_track_min_hits = 2;
+    int gap_track_max_misses = 8;
 };
 
 struct PerceptionOccupancyCell {
     Vec2 center;
     int hit_count = 0;
+    int last_seen_step = -1;
+};
+
+struct DynamicGapTrack {
+    int id = 0;
+    Vec2 position;
+    double heading = 0.0;
+    double score = 0.0;
+    double candidate_score = 0.0;
+    double target_distance = 0.0;
+    double gap_width = 0.0;
+    int hits = 0;
+    int misses = 0;
     int last_seen_step = -1;
 };
 
@@ -351,6 +376,7 @@ class HardwarePlannerRunner {
     void rebuild_dynamic_gap_gates(const std::vector<RPLidarA1::ScanPoint>& scan);
     void update_unstructured_gap_workflow(double dt);
     void clear_locked_gap_goal();
+    void restart_unstructured_scan();
     void set_locked_gap_goal(const Vec2& target);
     double locked_gap_longitudinal_progress(const Vec2& position) const;
     double locked_gap_lateral_offset(const Vec2& position) const;
@@ -372,6 +398,7 @@ class HardwarePlannerRunner {
     int count_passed_gates() const;
     int required_unstructured_gap_pass_count() const;
     bool dynamic_gap_mode_enabled() const;
+    bool strict_locked_gate_motion_enabled() const;
     bool perception_map_ready() const;
     bool unstructured_perception_only_mode() const;
     bool dynamic_gap_point_allowed(const Vec2& position) const;
@@ -398,6 +425,7 @@ class HardwarePlannerRunner {
     std::vector<Vec2> lidar_map_points_;
     std::unordered_map<std::uint64_t, PerceptionOccupancyCell> lidar_occupancy_cells_;
     std::unordered_set<std::uint64_t> lidar_map_keys_;
+    std::vector<DynamicGapTrack> dynamic_gap_tracks_;
     std::vector<HardwareTelemetrySample> history_;
     std::vector<Vec2> trail_;
     std::vector<Vec2> planned_trajectory_;
@@ -471,6 +499,7 @@ class HardwarePlannerRunner {
     bool goal_reached_ = false;
     int passed_unstructured_gap_count_ = 0;
     bool safety_stop_active_ = false;
+    int next_dynamic_gap_track_id_ = 1;
 };
 
 }  // namespace thesis_sim
