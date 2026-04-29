@@ -379,6 +379,7 @@ class HardwarePlannerRunner {
     void update_unstructured_gap_workflow(double dt);
     void clear_locked_gap_goal();
     void restart_unstructured_scan();
+    void update_unstructured_scan_direction(bool flip_when_aligned);
     void set_locked_gap_goal(const Vec2& target);
     double locked_gap_longitudinal_progress(const Vec2& position) const;
     double locked_gap_lateral_offset(const Vec2& position) const;

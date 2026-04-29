@@ -3365,6 +3365,7 @@ void HardwarePlannerRunner::clear_locked_gap_goal() {
 void HardwarePlannerRunner::restart_unstructured_scan() {
     clear_locked_gap_goal();
     startup_scan_elapsed_s_ = 0.0;
+    update_unstructured_scan_direction(false);
     startup_scan_complete_ = false;
     gap_recovery_turn_active_ = false;
     gates_.clear();
@@ -3376,6 +3377,23 @@ void HardwarePlannerRunner::restart_unstructured_scan() {
     diagnostics_.candidate_gates = 0;
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
     diagnostics_.planner_has_reference = false;
+}
+
+void HardwarePlannerRunner::update_unstructured_scan_direction(bool flip_when_aligned) {
+    const Vec2 goal = world_.goal();
+    if (distance(estimate_.position, goal) > 0.05) {
+        const double heading_error = wrap_angle(angle_to(estimate_.position, goal) - estimate_.yaw);
+        if (std::abs(heading_error) > 0.12) {
+            startup_scan_direction_ = heading_error >= 0.0 ? 1.0 : -1.0;
+            return;
+        }
+    }
+
+    if (flip_when_aligned) {
+        startup_scan_direction_ = startup_scan_direction_ >= 0.0 ? -1.0 : 1.0;
+    } else if (std::abs(startup_scan_direction_) < 0.5) {
+        startup_scan_direction_ = 1.0;
+    }
 }
 
 void HardwarePlannerRunner::set_locked_gap_goal(const Vec2& target) {
@@ -3534,6 +3552,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             startup_scan_complete_ &&
             (!perception_map_ready() || gate_specs_.empty())) {
             startup_scan_complete_ = false;
+            startup_scan_elapsed_s_ = 0.0;
+            update_unstructured_scan_direction(true);
         }
     }
 
@@ -5088,6 +5108,10 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                     diagnostics_.planner_has_reference = false;
                 } else {
                     restart_unstructured_scan();
+                    commanded_speed_ = 0.0;
+                    commanded_steer_angle_ = 0.0;
+                    last_command_ = {};
+                    last_mpc_command_.reset();
                 }
                 distance_to_goal_ = goal_reached_ ? 0.0 : -1.0;
             }
