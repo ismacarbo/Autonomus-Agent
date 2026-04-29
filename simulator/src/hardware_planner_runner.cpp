@@ -2876,6 +2876,30 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const double min_depth_contrast = std::max(
         config_.gap_extraction.min_gap_depth_contrast_m,
         0.35 * required_gap_width);
+    double nearest_beam_distance = planning_range;
+    std::vector<double> beam_distances;
+    beam_distances.reserve(beams.size());
+    for (const ScanBeam& beam : beams) {
+        nearest_beam_distance = std::min(nearest_beam_distance, beam.distance);
+        beam_distances.push_back(beam.distance);
+    }
+    double range_quantile_threshold = free_threshold;
+    if (!beam_distances.empty()) {
+        const size_t quantile_index = std::min(
+            beam_distances.size() - 1U,
+            static_cast<size_t>(std::floor(0.40 * static_cast<double>(beam_distances.size() - 1U))));
+        std::nth_element(
+            beam_distances.begin(),
+            beam_distances.begin() + static_cast<std::ptrdiff_t>(quantile_index),
+            beam_distances.end());
+        range_quantile_threshold = beam_distances[quantile_index];
+    }
+    const double free_sector_threshold = clamp_value(
+        std::max(
+            range_quantile_threshold,
+            nearest_beam_distance + std::max(0.30, 0.55 * required_gap_width)),
+        free_threshold,
+        std::max(free_threshold, planning_range - 0.05));
 
     auto add_gap_sector_candidate = [&](int start_index,
                                         int end_index,
@@ -2928,8 +2952,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const double depth_contrast =
             min_sector_distance - std::max(left_boundary.distance, right_boundary.distance);
         const bool near_obstacle_boundaries =
-            left_boundary.distance < free_threshold &&
-            right_boundary.distance < free_threshold;
+            left_boundary.distance < free_sector_threshold &&
+            right_boundary.distance < free_sector_threshold;
         if (require_depth_contrast &&
             !near_obstacle_boundaries &&
             depth_contrast < min_depth_contrast) {
@@ -3008,7 +3032,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     std::vector<FreeSpaceSector> free_space_sectors;
     int free_sector_start = -1;
     for (int i = 0; i < static_cast<int>(beams.size()); ++i) {
-        const bool beam_is_free = beams[static_cast<size_t>(i)].distance >= free_threshold;
+        const bool beam_is_free = beams[static_cast<size_t>(i)].distance >= free_sector_threshold;
         if (beam_is_free) {
             if (free_sector_start < 0) {
                 free_sector_start = i;
@@ -3511,11 +3535,19 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     }
 
     if (!startup_scan_complete_) {
-        gates_.clear();
-        gate_specs_.clear();
+        if (!strict_locked_motion) {
+            gates_.clear();
+            gate_specs_.clear();
+            diagnostics_.candidate_gates = 0;
+        } else {
+            for (gate& candidate : gates_) {
+                candidate.choose = false;
+                candidate.too_far = false;
+            }
+            diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
+        }
         visible_gate_indices_.clear();
         chosen_gate_index_ = -1;
-        diagnostics_.candidate_gates = 0;
         diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
         return;
     }
@@ -3999,22 +4031,30 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
+            const double yaw_rate_limit = strict_locked_motion
+                ? 0.65 * config_.drive.max_yaw_rate
+                : 0.90 * config_.drive.max_yaw_rate;
             direct_yaw_rate_command = clamp_value(
                 config_.gap_extraction.gap_acquire_yaw_gain * heading_error,
-                -0.90 * config_.drive.max_yaw_rate,
-                0.90 * config_.drive.max_yaw_rate);
+                -yaw_rate_limit,
+                yaw_rate_limit);
 
             double acquire_speed = 0.0;
             const double turn_in_place_heading = std::max(
                 config_.gap_extraction.gap_acquire_turn_in_place_heading_rad,
                 heading_threshold + 0.02);
-            if (!strict_locked_motion &&
+            const double drive_heading_limit = strict_locked_motion
+                ? std::max(config_.gap_extraction.strict_locked_gate_drive_heading_rad, turn_in_place_heading)
+                : turn_in_place_heading;
+            const bool locked_gate_drive_allowed =
+                !strict_locked_motion || locked_gap_goal_.has_value();
+            if (locked_gate_drive_allowed &&
                 motion_sector_clearance > gap_acquire_forward_clearance &&
-                std::abs(heading_error) < turn_in_place_heading) {
+                std::abs(heading_error) < drive_heading_limit) {
                 const double heading_scale = clamp_value(
-                    (turn_in_place_heading - std::abs(heading_error)) /
+                    (drive_heading_limit - std::abs(heading_error)) /
                         std::max(
-                            turn_in_place_heading -
+                            drive_heading_limit -
                                 config_.gap_extraction.gap_acquire_hold_heading_rad,
                             1e-3),
                     0.0,
@@ -4023,12 +4063,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                     (motion_sector_clearance - gap_acquire_forward_clearance) / 0.40,
                     0.0,
                     1.0);
+                const double creep_speed_cap = strict_locked_motion
+                    ? std::min(config_.gap_extraction.gap_acquire_creep_speed_mps,
+                               config_.gap_extraction.strict_locked_gate_creep_speed_mps)
+                    : config_.gap_extraction.gap_acquire_creep_speed_mps;
                 acquire_speed = clamp_value(
-                    config_.gap_extraction.gap_acquire_creep_speed_mps *
+                    creep_speed_cap *
                         (0.30 + 0.70 * heading_scale) *
                         (0.45 + 0.55 * clearance_scale),
                     0.0,
-                    config_.gap_extraction.gap_acquire_creep_speed_mps);
+                    creep_speed_cap);
             }
 
             commanded_speed_ = acquire_speed;

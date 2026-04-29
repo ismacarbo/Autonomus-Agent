@@ -103,7 +103,9 @@ struct GapExtractionConfig {
     double gap_acquire_hold_heading_rad = 0.06;
     double gap_acquire_turn_in_place_heading_rad = 0.22;
     double gap_acquire_creep_speed_mps = 0.05;
-    double gap_acquire_yaw_gain = 1.9;
+    double gap_acquire_yaw_gain = 1.35;
+    double strict_locked_gate_drive_heading_rad = 0.60;
+    double strict_locked_gate_creep_speed_mps = 0.055;
     double recovery_creep_speed_mps = 0.07;
     double recovery_heading_search_half_angle_rad = 1.35;
     double recovery_sector_half_angle_rad = 0.24;
