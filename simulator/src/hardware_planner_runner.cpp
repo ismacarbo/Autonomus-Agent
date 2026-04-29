@@ -4287,6 +4287,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
     const bool dynamic_gap_safety_stop_enabled =
         use_dynamic_gap_gates_ && have_reference_trajectory;
+    bool locked_gap_about_to_cross = false;
+    if (dynamic_gap_safety_stop_enabled && locked_gap_goal_.has_value()) {
+        const double crossing_progress =
+            locked_gap_longitudinal_progress(estimate_.position) + std::max(geometry_.cg_to_front, 0.0);
+        const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
+        const double crossing_margin =
+            std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
+        const double pass_lateral_limit =
+            locked_gap_corridor_half_width_m_ +
+            std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
+        const double near_crossing_margin = clamp_value(
+            0.12 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+            0.015,
+            0.030);
+        locked_gap_about_to_cross =
+            lateral_offset <= pass_lateral_limit &&
+            crossing_progress + near_crossing_margin >= crossing_margin;
+    }
     if ((config_.planner_safety_stop_enabled || dynamic_gap_safety_stop_enabled) &&
         !scanning_startup &&
         !use_gap_recovery_turn &&
@@ -4298,7 +4316,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_speed = 0.0;
         last_command_.target_curvature = 0.0;
         last_mpc_command_.reset();
-        if (dynamic_gap_safety_stop_enabled && locked_gap_goal_.has_value()) {
+        if (dynamic_gap_safety_stop_enabled &&
+            locked_gap_goal_.has_value() &&
+            !locked_gap_about_to_cross) {
             dynamic_gap_tracks_.clear();
             next_dynamic_gap_track_id_ = 1;
             restart_unstructured_scan();
