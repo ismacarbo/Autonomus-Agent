@@ -111,6 +111,10 @@ struct GapExtractionConfig {
     double recovery_sector_half_angle_rad = 0.24;
     double recovery_escape_turn_min_heading_rad = 0.08;
     double recovery_escape_turn_yaw_gain = 1.55;
+    double strict_scan_escape_after_s = 4.20;
+    double strict_scan_escape_period_s = 3.20;
+    double strict_scan_escape_pulse_s = 0.85;
+    double strict_scan_escape_speed_mps = 0.035;
     double straight_path_sample_spacing_m = 0.06;
     double map_point_resolution_m = 0.03;
     int max_persistent_points = 6000;
@@ -483,6 +487,7 @@ class HardwarePlannerRunner {
     Vec2 locked_gap_approach_direction_{1.0, 0.0};
     double locked_gap_corridor_half_width_m_ = 0.0;
     double startup_scan_elapsed_s_ = 0.0;
+    double unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     double startup_scan_direction_ = 1.0;
     bool structured_goal_ready_ = false;
     bool startup_scan_complete_ = false;

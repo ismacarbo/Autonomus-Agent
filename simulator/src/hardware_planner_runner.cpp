@@ -1166,6 +1166,7 @@ void HardwarePlannerRunner::reset() {
     structured_goal_position_ = world_.start();
     clear_locked_gap_goal();
     startup_scan_elapsed_s_ = 0.0;
+    unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     startup_scan_direction_ = 1.0;
     structured_goal_ready_ = false;
     startup_scan_complete_ = false;
@@ -1239,6 +1240,7 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     commanded_steer_angle_ = 0.0;
     clear_locked_gap_goal();
     startup_scan_elapsed_s_ = 0.0;
+    unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     startup_scan_direction_ = 1.0;
     startup_scan_complete_ = false;
     measured_left_wheel_speed_ = 0.0;
@@ -3382,6 +3384,7 @@ void HardwarePlannerRunner::clear_locked_gap_goal() {
 void HardwarePlannerRunner::restart_unstructured_scan() {
     clear_locked_gap_goal();
     startup_scan_elapsed_s_ = 0.0;
+    unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     update_unstructured_scan_direction(false);
     startup_scan_complete_ = false;
     gap_recovery_turn_active_ = false;
@@ -3505,6 +3508,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     if (!use_dynamic_gap_gates_) {
         clear_locked_gap_goal();
         startup_scan_elapsed_s_ = 0.0;
+        unstructured_no_candidate_scan_elapsed_s_ = 0.0;
         startup_scan_direction_ = 1.0;
         startup_scan_complete_ = false;
         return;
@@ -3518,6 +3522,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         diagnostics_.candidate_gates = 0;
         diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
         startup_scan_complete_ = true;
+        unstructured_no_candidate_scan_elapsed_s_ = 0.0;
         return;
     }
 
@@ -3526,12 +3531,18 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             restart_unstructured_scan();
         } else {
             startup_scan_complete_ = true;
+            unstructured_no_candidate_scan_elapsed_s_ = 0.0;
             publish_locked_gap_goal();
             return;
         }
     }
 
     const bool strict_locked_motion = strict_locked_gate_motion_enabled();
+    if (strict_locked_motion && gate_specs_.empty()) {
+        unstructured_no_candidate_scan_elapsed_s_ += std::max(dt, 0.0);
+    } else {
+        unstructured_no_candidate_scan_elapsed_s_ = 0.0;
+    }
     const bool startup_scan_enabled = config_.gap_extraction.startup_scan_duration_s > 1e-3;
     if (!startup_scan_enabled) {
         startup_scan_complete_ = true;
@@ -3926,6 +3937,89 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     double direct_yaw_rate_command = 0.0;
     const bool scanning_startup = startup_scan_active();
     const bool strict_locked_motion = strict_locked_gate_motion_enabled();
+    bool allow_unlocked_recovery_motion = false;
+
+    auto apply_strict_scan_escape = [&]() {
+        if (!strict_locked_motion ||
+            !use_dynamic_gap_gates_ ||
+            locked_gap_goal_.has_value() ||
+            have_reference_trajectory ||
+            !gate_specs_.empty() ||
+            goal_reached_) {
+            return false;
+        }
+
+        const double escape_after_s =
+            std::max(config_.gap_extraction.strict_scan_escape_after_s, 0.0);
+        if (unstructured_no_candidate_scan_elapsed_s_ < escape_after_s) {
+            return false;
+        }
+
+        const double escape_period_s =
+            std::max(config_.gap_extraction.strict_scan_escape_period_s, 0.5);
+        const double escape_pulse_s = clamp_value(
+            config_.gap_extraction.strict_scan_escape_pulse_s,
+            0.10,
+            escape_period_s);
+        const double escape_phase =
+            std::fmod(unstructured_no_candidate_scan_elapsed_s_ - escape_after_s, escape_period_s);
+        if (escape_phase > escape_pulse_s) {
+            return false;
+        }
+
+        const double fallback_front_clearance =
+            estimate_.front_lidar_distance > 0.0
+                ? estimate_.front_lidar_distance
+                : config_.localization.max_range_m;
+        const double forward_sector_clearance = sector_min_clearance(
+            lidar_hits_,
+            estimate_.yaw,
+            0.0,
+            std::max(config_.gap_extraction.recovery_sector_half_angle_rad, 0.20),
+            fallback_front_clearance);
+        const double escape_clearance = std::max(
+            config_.localization.obstacle_stop_distance_m + 0.09,
+            config_.localization.min_valid_range_m + 0.22);
+        if (!(forward_sector_clearance > escape_clearance)) {
+            return false;
+        }
+
+        const Vec2 goal = world_.goal();
+        double escape_yaw_rate = 0.0;
+        if (is_inside_bounds(world_, goal) && distance(estimate_.position, goal) > 0.05) {
+            const double heading_error = wrap_angle(angle_to(estimate_.position, goal) - estimate_.yaw);
+            escape_yaw_rate = clamp_value(
+                0.48 * heading_error,
+                -0.24,
+                0.24);
+            if (std::abs(escape_yaw_rate) < 0.055 && std::abs(heading_error) > 0.10) {
+                escape_yaw_rate = signum(heading_error > 0.0 ? 1 : -1) * 0.055;
+            }
+        } else {
+            escape_yaw_rate = 0.10 * (startup_scan_direction_ >= 0.0 ? 1.0 : -1.0);
+        }
+
+        const double clearance_scale = clamp_value(
+            (forward_sector_clearance - escape_clearance) / 0.35,
+            0.0,
+            1.0);
+        const double escape_speed = clamp_value(
+            config_.gap_extraction.strict_scan_escape_speed_mps *
+                (0.55 + 0.45 * clearance_scale),
+            0.0,
+            std::max(config_.gap_extraction.strict_scan_escape_speed_mps, 0.0));
+
+        allow_unlocked_recovery_motion = true;
+        gap_recovery_turn_active_ = true;
+        use_direct_yaw_rate_command = true;
+        direct_yaw_rate_command = escape_yaw_rate;
+        commanded_speed_ = escape_speed;
+        commanded_steer_angle_ = 0.0;
+        last_command_.target_speed = escape_speed;
+        last_command_.target_curvature = 0.0;
+        last_mpc_command_.reset();
+        return true;
+    };
 
     VehicleModelState tracking_state = build_tracking_state(
         estimate_.position,
@@ -3949,6 +4043,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             0.0,
             0.85 * config_.drive.max_yaw_rate);
         last_mpc_command_.reset();
+        apply_strict_scan_escape();
     } else if (have_reference_trajectory) {
         const MpcCommand mpc_command = mpc_follower_.solve(
             geometry_,
@@ -4160,15 +4255,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
-            direct_yaw_rate_command = startup_scan_direction_ * clamp_value(
-                std::abs(config_.gap_extraction.startup_scan_yaw_rate),
-                0.0,
-                0.65 * config_.drive.max_yaw_rate);
-            commanded_speed_ = 0.0;
-            commanded_steer_angle_ = 0.0;
-            last_command_.target_speed = 0.0;
-            last_command_.target_curvature = 0.0;
-            last_mpc_command_.reset();
+            if (!apply_strict_scan_escape()) {
+                direct_yaw_rate_command = startup_scan_direction_ * clamp_value(
+                    std::abs(config_.gap_extraction.startup_scan_yaw_rate),
+                    0.0,
+                    0.65 * config_.drive.max_yaw_rate);
+                commanded_speed_ = 0.0;
+                commanded_steer_angle_ = 0.0;
+                last_command_.target_speed = 0.0;
+                last_command_.target_curvature = 0.0;
+                last_mpc_command_.reset();
+            }
         } else {
         const double heading_limit = clamp_value(
             config_.gap_extraction.recovery_heading_search_half_angle_rad,
@@ -4469,7 +4566,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         commanded_speed_ = last_command_.target_speed;
     }
 
-    if (strict_locked_motion && !locked_gap_goal_.has_value()) {
+    if (strict_locked_motion && !locked_gap_goal_.has_value() && !allow_unlocked_recovery_motion) {
         commanded_speed_ = 0.0;
         last_command_.target_speed = 0.0;
         if (!use_direct_yaw_rate_command) {
