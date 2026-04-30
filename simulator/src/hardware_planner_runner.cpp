@@ -4292,18 +4292,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const double crossing_progress =
             locked_gap_longitudinal_progress(estimate_.position) + std::max(geometry_.cg_to_front, 0.0);
         const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
+        const double gate_distance = distance(estimate_.position, *locked_gap_goal_);
         const double crossing_margin =
             std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
         const double pass_lateral_limit =
             locked_gap_corridor_half_width_m_ +
             std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
         const double near_crossing_margin = clamp_value(
-            0.12 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-            0.015,
-            0.030);
+            0.30 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+            0.035,
+            0.055);
+        const double near_crossing_gate_radius = clamp_value(
+            1.10 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+            0.16,
+            std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.22), 0.16));
         locked_gap_about_to_cross =
             lateral_offset <= pass_lateral_limit &&
-            crossing_progress + near_crossing_margin >= crossing_margin;
+            crossing_progress + near_crossing_margin >= crossing_margin &&
+            gate_distance <= near_crossing_gate_radius;
     }
     if ((config_.planner_safety_stop_enabled || dynamic_gap_safety_stop_enabled) &&
         !scanning_startup &&
@@ -5105,9 +5111,22 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             const double lateral_distance =
                 std::max(lateral_offset - pass_lateral_limit, 0.0);
             distance_to_goal_ = std::max(crossing_distance, lateral_distance);
+            const double near_pass_longitudinal_slack = clamp_value(
+                0.30 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+                0.035,
+                0.055);
+            const double near_pass_gate_radius = clamp_value(
+                1.10 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+                0.16,
+                std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.22), 0.16));
+            const double gate_distance = distance(estimate_.position, *locked_gap_goal_);
+            const bool gate_nearly_crossed =
+                lateral_offset <= pass_lateral_limit &&
+                crossing_distance <= near_pass_longitudinal_slack &&
+                gate_distance <= near_pass_gate_radius;
             const bool gate_crossed =
                 lateral_offset <= pass_lateral_limit &&
-                crossing_progress >= crossing_margin;
+                (crossing_progress >= crossing_margin || gate_nearly_crossed);
             if (gate_crossed) {
                 const Vec2 completed_gap = *locked_gap_goal_;
                 locked_gap_crossed_ = true;
