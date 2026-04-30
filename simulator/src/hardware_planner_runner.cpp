@@ -2844,14 +2844,27 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 (35.0 * kPi / 180.0),
             0.0,
             1.8);
+        const double rear_search_score =
+            strict_locked_gate_motion_enabled()
+                ? clamp_value(
+                      (abs_candidate_local_angle - 95.0 * kPi / 180.0) /
+                          (70.0 * kPi / 180.0),
+                      0.0,
+                      1.0) *
+                      clamp_value(
+                          unstructured_no_candidate_scan_elapsed_s_ /
+                              std::max(config_.gap_extraction.strict_scan_escape_after_s, 1.0),
+                          0.0,
+                          1.0)
+                : 0.0;
 
         candidates.push_back({
             base_score + 1.95 * progress_score + 1.55 * distance_score +
                 1.35 * forward_alignment + 1.20 * goal_alignment +
                 1.25 * goal_progress + 1.10 * clearance_score +
-                continuity_bonus_for_target(target) -
-                1.65 * lateral_heading_penalty -
-                2.10 * reverse_heading_penalty,
+                continuity_bonus_for_target(target) + 1.25 * rear_search_score -
+                1.45 * lateral_heading_penalty -
+                1.70 * reverse_heading_penalty,
             target_distance,
             candidate_local_angle,
             candidate_world_angle,
@@ -2982,9 +2995,6 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const double left_gap_angle = left_boundary.local_angle;
         const double right_gap_angle = right_boundary.local_angle;
         const double center_local_angle = wrap_angle(0.5 * (left_gap_angle + right_gap_angle));
-        if (std::abs(center_local_angle) > 0.88 * kPi) {
-            return;
-        }
 
         const double mean_sector_distance = sum_sector_distance / static_cast<double>(sector_beam_count);
         const double support_distance = 0.65 * min_sector_distance + 0.35 * mean_sector_distance;
@@ -3045,6 +3055,152 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             range_jump_bonus + 1.80 * width_score + 0.85 * depth_score +
                 1.30 * goal_alignment + 0.90 * forward_alignment +
                 0.65 * near_obstacle_aperture_score,
+            gap_width);
+    };
+
+    auto add_wrapped_gap_sector_candidate = [&](int tail_start_index,
+                                                int tail_end_index,
+                                                int head_start_index,
+                                                int head_end_index,
+                                                int left_boundary_index,
+                                                int right_boundary_index,
+                                                bool require_depth_contrast,
+                                                bool target_near_aperture,
+                                                double range_jump_bonus) {
+        if (tail_start_index < 0 ||
+            tail_end_index < tail_start_index ||
+            head_start_index < 0 ||
+            head_end_index < head_start_index ||
+            tail_end_index >= static_cast<int>(beams.size()) ||
+            head_end_index >= static_cast<int>(beams.size()) ||
+            left_boundary_index < 0 ||
+            right_boundary_index >= static_cast<int>(beams.size()) ||
+            left_boundary_index >= tail_start_index ||
+            right_boundary_index <= head_end_index) {
+            return;
+        }
+
+        double min_sector_distance = std::numeric_limits<double>::infinity();
+        double sum_sector_distance = 0.0;
+        int sector_beam_count = 0;
+        auto accumulate_sector = [&](int start_index, int end_index) {
+            for (int i = start_index; i <= end_index; ++i) {
+                min_sector_distance = std::min(min_sector_distance, beams[static_cast<size_t>(i)].distance);
+                sum_sector_distance += beams[static_cast<size_t>(i)].distance;
+                ++sector_beam_count;
+            }
+        };
+        accumulate_sector(tail_start_index, tail_end_index);
+        accumulate_sector(head_start_index, head_end_index);
+        if (sector_beam_count <= 0 || !std::isfinite(min_sector_distance)) {
+            return;
+        }
+
+        const double start_angle = beams[static_cast<size_t>(tail_start_index)].local_angle;
+        const double end_angle = beams[static_cast<size_t>(head_end_index)].local_angle + 2.0 * kPi;
+        const double angular_span = std::max(
+            end_angle - start_angle + beam_angle_resolution,
+            beam_angle_resolution);
+        if (angular_span < std::max(config_.gap_extraction.min_gap_angle_rad, beam_angle_resolution)) {
+            return;
+        }
+
+        const ScanBeam& left_boundary = beams[static_cast<size_t>(left_boundary_index)];
+        const ScanBeam& right_boundary = beams[static_cast<size_t>(right_boundary_index)];
+        const bool have_left_obstacle =
+            left_boundary.distance < planning_range - 0.03 &&
+            left_boundary.distance < config_.localization.max_range_m - 0.03;
+        const bool have_right_obstacle =
+            right_boundary.distance < planning_range - 0.03 &&
+            right_boundary.distance < config_.localization.max_range_m - 0.03;
+        if (!have_left_obstacle || !have_right_obstacle) {
+            return;
+        }
+
+        const double depth_contrast =
+            min_sector_distance - std::max(left_boundary.distance, right_boundary.distance);
+        const bool near_obstacle_boundaries =
+            left_boundary.distance < free_sector_threshold &&
+            right_boundary.distance < free_sector_threshold;
+        if (require_depth_contrast &&
+            !near_obstacle_boundaries &&
+            depth_contrast < min_depth_contrast) {
+            return;
+        }
+
+        const double gap_width = distance(left_boundary.hit, right_boundary.hit);
+        if (!(gap_width >= required_gap_width)) {
+            return;
+        }
+
+        const double left_gap_angle = left_boundary.local_angle;
+        const double right_gap_angle = right_boundary.local_angle + 2.0 * kPi;
+        const double center_local_angle = wrap_angle(0.5 * (left_gap_angle + right_gap_angle));
+        const double mean_sector_distance = sum_sector_distance / static_cast<double>(sector_beam_count);
+        const double support_distance = 0.65 * min_sector_distance + 0.35 * mean_sector_distance;
+        const double target_distance_cap = std::min(
+            max_target_distance,
+            support_distance - std::max(inflate_radius * 0.55, 0.035));
+        if (!(target_distance_cap >= min_target_distance)) {
+            return;
+        }
+
+        const double center_world_angle = wrap_angle(estimate_.yaw + center_local_angle);
+        const Vec2 center_axis{std::cos(center_world_angle), std::sin(center_world_angle)};
+        double nominal_target_distance = config_.gap_extraction.target_distance_scale * support_distance;
+        if (target_near_aperture) {
+            const double left_boundary_distance = dot_product(
+                {left_boundary.hit.x - lidar_origin.x, left_boundary.hit.y - lidar_origin.y},
+                center_axis);
+            const double right_boundary_distance = dot_product(
+                {right_boundary.hit.x - lidar_origin.x, right_boundary.hit.y - lidar_origin.y},
+                center_axis);
+            const double aperture_distance =
+                0.5 * (left_boundary_distance + right_boundary_distance);
+            if (!std::isfinite(aperture_distance) || aperture_distance <= 0.0) {
+                return;
+            }
+            const double aperture_margin = clamp_value(
+                config_.gap_extraction.gap_aperture_target_margin_m,
+                0.03,
+                0.18);
+            nominal_target_distance = aperture_distance + aperture_margin;
+        }
+
+        const double target_distance = clamp_value(
+            nominal_target_distance,
+            min_target_distance,
+            target_distance_cap);
+        const Vec2 target{
+            lidar_origin.x + std::cos(center_world_angle) * target_distance,
+            lidar_origin.y + std::sin(center_world_angle) * target_distance,
+        };
+        const double width_score = clamp_value(
+            (gap_width - required_gap_width) / std::max(required_gap_width, 0.05),
+            0.0,
+            1.0);
+        const double depth_score = clamp_value(
+            depth_contrast / std::max(config_.gap_extraction.max_target_distance_m, 0.10),
+            0.0,
+            1.4);
+        const double forward_alignment = 0.5 * (1.0 + std::cos(center_local_angle));
+        const double goal_alignment = have_global_goal
+            ? 0.5 * (1.0 + std::cos(wrap_angle(center_world_angle - goal_heading)))
+            : forward_alignment;
+        const double near_obstacle_aperture_score = clamp_value(
+            (0.95 - std::max(left_boundary.distance, right_boundary.distance)) / 0.55,
+            0.0,
+            1.0);
+        const double rear_aperture_score = clamp_value(
+            (std::abs(center_local_angle) - 110.0 * kPi / 180.0) /
+                (55.0 * kPi / 180.0),
+            0.0,
+            1.0);
+        try_add_candidate(
+            target,
+            range_jump_bonus + 1.80 * width_score + 0.85 * depth_score +
+                1.30 * goal_alignment + 0.90 * forward_alignment +
+                0.65 * near_obstacle_aperture_score + 0.75 * rear_aperture_score,
             gap_width);
     };
 
@@ -3115,6 +3271,35 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             });
             range_jump_sector_start = -1;
             range_jump_left_boundary = -1;
+        }
+    }
+
+    if (!beams.empty() &&
+        beams.front().distance >= free_sector_threshold &&
+        beams.back().distance >= free_sector_threshold) {
+        int head_end_index = 0;
+        while (head_end_index + 1 < static_cast<int>(beams.size()) &&
+               beams[static_cast<size_t>(head_end_index + 1)].distance >= free_sector_threshold) {
+            ++head_end_index;
+        }
+
+        int tail_start_index = static_cast<int>(beams.size()) - 1;
+        while (tail_start_index - 1 >= 0 &&
+               beams[static_cast<size_t>(tail_start_index - 1)].distance >= free_sector_threshold) {
+            --tail_start_index;
+        }
+
+        if (head_end_index + 1 < tail_start_index) {
+            add_wrapped_gap_sector_candidate(
+                tail_start_index,
+                static_cast<int>(beams.size()) - 1,
+                0,
+                head_end_index,
+                tail_start_index - 1,
+                head_end_index + 1,
+                false,
+                true,
+                0.25);
         }
     }
 
@@ -4413,13 +4598,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             locked_gap_corridor_half_width_m_ +
             std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
         const double near_crossing_margin = clamp_value(
-            0.36 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-            0.035,
-            0.065);
+            0.46 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+            0.045,
+            0.085);
         const double near_crossing_gate_radius = clamp_value(
-            1.10 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-            0.16,
-            std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.22), 0.16));
+            1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+            0.18,
+            std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
         locked_gap_about_to_cross =
             lateral_offset <= pass_lateral_limit &&
             crossing_progress + near_crossing_margin >= crossing_margin &&
@@ -5226,13 +5411,13 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                 std::max(lateral_offset - pass_lateral_limit, 0.0);
             distance_to_goal_ = std::max(crossing_distance, lateral_distance);
             const double near_pass_longitudinal_slack = clamp_value(
-                0.36 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-                0.035,
-                0.065);
+                0.46 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+                0.045,
+                0.085);
             const double near_pass_gate_radius = clamp_value(
-                1.10 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-                0.16,
-                std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.22), 0.16));
+                1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+                0.18,
+                std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
             const double gate_distance = distance(estimate_.position, *locked_gap_goal_);
             const bool gate_nearly_crossed =
                 lateral_offset <= pass_lateral_limit &&

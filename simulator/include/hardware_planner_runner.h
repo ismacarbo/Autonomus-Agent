@@ -94,7 +94,7 @@ struct GapExtractionConfig {
     double gap_goal_tolerance_m = 0.18;
     double gap_crossing_margin_m = 0.02;
     double gap_goal_acceptance_radius_m = 0.36;
-    double gap_goal_acceptance_lateral_slack_m = 0.10;
+    double gap_goal_acceptance_lateral_slack_m = 0.12;
     double gap_goal_cruise_speed_mps = 0.16;
     int min_passed_gates_to_complete = 2;
     int locked_gap_grace_frames = 42;
