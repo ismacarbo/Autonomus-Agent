@@ -2502,7 +2502,9 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     const double min_target_distance = clamp_value(
         config_.gap_extraction.min_target_distance_m,
-        config_.localization.obstacle_stop_distance_m + 0.02,
+        std::max(
+            config_.localization.min_valid_range_m + 0.08,
+            std::max(geometry_.cg_to_front + 0.04, 0.20)),
         planning_range * 0.68);
     const double max_target_distance = clamp_value(
         config_.gap_extraction.max_target_distance_m,
@@ -2894,12 +2896,22 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             beam_distances.end());
         range_quantile_threshold = beam_distances[quantile_index];
     }
-    const double free_sector_threshold = clamp_value(
-        std::max(
-            range_quantile_threshold,
-            nearest_beam_distance + std::max(0.30, 0.55 * required_gap_width)),
-        free_threshold,
-        std::max(free_threshold, planning_range - 0.05));
+    const double close_scene_margin = clamp_value(0.28 * required_gap_width, 0.09, 0.14);
+    const double regular_scene_margin = clamp_value(0.48 * required_gap_width, 0.16, 0.26);
+    const double free_sector_threshold =
+        nearest_beam_distance < free_threshold + 0.10
+            ? clamp_value(
+                  nearest_beam_distance + close_scene_margin,
+                  free_threshold,
+                  std::max(free_threshold, planning_range - 0.05))
+            : clamp_value(
+                  std::max(
+                      std::min(
+                          range_quantile_threshold,
+                          nearest_beam_distance + 0.70 * required_gap_width),
+                      nearest_beam_distance + regular_scene_margin),
+                  free_threshold,
+                  std::max(free_threshold, planning_range - 0.05));
 
     auto add_gap_sector_candidate = [&](int start_index,
                                         int end_index,
@@ -2976,7 +2988,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const double support_distance = 0.65 * min_sector_distance + 0.35 * mean_sector_distance;
         const double target_distance_cap = std::min(
             max_target_distance,
-            support_distance - std::max(inflate_radius * 0.8, 0.04));
+            support_distance - std::max(inflate_radius * 0.55, 0.035));
         if (!(target_distance_cap >= min_target_distance)) {
             return;
         }
@@ -3013,7 +3025,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const double width_score = clamp_value(
             (gap_width - required_gap_width) / std::max(required_gap_width, 0.05),
             0.0,
-            1.5);
+            1.0);
         const double depth_score = clamp_value(
             depth_contrast / std::max(config_.gap_extraction.max_target_distance_m, 0.10),
             0.0,
@@ -3022,10 +3034,15 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         const double goal_alignment = have_global_goal
             ? 0.5 * (1.0 + std::cos(wrap_angle(center_world_angle - goal_heading)))
             : forward_alignment;
+        const double near_obstacle_aperture_score = clamp_value(
+            (0.95 - std::max(left_boundary.distance, right_boundary.distance)) / 0.55,
+            0.0,
+            1.0);
         try_add_candidate(
             target,
             range_jump_bonus + 1.80 * width_score + 0.85 * depth_score +
-                1.30 * goal_alignment + 0.90 * forward_alignment,
+                1.30 * goal_alignment + 0.90 * forward_alignment +
+                0.65 * near_obstacle_aperture_score,
             gap_width);
     };
 
@@ -4299,9 +4316,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             locked_gap_corridor_half_width_m_ +
             std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
         const double near_crossing_margin = clamp_value(
-            0.30 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+            0.36 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
             0.035,
-            0.055);
+            0.065);
         const double near_crossing_gate_radius = clamp_value(
             1.10 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
             0.16,
@@ -5112,9 +5129,9 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                 std::max(lateral_offset - pass_lateral_limit, 0.0);
             distance_to_goal_ = std::max(crossing_distance, lateral_distance);
             const double near_pass_longitudinal_slack = clamp_value(
-                0.30 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+                0.36 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
                 0.035,
-                0.055);
+                0.065);
             const double near_pass_gate_radius = clamp_value(
                 1.10 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
                 0.16,
