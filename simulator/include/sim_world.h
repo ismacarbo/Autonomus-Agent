@@ -18,6 +18,7 @@ const char* gate_behavior_mode_name(GateBehaviorMode mode);
 enum class EnvironmentMode {
     UnstructuredGates = 0,
     StructuredRoad = 1,
+    MixedRoadGates = 2,
 };
 
 const char* environment_mode_name(EnvironmentMode mode);
@@ -80,6 +81,8 @@ class WorldMap {
                                       GateBehaviorMode gate_behavior = GateBehaviorMode::Static,
                                       std::uint32_t gate_seed = 0);
     static WorldMap structured_demo(StructuredMapPreset preset = StructuredMapPreset::ValidationRoad);
+    static WorldMap mixed_demo();
+    static WorldMap mixed_hardware_demo();
     static WorldMap thesis_demo(UnstructuredMapPreset preset = UnstructuredMapPreset::RobotValidation,
                                 GateBehaviorMode gate_behavior = GateBehaviorMode::Static,
                                 std::uint32_t gate_seed = 0);

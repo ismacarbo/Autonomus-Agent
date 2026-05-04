@@ -330,12 +330,15 @@ bool read_world(const std::vector<std::uint8_t>& data, std::size_t* offset, Worl
     }
 
     const EnvironmentMode env = static_cast<EnvironmentMode>(environment_mode);
-    WorldMap restored = env == EnvironmentMode::StructuredRoad
-                            ? WorldMap::structured_demo(static_cast<StructuredMapPreset>(structured_preset))
-                            : WorldMap::unstructured_demo(
-                                  static_cast<UnstructuredMapPreset>(unstructured_preset),
-                                  static_cast<GateBehaviorMode>(gate_behavior),
-                                  gate_seed);
+    WorldMap restored =
+        env == EnvironmentMode::StructuredRoad
+            ? WorldMap::structured_demo(static_cast<StructuredMapPreset>(structured_preset))
+            : (env == EnvironmentMode::MixedRoadGates
+                   ? WorldMap::mixed_hardware_demo()
+                   : WorldMap::unstructured_demo(
+                         static_cast<UnstructuredMapPreset>(unstructured_preset),
+                         static_cast<GateBehaviorMode>(gate_behavior),
+                         gate_seed));
 
     restored.set_bounds(bounds);
     restored.set_start(start);

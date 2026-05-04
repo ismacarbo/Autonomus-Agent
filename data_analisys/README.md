@@ -175,6 +175,28 @@ normalizzata perche la mappa simulata e il test reale non sono ancora lo stesso 
 Per una validazione finale forte, andranno raccolti run simulati e reali con lo stesso
 protocollo di gate/mappa.
 
+## Analisi unstructured con gate dinamici LiDAR
+
+Per la validazione unstructured con gate generati dal LiDAR, il confronto punto-a-punto
+non e' equivalente alla modalita structured. Usa invece la pipeline dedicata:
+
+```bash
+python -m data_analisys.unstructured_dynamic_gate_analysis
+```
+
+Per aprire una app Matplotlib interattiva con salvataggio PNG/SVG/PDF:
+
+```bash
+python -m data_analisys.unstructured_dynamic_gate_app
+```
+
+Output principali:
+
+- `data_analisys/outputs/unstructured_dynamic_gate_validation_20260503/dynamic_gate_metrics.csv`
+- `data_analisys/outputs/unstructured_dynamic_gate_validation_20260503/thesis_unstructured_dynamic_gate_analysis.md`
+- figure SVG su lock del gate, reference windows, timing e clearance
+- copia stabile in `documentation/Unstructured_Dynamic_Gate_Data_Analysis_20260503.md`
+
 ## Idea del fitting
 
 Il fitting iniziale e volutamente semplice e ispezionabile. Per ogni segnale trattiamo il

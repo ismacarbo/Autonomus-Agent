@@ -61,6 +61,8 @@ struct VehicleSnapshot {
 
 struct TelemetrySample {
     double time = 0.0;
+    double x = 0.0;
+    double y = 0.0;
     double speed = 0.0;
     double accel = 0.0;
     double yaw = 0.0;
@@ -97,6 +99,18 @@ struct TelemetrySample {
     double step_ms = 0.0;
     double visible_gates = 0.0;
     double lidar_samples = 0.0;
+    double chosen_gate_index = -1.0;
+    double chosen_gate_distance = -1.0;
+    double passed_gates = 0.0;
+    double candidate_gates = 0.0;
+    double dynamic_gap_gates = 0.0;
+    double planner_has_reference = 0.0;
+    double mixed_mode = 0.0;
+    double mixed_gate_score = 0.0;
+    double mixed_structured_score = 0.0;
+    double mixed_gate_confidence = 0.0;
+    double mixed_switches = 0.0;
+    double mixed_aborts = 0.0;
 };
 
 struct SimConfig {
@@ -109,6 +123,7 @@ struct SimConfig {
     double cruise_speed_limit = 0.75;
     bool imu_enabled = true;
     bool lidar_enabled = true;
+    bool dynamic_lidar_gates = false;
     RangeSensorProfile range_sensor_profile = RangeSensorProfile::RplidarA1;
     GateBehaviorMode gate_behavior = GateBehaviorMode::Static;
     std::uint32_t gate_seed = 7;
@@ -175,6 +190,7 @@ class PlannerDrivenVehicleSim {
     double distance_to_goal() const { return distance_to_goal_; }
     double min_lidar_distance() const { return min_lidar_distance_; }
     int chosen_gate_index() const { return chosen_gate_index_; }
+    int passed_gate_count() const { return count_passed_gates(); }
     bool imu_enabled() const { return config_.imu_enabled; }
     bool lidar_enabled() const { return config_.lidar_enabled; }
     RangeSensorProfile range_sensor_profile() const { return config_.range_sensor_profile; }
@@ -201,6 +217,7 @@ class PlannerDrivenVehicleSim {
     double active_lidar_range() const;
     void load_world(WorldMap world);
     void set_sensor_suite(bool imu_enabled, bool lidar_enabled, RangeSensorProfile profile);
+    void set_dynamic_lidar_gates(bool enabled);
     void set_gate_behavior(GateBehaviorMode mode, std::uint32_t seed);
     void regenerate_gate_layout(std::uint32_t seed);
     void set_vehicle_stack(VehicleModelKind model, TrackingControllerMode controller);
@@ -208,6 +225,13 @@ class PlannerDrivenVehicleSim {
     const VehicleTuningOverrides& tuning_overrides() const { return tuning_overrides_; }
 
   private:
+    struct DynamicLidarGateCandidate {
+        Vec2 position;
+        double heading = 0.0;
+        double score = 0.0;
+        double width = 0.0;
+    };
+
     void rebuild_vehicle_model();
     void sync_road_from_world();
     void sync_planner_from_vehicle(bool reset_relative_state);
@@ -220,6 +244,16 @@ class PlannerDrivenVehicleSim {
     void update_selected_trajectory();
     void plan_if_needed();
     void refresh_gate_diagnostics();
+    bool use_dynamic_lidar_gates() const;
+    bool mixed_mode_enabled() const;
+    void update_mixed_arbitration();
+    void leave_mixed_gate_mode(bool aborted);
+    double compute_mixed_gate_score() const;
+    double compute_mixed_structured_score() const;
+    double compute_mixed_road_forward_clearance(double lookahead_m) const;
+    void update_dynamic_lidar_gates();
+    std::vector<DynamicLidarGateCandidate> extract_dynamic_lidar_gate_candidates() const;
+    void update_unstructured_gate_progress();
     void update_gate_activation_window();
     std::vector<int> active_gate_indices() const;
     double compute_min_lidar() const;
@@ -283,6 +317,20 @@ class PlannerDrivenVehicleSim {
     double structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
     Vec2 structured_goal_position_{};
     int chosen_gate_index_ = -1;
+    int dynamic_lidar_passed_gates_ = 0;
+    int dynamic_lidar_candidate_count_ = 0;
+    int dynamic_lidar_gate_hold_steps_ = 0;
+    int dynamic_lidar_stable_steps_ = 0;
+    double dynamic_lidar_active_gate_width_ = 0.0;
+    double dynamic_lidar_active_gate_score_ = 0.0;
+    std::vector<Vec2> dynamic_lidar_passed_gate_positions_;
+    bool mixed_gate_mode_active_ = false;
+    int mixed_gate_rejoin_cooldown_steps_ = 0;
+    int mixed_switch_count_ = 0;
+    int mixed_abort_count_ = 0;
+    double mixed_gate_score_ = 0.0;
+    double mixed_structured_score_ = 1.0;
+    double mixed_gate_confidence_ = 0.0;
     bool goal_reached_ = false;
     bool collision_ = false;
     bool lidar_scan_fresh_ = false;

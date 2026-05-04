@@ -676,6 +676,8 @@ const char* environment_mode_name(EnvironmentMode mode) {
             return "Unstructured Gates";
         case EnvironmentMode::StructuredRoad:
             return "Structured Road";
+        case EnvironmentMode::MixedRoadGates:
+            return "Mixed Road/Gates";
         default:
             return "Unknown";
     }
@@ -838,20 +840,17 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
             };
             break;
         case UnstructuredMapPreset::HardwareLab:
-            world.bounds_ = {0.0, 0.0, 2.20, 2.00};
+            world.bounds_ = {0.0, 0.0, 2.70, 2.40};
             world.start_ = {0.28, 1.00};
-            world.goal_ = {1.94, 1.44};
+            world.goal_ = {2.35, 1.15};
             world.start_heading_ = 0.0;
             world.obstacles_ = {
-                {1.02, 0.78, 1.30, 1.22},
-                {1.60, 0.00, 1.82, 0.60},
-                {1.60, 1.28, 1.82, 2.00},
+                {0.90, 0.00, 1.08, 0.55},
+                {1.70, 0.00, 1.88, 0.60},
             };
             world.gate_templates_ = {
-                {"gate_entry", {0.92, 1.00}, {0.92, 1.00}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-                {"upper_bypass", {1.26, 1.46}, {1.26, 1.46}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-                {"exit_align", {1.56, 1.04}, {1.56, 1.04}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-                {"goal_approach", {1.86, 1.18}, {1.86, 1.18}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"gate_entry", {1.18, 1.00}, {1.18, 1.00}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"exit_align", {2.00, 1.15}, {2.00, 1.15}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
                 {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
             };
             break;
@@ -926,6 +925,105 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
     return world;
 }
 
+WorldMap WorldMap::mixed_demo() {
+    WorldMap world;
+    world.environment_mode_ = EnvironmentMode::MixedRoadGates;
+    world.unstructured_preset_ = UnstructuredMapPreset::RobotValidation;
+    world.structured_preset_ = StructuredMapPreset::ValidationRoad;
+    world.bounds_ = {-1.00, -0.80, 9.00, 5.60};
+
+    std::vector<Vec2> mixed_track_seed = {
+        {0.55, 2.70},
+        {1.20, 4.35},
+        {2.55, 4.85},
+        {3.85, 4.55},
+        {4.75, 3.30},
+        {5.85, 2.85},
+        {7.25, 3.55},
+        {8.20, 2.80},
+        {7.70, 1.55},
+        {6.35, 1.05},
+        {4.75, 0.88},
+        {3.00, 0.78},
+        {1.42, 1.00},
+        {0.48, 1.82},
+    };
+    mixed_track_seed = close_polyline_loop(std::move(mixed_track_seed), 0.45);
+    mixed_track_seed = chaikin_closed_polyline(mixed_track_seed, 2);
+    world.road_centerline_ = resample_closed_polyline(mixed_track_seed, 0.24);
+    world.start_ = world.road_centerline_.front();
+    world.goal_ = world.start_;
+    world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+
+    world.obstacles_ = {
+        // Mixed validation: the first obstacles shape the start gate, while
+        // the center block cuts the road and leaves a safe lateral bypass.
+        {-0.78, 1.90, -0.10, 3.55},
+        {0.00, 1.90, 0.18, 3.55},
+        {2.20, 2.05, 3.05, 2.78},
+        {4.72, 2.72, 5.55, 3.52},
+        {7.20, 4.78, 7.75, 5.25},
+    };
+
+    world.gate_templates_ = {
+        {"left_gate", {0.56, 2.72}, {0.56, 2.72}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"inner_shortcut", {3.42, 2.95}, {3.42, 2.95}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"block_bypass", {5.30, 4.08}, {5.30, 4.08}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"road_rejoin", {6.18, 3.36}, {6.18, 3.36}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"outer_decoy", {7.28, 1.58}, {7.28, 1.58}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"late_rejoin", {7.45, 3.15}, {7.45, 3.15}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+    };
+    world.gates_ = world.gate_templates_;
+    recompute_gate_headings(&world.gates_, world.goal_);
+    world.gate_templates_ = world.gates_;
+    world.gate_behavior_ = GateBehaviorMode::Static;
+    world.gate_seed_ = 0;
+    return world;
+}
+
+WorldMap WorldMap::mixed_hardware_demo() {
+    WorldMap world;
+    world.environment_mode_ = EnvironmentMode::MixedRoadGates;
+    world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
+    world.structured_preset_ = StructuredMapPreset::HardwareTrack;
+    world.bounds_ = {0.0, 0.0, 2.20, 1.80};
+
+    // Compact real-lab mixed validation: the reference is intentionally close
+    // to the 2 m manual hardware maps, with one road block and a lateral bypass.
+    world.road_centerline_ = {
+        {0.24, 0.72},
+        {0.48, 0.72},
+        {0.78, 0.72},
+        {1.04, 0.72},
+        {1.32, 0.72},
+        {1.62, 0.72},
+        {1.94, 0.72},
+    };
+    world.start_ = world.road_centerline_.front();
+    world.goal_ = world.road_centerline_.back();
+    world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+
+    world.obstacles_ = {
+        // Physical layout suggestion: a block intersects the road, while the
+        // upper side remains a safe LiDAR-visible exit and rejoin corridor.
+        {0.98, 0.48, 1.20, 0.92},
+        {0.76, 0.16, 1.44, 0.34},
+    };
+
+    world.gate_templates_ = {
+        {"block_bypass", {1.18, 1.12}, {1.18, 1.12}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"road_rejoin", {1.56, 0.82}, {1.56, 0.82}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+    };
+    world.gates_ = world.gate_templates_;
+    recompute_gate_headings(&world.gates_, world.goal_);
+    world.gate_templates_ = world.gates_;
+    world.gate_behavior_ = GateBehaviorMode::Static;
+    world.gate_seed_ = 0;
+    return world;
+}
+
 WorldMap WorldMap::thesis_demo(UnstructuredMapPreset preset,
                                GateBehaviorMode gate_behavior,
                                std::uint32_t gate_seed) {
@@ -933,7 +1031,7 @@ WorldMap WorldMap::thesis_demo(UnstructuredMapPreset preset,
 }
 
 void WorldMap::set_gate_behavior(GateBehaviorMode gate_behavior, std::uint32_t gate_seed) {
-    if (environment_mode_ != EnvironmentMode::UnstructuredGates) {
+    if (environment_mode_ == EnvironmentMode::StructuredRoad) {
         gate_behavior_ = GateBehaviorMode::Static;
         gate_seed_ = 0;
         gates_.clear();
@@ -946,7 +1044,7 @@ void WorldMap::set_gate_behavior(GateBehaviorMode gate_behavior, std::uint32_t g
 }
 
 void WorldMap::reset_gate_layout(std::uint32_t gate_seed) {
-    if (environment_mode_ != EnvironmentMode::UnstructuredGates) {
+    if (environment_mode_ == EnvironmentMode::StructuredRoad) {
         return;
     }
     gate_seed_ = gate_seed;
@@ -988,7 +1086,7 @@ void WorldMap::reset_gate_layout(std::uint32_t gate_seed) {
 }
 
 void WorldMap::update_gate_layout(double sim_time_s) {
-    if (environment_mode_ != EnvironmentMode::UnstructuredGates) {
+    if (environment_mode_ == EnvironmentMode::StructuredRoad) {
         return;
     }
     if (gate_behavior_ != GateBehaviorMode::Mobile) {
@@ -1026,12 +1124,15 @@ void WorldMap::finalize_editor_changes() {
         normalize_rect(&obstacle);
     }
 
-    if (environment_mode_ == EnvironmentMode::StructuredRoad) {
+    if (environment_mode_ == EnvironmentMode::StructuredRoad ||
+        environment_mode_ == EnvironmentMode::MixedRoadGates) {
         structured_preset_ = StructuredMapPreset::Custom;
-        gates_.clear();
-        gate_templates_.clear();
-        gate_behavior_ = GateBehaviorMode::Static;
-        gate_seed_ = 0;
+        if (environment_mode_ == EnvironmentMode::StructuredRoad) {
+            gates_.clear();
+            gate_templates_.clear();
+            gate_behavior_ = GateBehaviorMode::Static;
+            gate_seed_ = 0;
+        }
 
         road_centerline_ = sanitize_structured_centerline(bounds_, start_, goal_, road_centerline_);
         if (points_form_closed_loop(road_centerline_, 0.45) && road_centerline_.size() > 2) {
@@ -1046,10 +1147,14 @@ void WorldMap::finalize_editor_changes() {
             goal_ = start_;
         }
         start_heading_ = heading_from_first_segment(road_centerline_, start_heading_);
-        return;
+        if (environment_mode_ == EnvironmentMode::StructuredRoad) {
+            return;
+        }
     }
 
-    road_centerline_.clear();
+    if (environment_mode_ == EnvironmentMode::UnstructuredGates) {
+        road_centerline_.clear();
+    }
     unstructured_preset_ = UnstructuredMapPreset::Custom;
 
     std::vector<GateSpec> sanitized;

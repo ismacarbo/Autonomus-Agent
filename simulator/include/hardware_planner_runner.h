@@ -406,6 +406,9 @@ class HardwarePlannerRunner {
     int required_unstructured_gap_pass_count() const;
     bool dynamic_gap_mode_enabled() const;
     bool strict_locked_gate_motion_enabled() const;
+    double compute_mixed_road_forward_clearance(double lookahead_m) const;
+    double compute_mixed_road_block_score(double lookahead_m) const;
+    void count_mixed_gate_crossing_if_needed();
     bool perception_map_ready() const;
     bool unstructured_perception_only_mode() const;
     bool dynamic_gap_point_allowed(const Vec2& position) const;

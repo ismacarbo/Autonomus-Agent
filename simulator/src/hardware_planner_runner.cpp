@@ -26,6 +26,20 @@ struct LidarSearchWindow {
     double yaw_step = 0.0;
 };
 
+bool world_has_structured_reference(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::StructuredRoad ||
+           world.environment_mode() == EnvironmentMode::MixedRoadGates;
+}
+
+bool world_has_dynamic_gap_layer(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::UnstructuredGates ||
+           world.environment_mode() == EnvironmentMode::MixedRoadGates;
+}
+
+bool world_is_mixed(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::MixedRoadGates;
+}
+
 double clamp_value(double value, double lo, double hi) {
     return std::max(lo, std::min(value, hi));
 }
@@ -52,7 +66,7 @@ double wrap_arc_length(double s, double s_max) {
 }
 
 double structured_road_length_m(const WorldMap& world) {
-    if (world.environment_mode() != EnvironmentMode::StructuredRoad ||
+    if (!world_has_structured_reference(world) ||
         world.road_centerline().size() < 2) {
         return 0.0;
     }
@@ -84,7 +98,7 @@ double closed_loop_reference_span(double road_length, double lookahead_distance)
 
 double structured_tracking_speed_floor(const WorldMap& world, double speed_limit) {
     double course_span = 0.0;
-    if (world.environment_mode() == EnvironmentMode::StructuredRoad &&
+    if (world_has_structured_reference(world) &&
         !world.road_centerline().empty()) {
         double min_x = world.road_centerline().front().x;
         double max_x = min_x;
@@ -127,7 +141,7 @@ double world_span_m(const WorldMap& world) {
 }
 
 double structured_course_span_m(const WorldMap& world) {
-    if (world.environment_mode() != EnvironmentMode::StructuredRoad ||
+    if (!world_has_structured_reference(world) ||
         world.road_centerline().empty()) {
         return world_span_m(world);
     }
@@ -145,14 +159,14 @@ double structured_course_span_m(const WorldMap& world) {
 }
 
 bool compact_structured_world(const WorldMap& world) {
-    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
+    if (!world_has_structured_reference(world)) {
         return false;
     }
     return structured_course_span_m(world) <= 0.90 || world_span_m(world) <= 0.75;
 }
 
 bool micro_structured_world(const WorldMap& world) {
-    return world.environment_mode() == EnvironmentMode::StructuredRoad &&
+    return world_has_structured_reference(world) &&
            structured_course_span_m(world) <= 0.55;
 }
 
@@ -224,6 +238,13 @@ bool is_inside_bounds(const WorldMap& world, const Vec2& position, double margin
 
 bool is_inside_bounds(const WorldMap& world, const Vec2& position) {
     return is_inside_bounds(world, position, 0.0);
+}
+
+bool point_in_expanded_rect(const Vec2& point, const Rect& rect, double padding) {
+    return point.x >= rect.min_x - padding &&
+           point.x <= rect.max_x + padding &&
+           point.y >= rect.min_y - padding &&
+           point.y <= rect.max_y + padding;
 }
 
 Vec2 clamp_point_to_bounds(const WorldMap& world, const Vec2& position, double margin = 0.0) {
@@ -688,7 +709,7 @@ bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) 
 }
 
 bool structured_road_is_closed_loop(const WorldMap& world) {
-    if (world.environment_mode() != EnvironmentMode::StructuredRoad ||
+    if (!world_has_structured_reference(world) ||
         world.road_centerline().size() < 3) {
         return false;
     }
@@ -1276,12 +1297,12 @@ void HardwarePlannerRunner::initialize_planner_state() {
     const Rect& bounds = world_.bounds();
     const double world_width = std::max(bounds.max_x - bounds.min_x, 0.0);
     const double world_height = std::max(bounds.max_y - bounds.min_y, 0.0);
-    const double world_span = world_.environment_mode() == EnvironmentMode::StructuredRoad
+    const double world_span = world_has_structured_reference(world_)
                                   ? structured_course_span_m(world_)
                                   : std::max(world_width, world_height);
     const bool compact_world = world_span <= 5.0;
     const bool compact_structured_world =
-        compact_world && world_.environment_mode() == EnvironmentMode::StructuredRoad;
+        compact_world && world_has_structured_reference(world_);
 
     const bool micro_structured_world =
         compact_structured_world && world_span <= 0.35;
@@ -1344,7 +1365,7 @@ void HardwarePlannerRunner::initialize_gates() {
 }
 
 void HardwarePlannerRunner::sync_road_from_world() {
-    if (world_.environment_mode() != EnvironmentMode::StructuredRoad || world_.road_centerline().size() < 2) {
+    if (!world_has_structured_reference(world_) || world_.road_centerline().size() < 2) {
         road_.reset();
         return;
     }
@@ -1362,7 +1383,7 @@ void HardwarePlannerRunner::sync_road_from_world() {
 
 void HardwarePlannerRunner::sync_gate_specs_from_world(bool reset_flags) {
     const std::vector<GateSpec>& specs = world_.gates();
-    if (world_.environment_mode() != EnvironmentMode::UnstructuredGates) {
+    if (!world_has_dynamic_gap_layer(world_)) {
         gates_.clear();
         gate_specs_.clear();
         return;
@@ -1412,7 +1433,7 @@ void HardwarePlannerRunner::update_speed_limit() {
 }
 
 void HardwarePlannerRunner::update_gate_activation_window() {
-    if (world_.environment_mode() != EnvironmentMode::UnstructuredGates || gates_.empty()) {
+    if (!world_has_dynamic_gap_layer(world_) || gates_.empty()) {
         return;
     }
 
@@ -1459,7 +1480,7 @@ void HardwarePlannerRunner::update_gate_activation_window() {
 
 std::vector<int> HardwarePlannerRunner::active_gate_indices() const {
     std::vector<int> indices;
-    if (world_.environment_mode() != EnvironmentMode::UnstructuredGates) {
+    if (!world_has_dynamic_gap_layer(world_)) {
         return indices;
     }
 
@@ -1494,13 +1515,114 @@ int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
 }
 
 bool HardwarePlannerRunner::dynamic_gap_mode_enabled() const {
-    return world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+    return world_has_dynamic_gap_layer(world_) &&
            config_.gap_extraction.enabled;
 }
 
 bool HardwarePlannerRunner::strict_locked_gate_motion_enabled() const {
     return dynamic_gap_mode_enabled() &&
+           world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
            config_.gap_extraction.strict_locked_gate_motion;
+}
+
+double HardwarePlannerRunner::compute_mixed_road_forward_clearance(double lookahead_m) const {
+    if (!world_is_mixed(world_) ||
+        world_.road_centerline().size() < 2 ||
+        !(lookahead_m > 1e-3)) {
+        return lookahead_m;
+    }
+
+    const std::vector<Vec2>& road = world_.road_centerline();
+    std::vector<double> cumulative(road.size(), 0.0);
+    for (size_t i = 1; i < road.size(); ++i) {
+        cumulative[i] = cumulative[i - 1] + distance(road[i - 1], road[i]);
+    }
+    const double road_length = cumulative.back();
+    if (!(road_length > 1e-6)) {
+        return lookahead_m;
+    }
+
+    double best_s = 0.0;
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i + 1 < road.size(); ++i) {
+        const Vec2 segment{road[i + 1].x - road[i].x, road[i + 1].y - road[i].y};
+        const double segment_len_sq = dot_product(segment, segment);
+        if (!(segment_len_sq > 1e-12)) {
+            continue;
+        }
+        const Vec2 from_start{estimate_.position.x - road[i].x, estimate_.position.y - road[i].y};
+        const double t = clamp_value(dot_product(from_start, segment) / segment_len_sq, 0.0, 1.0);
+        const Vec2 projection{
+            road[i].x + segment.x * t,
+            road[i].y + segment.y * t,
+        };
+        const double d_sq = distance_sq(estimate_.position, projection);
+        if (d_sq < best_distance_sq) {
+            best_distance_sq = d_sq;
+            best_s = cumulative[i] + std::sqrt(segment_len_sq) * t;
+        }
+    }
+
+    auto point_at_s = [&](double s) {
+        s = clamp_value(s, 0.0, road_length);
+        auto upper = std::upper_bound(cumulative.begin(), cumulative.end(), s);
+        if (upper == cumulative.begin()) {
+            return road.front();
+        }
+        if (upper == cumulative.end()) {
+            return road.back();
+        }
+        const size_t index = static_cast<size_t>(std::distance(cumulative.begin(), upper));
+        const double s0 = cumulative[index - 1];
+        const double s1 = cumulative[index];
+        const double alpha = (s1 > s0) ? clamp_value((s - s0) / (s1 - s0), 0.0, 1.0) : 0.0;
+        return Vec2{
+            road[index - 1].x + (road[index].x - road[index - 1].x) * alpha,
+            road[index - 1].y + (road[index].y - road[index - 1].y) * alpha,
+        };
+    };
+
+    const double corridor_padding = 0.5 * geometry_.body_width + 0.08;
+    const double corridor_padding_sq = corridor_padding * corridor_padding;
+    const double sample_step = 0.06;
+    const bool closed_loop = structured_road_is_closed_loop(world_);
+    for (double ahead = sample_step; ahead <= lookahead_m + 1e-9; ahead += sample_step) {
+        double s_probe = best_s + ahead;
+        if (closed_loop) {
+            s_probe = wrap_arc_length(s_probe, road_length);
+        } else if (s_probe > road_length) {
+            break;
+        }
+        const Vec2 probe = point_at_s(s_probe);
+        if (!is_inside_bounds(world_, probe, 0.0)) {
+            return ahead;
+        }
+        for (const Rect& obstacle : world_.obstacles()) {
+            if (point_in_expanded_rect(probe, obstacle, corridor_padding)) {
+                return ahead;
+            }
+        }
+        for (const Vec2& point : lidar_map_points_) {
+            if (distance_sq(probe, point) <= corridor_padding_sq) {
+                return ahead;
+            }
+        }
+        for (const LidarHit& hit : lidar_hits_) {
+            if (hit.hit && distance_sq(probe, hit.point) <= corridor_padding_sq) {
+                return ahead;
+            }
+        }
+    }
+
+    return lookahead_m;
+}
+
+double HardwarePlannerRunner::compute_mixed_road_block_score(double lookahead_m) const {
+    if (!world_is_mixed(world_)) {
+        return 0.0;
+    }
+    const double clearance = compute_mixed_road_forward_clearance(lookahead_m);
+    return 1.0 - clamp_value((clearance - 0.18) / 0.70, 0.0, 1.0);
 }
 
 bool HardwarePlannerRunner::perception_map_ready() const {
@@ -1541,7 +1663,8 @@ void HardwarePlannerRunner::plan_if_needed() {
     }
 
     update_speed_limit();
-    if (world_.environment_mode() == EnvironmentMode::StructuredRoad && road_ != nullptr) {
+    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    if (world_has_structured_reference(world_) && road_ != nullptr && !mixed_gate_active) {
         std::vector<double> commands = sel_jr(
             false,
             step_count_,
@@ -1665,7 +1788,8 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         -1.5 * config_.drive.max_yaw_rate,
         1.5 * config_.drive.max_yaw_rate);
 
-    if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    if (world_has_structured_reference(world_) && !mixed_gate_active) {
         update_estimate_from_structured_motion_fallback(telemetry, dt, measured_yaw, measured_yaw_rate);
         return;
     }
@@ -2346,7 +2470,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         dynamic_gap_tracks_.clear();
         return;
     }
-    if (passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
         dynamic_gap_tracks_.clear();
         gates_.clear();
         gate_specs_.clear();
@@ -3314,6 +3439,68 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             sector.score_bonus);
     }
 
+    if (world_is_mixed(world_) &&
+        compute_mixed_road_block_score(1.35) >= 0.12) {
+        const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
+        const Vec2 lateral{-forward.y, forward.x};
+        const std::array<double, 2> lateral_signs{{1.0, -1.0}};
+        const std::array<double, 2> lateral_offsets{{0.42, 0.34}};
+        const std::array<double, 2> forward_offsets{{0.52, 0.68}};
+        for (double side : lateral_signs) {
+            for (double ahead : forward_offsets) {
+                for (double lateral_offset : lateral_offsets) {
+                    const Vec2 target{
+                        estimate_.position.x + forward.x * ahead + lateral.x * side * lateral_offset,
+                        estimate_.position.y + forward.y * ahead + lateral.y * side * lateral_offset,
+                    };
+                    if (!dynamic_gap_point_allowed(target)) {
+                        continue;
+                    }
+                    const double target_distance = distance(lidar_origin, target);
+                    if (target_distance < min_target_distance || target_distance > max_target_distance) {
+                        continue;
+                    }
+                    const double target_heading = angle_to(lidar_origin, target);
+                    const double target_local_heading = wrap_angle(target_heading - estimate_.yaw);
+                    if (std::abs(target_local_heading) > 82.0 * kPi / 180.0) {
+                        continue;
+                    }
+                    if (!world_.line_of_sight(lidar_origin, target, 0.08)) {
+                        continue;
+                    }
+                    const double heading_score =
+                        clamp_value(std::cos(target_local_heading), 0.0, 1.0);
+                    const double goal_progress = have_global_goal
+                        ? clamp_value(
+                              (goal_distance_from_origin - distance(target, global_goal)) /
+                                  std::max(max_target_distance, 0.05),
+                              -0.20,
+                              1.0)
+                        : 0.0;
+                    candidates.push_back({
+                        6.0 + 1.2 * heading_score + 0.9 * goal_progress,
+                        target_distance,
+                        target_local_heading,
+                        target_heading,
+                        std::max(0.0, goal_progress),
+                        required_gap_width,
+                        sector_min_clearance(
+                            lidar_hits_,
+                            estimate_.yaw,
+                            target_local_heading,
+                            0.20,
+                            planning_range),
+                        -1,
+                        0,
+                        0.0,
+                        false,
+                        target,
+                    });
+                }
+            }
+        }
+    }
+
     if (candidates.empty()) {
         for (DynamicGapTrack& track : dynamic_gap_tracks_) {
             ++track.misses;
@@ -3510,7 +3697,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         if (!candidate.temporally_confirmed) {
             continue;
         }
-        if (!scan_supports_target(candidate.target, scan)) {
+        if (!world_is_mixed(world_) && !scan_supports_target(candidate.target, scan)) {
             continue;
         }
         bool duplicate_target = false;
@@ -3552,6 +3739,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
 bool HardwarePlannerRunner::startup_scan_active() const {
     return use_dynamic_gap_gates_ &&
+           world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
            config_.gap_extraction.startup_scan_duration_s > 1e-3 &&
            !goal_reached_ &&
            !locked_gap_goal_.has_value() &&
@@ -3689,6 +3877,52 @@ void HardwarePlannerRunner::publish_locked_gap_goal() {
     diagnostics_.chosen_gate_distance = distance(target, estimate_.position);
 }
 
+void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
+    if (!world_is_mixed(world_) || !locked_gap_goal_.has_value()) {
+        return;
+    }
+
+    const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
+    const double crossing_progress =
+        longitudinal_progress + std::max(geometry_.cg_to_front, 0.0);
+    const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
+    const double crossing_margin =
+        std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
+    const double pass_lateral_limit =
+        locked_gap_corridor_half_width_m_ +
+        std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
+    const double crossing_distance = std::max(crossing_margin - crossing_progress, 0.0);
+    const double near_pass_longitudinal_slack = clamp_value(
+        0.46 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+        0.045,
+        0.085);
+    const double gate_distance = distance(estimate_.position, *locked_gap_goal_);
+    const double near_pass_gate_radius = clamp_value(
+        1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+        0.18,
+        std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
+    const bool gate_crossed =
+        lateral_offset <= pass_lateral_limit &&
+        (crossing_progress >= crossing_margin ||
+         (crossing_distance <= near_pass_longitudinal_slack &&
+          gate_distance <= near_pass_gate_radius));
+    if (!gate_crossed) {
+        return;
+    }
+
+    passed_unstructured_gap_positions_.push_back(*locked_gap_goal_);
+    ++passed_unstructured_gap_count_;
+    clear_locked_gap_goal();
+    gates_.clear();
+    gate_specs_.clear();
+    visible_gate_indices_.clear();
+    chosen_gate_index_ = -1;
+    diagnostics_.candidate_gates = 0;
+    diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+    startup_scan_complete_ = true;
+    startup_scan_elapsed_s_ = config_.gap_extraction.startup_scan_duration_s;
+}
+
 void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     if (!use_dynamic_gap_gates_) {
         clear_locked_gap_goal();
@@ -3698,7 +3932,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         startup_scan_complete_ = false;
         return;
     }
-    if (passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
         clear_locked_gap_goal();
         gates_.clear();
         gate_specs_.clear();
@@ -3709,6 +3944,54 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         startup_scan_complete_ = true;
         unstructured_no_candidate_scan_elapsed_s_ = 0.0;
         return;
+    }
+
+    const bool mixed_mode = world_is_mixed(world_);
+    if (mixed_mode) {
+        startup_scan_complete_ = true;
+        startup_scan_elapsed_s_ = config_.gap_extraction.startup_scan_duration_s;
+        if (!locked_gap_goal_.has_value()) {
+            const double road_block_score = compute_mixed_road_block_score(1.35);
+            if (road_block_score < 0.12) {
+                gates_.clear();
+                gate_specs_.clear();
+                visible_gate_indices_.clear();
+                chosen_gate_index_ = -1;
+                diagnostics_.candidate_gates = 0;
+                diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+                return;
+            }
+            if (gate_specs_.empty()) {
+                const double left_clearance = sector_min_clearance(
+                    lidar_hits_,
+                    estimate_.yaw,
+                    42.0 * kPi / 180.0,
+                    24.0 * kPi / 180.0,
+                    config_.localization.max_range_m);
+                const double right_clearance = sector_min_clearance(
+                    lidar_hits_,
+                    estimate_.yaw,
+                    -42.0 * kPi / 180.0,
+                    24.0 * kPi / 180.0,
+                    config_.localization.max_range_m);
+                const double side = left_clearance >= right_clearance ? 1.0 : -1.0;
+                const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
+                const Vec2 lateral{-forward.y, forward.x};
+                Vec2 mixed_target{
+                    estimate_.position.x + 0.60 * forward.x + side * 0.34 * lateral.x,
+                    estimate_.position.y + 0.60 * forward.y + side * 0.34 * lateral.y,
+                };
+                mixed_target.y = clamp_value(
+                    mixed_target.y,
+                    world_.bounds().min_y + 0.28,
+                    world_.bounds().max_y - 0.58);
+                if (dynamic_gap_point_allowed(mixed_target)) {
+                    set_locked_gap_goal(mixed_target);
+                    publish_locked_gap_goal();
+                    return;
+                }
+            }
+        }
     }
 
     if (locked_gap_goal_.has_value()) {
@@ -3871,7 +4154,8 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
         0.0,
         config_.cruise_speed_limit);
 
-    if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    if (world_has_structured_reference(world_) && !mixed_gate_active) {
         const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const double slowdown_radius = structured_slowdown_radius(world_, config_.goal_slowdown_radius_m);
         const double active_distance = structured_goal_active_distance(world_, config_.goal_tolerance_m);
@@ -3900,7 +4184,7 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
         return;
     }
 
-    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates || mixed_gate_active) {
         if (startup_scan_active() ||
             (strict_locked_gate_motion_enabled() && !locked_gap_goal_.has_value()) ||
             chosen_gate_index_ < 0 ||
@@ -3953,8 +4237,10 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     planned_trajectory_.clear();
     reference_trajectory_.clear();
     diagnostics_.planner_has_reference = false;
+    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     const auto assign_structured_centerline_fallback = [&]() {
-        if (world_.environment_mode() != EnvironmentMode::StructuredRoad ||
+        if (!world_has_structured_reference(world_) ||
+            mixed_gate_active ||
             world_.road_centerline().size() < 2) {
             return false;
         }
@@ -3972,7 +4258,8 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         std::isfinite(cl_.end_point_s) &&
         cl_.end_point_s > 0.10;
 
-    if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
+    if (world_has_structured_reference(world_) &&
+        !mixed_gate_active &&
         (!has_planner_clothoid || world_.road_centerline().size() < 2)) {
         assign_structured_centerline_fallback();
         return;
@@ -3981,6 +4268,11 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     if (world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
         (chosen_gate_index_ < 0 ||
          (strict_locked_gate_motion_enabled() && !locked_gap_goal_.has_value()))) {
+        return;
+    }
+    if (world_is_mixed(world_) &&
+        !mixed_gate_active &&
+        road_ == nullptr) {
         return;
     }
     if (!has_planner_clothoid) {
@@ -3999,7 +4291,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     }
 
     double lateral_offset = 0.0;
-    if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+    if (world_has_structured_reference(world_) && !mixed_gate_active) {
         if (std::isfinite(structured_last_s_)) {
             s_current = structured_last_s_;
         }
@@ -4033,7 +4325,9 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         structured_last_s_ = s_current;
     }
 
-    const bool unstructured = world_.environment_mode() == EnvironmentMode::UnstructuredGates;
+    const bool unstructured =
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
+        mixed_gate_active;
     const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
     const bool micro_loop = micro_structured_world(world_);
     const double lookahead_distance =
@@ -4122,6 +4416,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     double direct_yaw_rate_command = 0.0;
     const bool scanning_startup = startup_scan_active();
     const bool strict_locked_motion = strict_locked_gate_motion_enabled();
+    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    const bool following_dynamic_gate =
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
+        mixed_gate_active;
     bool allow_unlocked_recovery_motion = false;
 
     auto apply_strict_scan_escape = [&]() {
@@ -4249,7 +4547,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 commanded_steer_angle_ + mpc_command.steer_rate_cmd * safe_dt,
                 -geometry_.max_steer_angle,
                 geometry_.max_steer_angle);
-            commanded_speed_ = use_dynamic_gap_gates_
+            commanded_speed_ = following_dynamic_gate
                 ? mpc_target_speed
                 : clamp_value(0.45 * predicted_speed + 0.55 * mpc_target_speed, 0.0, speed_limit);
             commanded_steer_angle_ = clamp_value(
@@ -4585,7 +4883,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         gap_recovery_turn_active_ = false;
     }
     const bool dynamic_gap_safety_stop_enabled =
-        use_dynamic_gap_gates_ && have_reference_trajectory;
+        use_dynamic_gap_gates_ && following_dynamic_gate && have_reference_trajectory;
     bool locked_gap_about_to_cross = false;
     if (dynamic_gap_safety_stop_enabled && locked_gap_goal_.has_value()) {
         const double crossing_progress =
@@ -4630,7 +4928,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         }
     }
 
-    if (world_.environment_mode() == EnvironmentMode::StructuredRoad && !safety_stop_active_) {
+    if (world_has_structured_reference(world_) && !mixed_gate_active && !safety_stop_active_) {
         const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const double active_distance = structured_goal_active_distance(world_, config_.goal_tolerance_m);
         const bool keep_tracking = !goal_reached_ && distance_to_goal_ > active_distance;
@@ -4787,7 +5085,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.target_speed * last_command_.target_curvature,
             -config_.drive.max_yaw_rate,
             config_.drive.max_yaw_rate);
-        if (world_.environment_mode() == EnvironmentMode::StructuredRoad &&
+        if (world_has_structured_reference(world_) &&
+            !mixed_gate_active &&
             tiny_indoor_structured_loop(world_) &&
             last_command_.target_speed > 1e-4) {
             double forward_curvature_limit =
@@ -5359,6 +5658,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
 
     sim_time_ += bounded_dt;
     ++step_count_;
+    count_mixed_gate_crossing_if_needed();
     if (structured_road_is_closed_loop(world_)) {
         const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const double wrapped_track_s =
@@ -5464,7 +5764,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     } else {
         distance_to_goal_ = distance(estimate_.position, world_.goal());
         double goal_tolerance = config_.goal_tolerance_m;
-        if (world_.environment_mode() == EnvironmentMode::StructuredRoad) {
+        if (world_has_structured_reference(world_)) {
             const double min_goal_tolerance = micro_structured_world(world_) ? 0.045 : 0.035;
             goal_tolerance = std::clamp(0.14 * structured_course_span_m(world_), min_goal_tolerance, 0.10);
         }

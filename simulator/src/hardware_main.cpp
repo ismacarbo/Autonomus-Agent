@@ -153,8 +153,13 @@ double deg_to_rad(double angle_deg) {
 }
 
 EnvironmentMode parse_environment_mode(const std::string& value) {
-    return value == "unstructured" ? EnvironmentMode::UnstructuredGates
-                                   : EnvironmentMode::StructuredRoad;
+    if (value == "unstructured") {
+        return EnvironmentMode::UnstructuredGates;
+    }
+    if (value == "mixed" || value == "mixed_road_gates" || value == "road_gates") {
+        return EnvironmentMode::MixedRoadGates;
+    }
+    return EnvironmentMode::StructuredRoad;
 }
 
 UnstructuredMapPreset parse_unstructured_preset(const std::string& value) {
@@ -213,6 +218,9 @@ WorldMap make_world_from_options(const AppOptions& options) {
     if (options.environment_mode == EnvironmentMode::StructuredRoad) {
         return fit_structured_hardware_world(WorldMap::structured_demo(options.structured_preset));
     }
+    if (options.environment_mode == EnvironmentMode::MixedRoadGates) {
+        return WorldMap::mixed_hardware_demo();
+    }
     return WorldMap::unstructured_demo(options.unstructured_preset, GateBehaviorMode::Static, 0);
 }
 
@@ -236,7 +244,7 @@ void print_usage(const char* argv0) {
         << "  --max-steps N             default 1500\n"
         << "  --dt SEC                  default 0.10\n"
         << "  --simulate                run the selected hardware scenario against synthetic sensors\n"
-        << "  --scenario MODE           structured | unstructured\n"
+        << "  --scenario MODE           structured | unstructured | mixed\n"
         << "  --structured-map NAME     validation | circle | zigzag | hardware_track | figure_eight\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
         << "  --world-file PATH         load a custom exported `.thmap` world file\n"
@@ -690,6 +698,18 @@ int main(int argc, char** argv) {
         planner_config.auto_gyro_zero = options.gyro_zero;
         planner_config.use_encoder_odometry = true;
         planner_config.planner_safety_stop_enabled = options.planner_safety_stop_enabled;
+        if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
+            planner_config.cruise_speed_limit = 0.16;
+            planner_config.goal_tolerance_m = 0.08;
+            planner_config.localization.max_range_m = 2.40;
+            planner_config.gap_extraction.planning_max_range_m = 2.40;
+            planner_config.gap_extraction.max_target_distance_m = 0.95;
+            planner_config.gap_extraction.min_gap_width_m = 0.32;
+            planner_config.gap_extraction.dynamic_bounds_margin_m = 0.25;
+            planner_config.gap_extraction.startup_scan_duration_s = 0.0;
+            planner_config.gap_extraction.strict_locked_gate_motion = false;
+            planner_config.gap_extraction.min_passed_gates_to_complete = 1;
+        }
 
         if (options.simulate) {
             return run_simulated(options, world, std::move(bridge_options), planner_config);
