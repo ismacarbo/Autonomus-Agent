@@ -656,6 +656,9 @@ WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
     const UnstructuredMapPreset selected_preset = static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset);
     const StructuredMapPreset selected_structured_preset =
         static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset);
+    if (selected_mode == EnvironmentMode::MixedRoadGates) {
+        return WorldMap::mixed_hardware_demo();
+    }
     if (selected_mode == EnvironmentMode::UnstructuredGates &&
         selected_preset == UnstructuredMapPreset::Custom &&
         ui_state.hardware_editor_world.environment_mode() == EnvironmentMode::UnstructuredGates) {
@@ -803,19 +806,21 @@ std::string default_hardware_report_path(const HardwareViewerState& hardware,
                                             ? hardware.scene.world.environment_mode()
                                             : static_cast<EnvironmentMode>(ui_state.hardware_environment_mode);
     const std::string preset_name =
-        environment == EnvironmentMode::StructuredRoad
-            ? (hardware.has_scene
-                   ? thesis_sim::structured_map_preset_name(hardware.scene.world.structured_preset())
-                   : thesis_sim::structured_map_preset_name(
-                         static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset)))
-            : (hardware.has_scene
-                   ? thesis_sim::unstructured_map_preset_name(hardware.scene.world.unstructured_preset())
-                   : thesis_sim::unstructured_map_preset_name(
-                         static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset)));
+        environment == EnvironmentMode::MixedRoadGates
+            ? "Mixed Hardware Road Gate"
+            : (environment == EnvironmentMode::StructuredRoad
+                   ? (hardware.has_scene
+                          ? thesis_sim::structured_map_preset_name(hardware.scene.world.structured_preset())
+                          : thesis_sim::structured_map_preset_name(
+                                static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset)))
+                   : (hardware.has_scene
+                          ? thesis_sim::unstructured_map_preset_name(hardware.scene.world.unstructured_preset())
+                          : thesis_sim::unstructured_map_preset_name(
+                                static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset))));
 
     std::ostringstream name;
     name << "thesis_hardware_"
-         << (environment == EnvironmentMode::StructuredRoad ? "structured" : "unstructured")
+         << environment_mode_slug(environment)
          << "_" << slugify(preset_name)
          << "_" << source_tag << "_"
          << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
@@ -842,13 +847,15 @@ std::string default_hardware_world_path(const UiState& ui_state) {
 
     const EnvironmentMode environment = static_cast<EnvironmentMode>(ui_state.hardware_environment_mode);
     const std::string preset_name =
-        environment == EnvironmentMode::StructuredRoad
-            ? thesis_sim::structured_map_preset_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset))
-            : thesis_sim::unstructured_map_preset_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset));
+        environment == EnvironmentMode::MixedRoadGates
+            ? "Mixed Hardware Road Gate"
+            : (environment == EnvironmentMode::StructuredRoad
+                   ? thesis_sim::structured_map_preset_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset))
+                   : thesis_sim::unstructured_map_preset_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset)));
 
     std::ostringstream name;
     name << "thesis_hardware_world_"
-         << (environment == EnvironmentMode::StructuredRoad ? "structured" : "unstructured")
+         << environment_mode_slug(environment)
          << "_" << slugify(preset_name)
          << "_" << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
          << "_" << std::setw(3) << std::setfill('0') << millis
@@ -2120,22 +2127,33 @@ std::string hardware_goal_distance_label(const LiveFrameSnapshot& frame, Environ
 
 std::string hardware_launch_hint(const UiState& ui_state) {
     std::ostringstream cmd;
-    const bool structured =
-        static_cast<EnvironmentMode>(ui_state.hardware_environment_mode) == EnvironmentMode::StructuredRoad;
-    const bool custom_world =
-        structured
-            ? static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset) == StructuredMapPreset::Custom
-            : static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset) == UnstructuredMapPreset::Custom;
+    const EnvironmentMode mode = static_cast<EnvironmentMode>(ui_state.hardware_environment_mode);
+    const bool structured = mode == EnvironmentMode::StructuredRoad;
+    const bool mixed = mode == EnvironmentMode::MixedRoadGates;
+    bool custom_world = false;
+    if (structured) {
+        custom_world =
+            static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset) == StructuredMapPreset::Custom;
+    } else if (!mixed) {
+        custom_world =
+            static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset) == UnstructuredMapPreset::Custom;
+    }
     cmd << "thesis_robot_runner"
+        << " --controller-port /dev/ttyACM0";
+    if (!structured) {
+        cmd << " --lidar-port /dev/ttyUSB0"
+            << " --enable-planner-safety";
+    }
+    cmd
         << " --stream-host <pc-ip>"
         << " --stream-port " << std::max(ui_state.hardware_listen_port, 1)
-        << " --scenario " << (structured ? "structured" : "unstructured");
+        << " --scenario " << environment_mode_slug(mode);
     if (custom_world) {
         cmd << " --world-file <copied-custom-map.thmap>";
     } else if (structured) {
         cmd << " --structured-map "
             << structured_map_cli_name(static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset));
-    } else {
+    } else if (!mixed) {
         cmd << " --unstructured-map "
             << unstructured_map_cli_name(static_cast<UnstructuredMapPreset>(ui_state.hardware_unstructured_preset));
     }
@@ -2146,12 +2164,16 @@ void load_hardware_editor_from_selection(UiState* ui_state) {
     if (ui_state == nullptr) {
         return;
     }
-    WorldMap selected_world = make_world_from_mode(
-        static_cast<EnvironmentMode>(ui_state->hardware_environment_mode),
-        static_cast<UnstructuredMapPreset>(ui_state->hardware_unstructured_preset),
-        static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset),
-        GateBehaviorMode::Static,
-        0);
+    const EnvironmentMode mode = static_cast<EnvironmentMode>(ui_state->hardware_environment_mode);
+    WorldMap selected_world =
+        mode == EnvironmentMode::MixedRoadGates
+            ? WorldMap::mixed_hardware_demo()
+            : make_world_from_mode(
+                  mode,
+                  static_cast<UnstructuredMapPreset>(ui_state->hardware_unstructured_preset),
+                  static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset),
+                  GateBehaviorMode::Static,
+                  0);
     WorldMap world = apply_hardware_track_scale(*ui_state, std::move(selected_world));
     ui_state->hardware_editor_world = sanitize_hardware_unstructured_world(std::move(world));
     ui_state->hardware_editor_dirty = false;
@@ -4215,13 +4237,15 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         const char* environment_items[] = {
             thesis_sim::environment_mode_name(EnvironmentMode::UnstructuredGates),
             thesis_sim::environment_mode_name(EnvironmentMode::StructuredRoad),
+            thesis_sim::environment_mode_name(EnvironmentMode::MixedRoadGates),
         };
-        int hardware_environment = ui_state->hardware_environment_mode == static_cast<int>(EnvironmentMode::UnstructuredGates) ? 0 : 1;
+        int hardware_environment = std::clamp(
+            ui_state->hardware_environment_mode,
+            static_cast<int>(EnvironmentMode::UnstructuredGates),
+            static_cast<int>(EnvironmentMode::MixedRoadGates));
         const char* environment_label = "Planner Scenario";
         if (ImGui::Combo(environment_label, &hardware_environment, environment_items, IM_ARRAYSIZE(environment_items))) {
-            ui_state->hardware_environment_mode =
-                hardware_environment == 0 ? static_cast<int>(EnvironmentMode::UnstructuredGates)
-                                          : static_cast<int>(EnvironmentMode::StructuredRoad);
+            ui_state->hardware_environment_mode = hardware_environment;
             load_hardware_editor_from_selection(ui_state);
             clear_hardware_world_sync(
                 ui_state,
@@ -4493,6 +4517,8 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             if (applied_world.environment_mode() == EnvironmentMode::StructuredRoad) {
                 ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
                 ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::Custom);
+            } else if (applied_world.environment_mode() == EnvironmentMode::MixedRoadGates) {
+                ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::MixedRoadGates);
             } else {
                 ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::UnstructuredGates);
                 ui_state->hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::Custom);

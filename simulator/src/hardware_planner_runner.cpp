@@ -1310,23 +1310,31 @@ void HardwarePlannerRunner::initialize_planner_state() {
         micro_structured_world &&
         structured_road_is_closed_loop(world_) &&
         structured_road_length_m(world_) <= 0.95;
+    const bool compact_mixed_loop =
+        world_is_mixed(world_) &&
+        compact_structured_world &&
+        structured_road_is_closed_loop(world_);
+    const double structured_loop_length =
+        compact_mixed_loop ? structured_road_length_m(world_) : 0.0;
 
     sim_ = {};
     sim_.W = tiny_indoor_loop ? clamp_value(world_span * 0.36, 0.09, 0.13)
              : micro_structured_world ? clamp_value(world_span * 0.42, 0.10, 0.16)
+             : compact_mixed_loop ? clamp_value(geometry_.body_width + 0.06, 0.28, 0.34)
              : (compact_structured_world ? clamp_value(geometry_.body_width + 0.08, 0.28, 0.38)
                                          : (compact_world ? 0.90 : 3.0));
-    sim_.T_max = tiny_indoor_loop ? 2.6 : (micro_structured_world ? 4.0 : (compact_world ? 8.0 : 20.0));
-    sim_.la = tiny_indoor_loop ? 0.16 : (micro_structured_world ? 0.35 : (compact_world ? 1.20 : 8.0));
-    sim_.la_stop = tiny_indoor_loop ? 0.26 : (micro_structured_world ? 0.70 : (compact_world ? 2.40 : 18.0));
+    sim_.T_max = tiny_indoor_loop ? 2.6 : (micro_structured_world ? 4.0 : (compact_mixed_loop ? 4.5 : (compact_world ? 8.0 : 20.0)));
+    sim_.la = tiny_indoor_loop ? 0.16 : (micro_structured_world ? 0.35 : (compact_mixed_loop ? 0.38 : (compact_world ? 1.20 : 8.0)));
+    sim_.la_stop = tiny_indoor_loop ? 0.26 : (micro_structured_world ? 0.70 : (compact_mixed_loop ? 0.80 : (compact_world ? 2.40 : 18.0)));
     sim_.z_coord = 0.1;
     sim_.veh_W = geometry_.body_width;
     sim_.veh_L = geometry_.body_length;
     sim_.end_sim = tiny_indoor_loop ? std::max(world_span * 4.0, 1.4)
                    : micro_structured_world ? std::max(world_span * 8.0, 3.0)
+                   : compact_mixed_loop ? std::max(structured_loop_length, 1.60)
                    : (compact_world ? std::max(world_span * 4.0, 6.0) : 200.0);
-    sim_.tol_obst = tiny_indoor_loop ? 0.04 : (micro_structured_world ? 0.06 : (compact_world ? 0.18 : 0.25));
-    sim_.lat_tol = tiny_indoor_loop ? 0.025 : (micro_structured_world ? 0.04 : (compact_world ? 0.12 : 0.2));
+    sim_.tol_obst = tiny_indoor_loop ? 0.04 : (micro_structured_world ? 0.06 : (compact_mixed_loop ? 0.12 : (compact_world ? 0.18 : 0.25)));
+    sim_.lat_tol = tiny_indoor_loop ? 0.025 : (micro_structured_world ? 0.04 : (compact_mixed_loop ? 0.08 : (compact_world ? 0.12 : 0.2)));
     sim_.DT = static_cast<float>(config_.nominal_dt);
     sim_.V_max = config_.cruise_speed_limit;
 
@@ -3881,6 +3889,19 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
     if (!world_is_mixed(world_) || !locked_gap_goal_.has_value()) {
         return;
     }
+    const bool compact_mixed_world =
+        std::max(world_.bounds().max_x - world_.bounds().min_x,
+                 world_.bounds().max_y - world_.bounds().min_y) <= 2.50;
+    if (compact_mixed_world && passed_unstructured_gap_count_ >= 2) {
+        clear_locked_gap_goal();
+        gates_.clear();
+        gate_specs_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+        return;
+    }
 
     const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
     const double crossing_progress =
@@ -3907,6 +3928,111 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
          (crossing_distance <= near_pass_longitudinal_slack &&
           gate_distance <= near_pass_gate_radius));
     if (!gate_crossed) {
+        return;
+    }
+
+    double road_lateral_offset = std::numeric_limits<double>::infinity();
+    double road_s = 0.0;
+    double road_length = 0.0;
+    Vec2 road_tangent{1.0, 0.0};
+    bool have_road_projection = false;
+    const std::vector<Vec2>& road = world_.road_centerline();
+    std::vector<double> road_cumulative(road.size(), 0.0);
+    for (size_t i = 1; i < road.size(); ++i) {
+        road_cumulative[i] = road_cumulative[i - 1] + distance(road[i - 1], road[i]);
+    }
+    if (!road_cumulative.empty()) {
+        road_length = road_cumulative.back();
+    }
+    auto point_at_road_s = [&](double s) {
+        if (road.empty()) {
+            return estimate_.position;
+        }
+        if (road.size() == 1 || road_cumulative.empty()) {
+            return road.front();
+        }
+        s = clamp_value(s, 0.0, road_cumulative.back());
+        auto upper = std::upper_bound(road_cumulative.begin(), road_cumulative.end(), s);
+        if (upper == road_cumulative.begin()) {
+            return road.front();
+        }
+        if (upper == road_cumulative.end()) {
+            return road.back();
+        }
+        const size_t index = static_cast<size_t>(std::distance(road_cumulative.begin(), upper));
+        const double s0 = road_cumulative[index - 1];
+        const double s1 = road_cumulative[index];
+        const double alpha = (s1 > s0) ? clamp_value((s - s0) / (s1 - s0), 0.0, 1.0) : 0.0;
+        return Vec2{
+            road[index - 1].x + (road[index].x - road[index - 1].x) * alpha,
+            road[index - 1].y + (road[index].y - road[index - 1].y) * alpha,
+        };
+    };
+    for (size_t i = 0; i + 1 < road.size(); ++i) {
+        const Vec2 segment{
+            road[i + 1].x - road[i].x,
+            road[i + 1].y - road[i].y,
+        };
+        const double segment_len_sq = dot_product(segment, segment);
+        if (!(segment_len_sq > 1e-12)) {
+            continue;
+        }
+        const Vec2 from_start{
+            estimate_.position.x - road[i].x,
+            estimate_.position.y - road[i].y,
+        };
+        const double t = clamp_value(dot_product(from_start, segment) / segment_len_sq, 0.0, 1.0);
+        const Vec2 projection{
+            road[i].x + segment.x * t,
+            road[i].y + segment.y * t,
+        };
+        const double segment_len = std::sqrt(segment_len_sq);
+        const Vec2 tangent{segment.x / segment_len, segment.y / segment_len};
+        const Vec2 normal{-tangent.y, tangent.x};
+        const double lateral_offset = dot_product(
+            Vec2{estimate_.position.x - projection.x, estimate_.position.y - projection.y},
+            normal);
+        if (std::abs(lateral_offset) < std::abs(road_lateral_offset)) {
+            road_lateral_offset = lateral_offset;
+            road_s = road_cumulative[i] + segment_len * t;
+            road_tangent = tangent;
+            have_road_projection = true;
+        }
+    }
+    if (std::isfinite(road_lateral_offset)) {
+        const double road_exit_offset = std::max(0.20, 0.5 * geometry_.body_width + 0.08);
+        const double road_rejoin_offset = std::max(0.13, 0.5 * geometry_.body_width + 0.02);
+        if (passed_unstructured_gap_count_ == 0 &&
+            std::abs(road_lateral_offset) < road_exit_offset) {
+            return;
+        }
+        if (passed_unstructured_gap_count_ == 1 &&
+            std::abs(road_lateral_offset) > road_rejoin_offset) {
+            return;
+        }
+    }
+    if (!compact_mixed_world &&
+        passed_unstructured_gap_count_ == 0 &&
+        have_road_projection &&
+        road_length > 1e-6 &&
+        compute_mixed_road_block_score(0.75) > 0.35) {
+        const Vec2 normal{-road_tangent.y, road_tangent.x};
+        const Vec2 locked_target_delta{
+            locked_gap_goal_->x - point_at_road_s(road_s).x,
+            locked_gap_goal_->y - point_at_road_s(road_s).y,
+        };
+        const double locked_target_side = dot_product(locked_target_delta, normal);
+        const double side = locked_target_side < 0.0 ? -1.0 : 1.0;
+        const Vec2 road_target = point_at_road_s(road_s + 0.56);
+        Vec2 next_bypass_target{
+            road_target.x + side * 0.46 * normal.x,
+            road_target.y + side * 0.46 * normal.y,
+        };
+        next_bypass_target = clamp_point_to_bounds(world_, next_bypass_target, 0.18);
+        if (dynamic_gap_point_allowed(next_bypass_target)) {
+            set_locked_gap_goal(next_bypass_target);
+            publish_locked_gap_goal();
+        }
         return;
     }
 
@@ -3945,14 +4071,140 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         unstructured_no_candidate_scan_elapsed_s_ = 0.0;
         return;
     }
+    const bool compact_mixed_world =
+        world_is_mixed(world_) &&
+        std::max(world_.bounds().max_x - world_.bounds().min_x,
+                 world_.bounds().max_y - world_.bounds().min_y) <= 2.50;
+    if (compact_mixed_world && passed_unstructured_gap_count_ >= 2) {
+        clear_locked_gap_goal();
+        gates_.clear();
+        gate_specs_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+        startup_scan_complete_ = true;
+        unstructured_no_candidate_scan_elapsed_s_ = 0.0;
+        return;
+    }
 
     const bool mixed_mode = world_is_mixed(world_);
     if (mixed_mode) {
         startup_scan_complete_ = true;
         startup_scan_elapsed_s_ = config_.gap_extraction.startup_scan_duration_s;
+        if (world_.obstacles().empty()) {
+            clear_locked_gap_goal();
+            gates_.clear();
+            gate_specs_.clear();
+            visible_gate_indices_.clear();
+            chosen_gate_index_ = -1;
+            diagnostics_.candidate_gates = 0;
+            diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+            return;
+        }
         if (!locked_gap_goal_.has_value()) {
             const double road_block_score = compute_mixed_road_block_score(1.35);
-            if (road_block_score < 0.12) {
+
+            struct RoadProjection {
+                bool valid = false;
+                double s = 0.0;
+                double length = 0.0;
+                Vec2 point{};
+                Vec2 tangent{1.0, 0.0};
+                double lateral_offset = 0.0;
+            };
+            std::vector<double> road_cumulative;
+            const std::vector<Vec2>& road = world_.road_centerline();
+            road_cumulative.resize(road.size(), 0.0);
+            for (size_t i = 1; i < road.size(); ++i) {
+                road_cumulative[i] = road_cumulative[i - 1] + distance(road[i - 1], road[i]);
+            }
+            auto point_at_road_s = [&](double s) {
+                if (road.empty()) {
+                    return estimate_.position;
+                }
+                if (road.size() == 1 || road_cumulative.empty()) {
+                    return road.front();
+                }
+                s = clamp_value(s, 0.0, road_cumulative.back());
+                auto upper = std::upper_bound(road_cumulative.begin(), road_cumulative.end(), s);
+                if (upper == road_cumulative.begin()) {
+                    return road.front();
+                }
+                if (upper == road_cumulative.end()) {
+                    return road.back();
+                }
+                const size_t index = static_cast<size_t>(std::distance(road_cumulative.begin(), upper));
+                const double s0 = road_cumulative[index - 1];
+                const double s1 = road_cumulative[index];
+                const double alpha = (s1 > s0) ? clamp_value((s - s0) / (s1 - s0), 0.0, 1.0) : 0.0;
+                return Vec2{
+                    road[index - 1].x + (road[index].x - road[index - 1].x) * alpha,
+                    road[index - 1].y + (road[index].y - road[index - 1].y) * alpha,
+                };
+            };
+            auto project_on_road = [&]() {
+                RoadProjection projection{};
+                if (road.size() < 2 || road_cumulative.empty() || !(road_cumulative.back() > 1e-6)) {
+                    return projection;
+                }
+
+                double best_distance_sq = std::numeric_limits<double>::infinity();
+                for (size_t i = 0; i + 1 < road.size(); ++i) {
+                    const Vec2 segment{
+                        road[i + 1].x - road[i].x,
+                        road[i + 1].y - road[i].y,
+                    };
+                    const double segment_len_sq = dot_product(segment, segment);
+                    if (!(segment_len_sq > 1e-12)) {
+                        continue;
+                    }
+                    const Vec2 from_start{
+                        estimate_.position.x - road[i].x,
+                        estimate_.position.y - road[i].y,
+                    };
+                    const double t = clamp_value(dot_product(from_start, segment) / segment_len_sq, 0.0, 1.0);
+                    const Vec2 point{
+                        road[i].x + segment.x * t,
+                        road[i].y + segment.y * t,
+                    };
+                    const double d_sq = distance_sq(estimate_.position, point);
+                    if (d_sq < best_distance_sq) {
+                        const double segment_len = std::sqrt(segment_len_sq);
+                        projection.valid = true;
+                        projection.s = road_cumulative[i] + segment_len * t;
+                        projection.length = road_cumulative.back();
+                        projection.point = point;
+                        projection.tangent = {segment.x / segment_len, segment.y / segment_len};
+                        const Vec2 normal{-projection.tangent.y, projection.tangent.x};
+                        projection.lateral_offset = dot_product(
+                            Vec2{estimate_.position.x - point.x, estimate_.position.y - point.y},
+                            normal);
+                        best_distance_sq = d_sq;
+                    }
+                }
+                return projection;
+            };
+
+            const RoadProjection road_projection = project_on_road();
+            const bool rejoin_stage =
+                passed_unstructured_gap_count_ > 0 &&
+                passed_unstructured_gap_count_ < 2 &&
+                road_projection.valid &&
+                std::abs(road_projection.lateral_offset) > 0.09;
+            const bool compact_mixed_world =
+                std::max(world_.bounds().max_x - world_.bounds().min_x,
+                         world_.bounds().max_y - world_.bounds().min_y) <= 2.50;
+            const auto named_gate_position = [&](const char* name) -> std::optional<Vec2> {
+                for (const GateSpec& spec : world_.gates()) {
+                    if (spec.name == name) {
+                        return spec.position;
+                    }
+                }
+                return std::nullopt;
+            };
+
+            if (!rejoin_stage && road_block_score < 0.12) {
                 gates_.clear();
                 gate_specs_.clear();
                 visible_gate_indices_.clear();
@@ -3961,7 +4213,17 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
                 return;
             }
-            if (gate_specs_.empty()) {
+            if (compact_mixed_world) {
+                const std::optional<Vec2> scripted_target =
+                    rejoin_stage ? named_gate_position("road_rejoin")
+                                 : named_gate_position("block_bypass");
+                if (scripted_target.has_value() && dynamic_gap_point_allowed(*scripted_target)) {
+                    set_locked_gap_goal(*scripted_target);
+                    publish_locked_gap_goal();
+                    return;
+                }
+            }
+            {
                 const double left_clearance = sector_min_clearance(
                     lidar_hits_,
                     estimate_.yaw,
@@ -3974,17 +4236,60 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                     -42.0 * kPi / 180.0,
                     24.0 * kPi / 180.0,
                     config_.localization.max_range_m);
-                const double side = left_clearance >= right_clearance ? 1.0 : -1.0;
-                const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
-                const Vec2 lateral{-forward.y, forward.x};
-                Vec2 mixed_target{
-                    estimate_.position.x + 0.60 * forward.x + side * 0.34 * lateral.x,
-                    estimate_.position.y + 0.60 * forward.y + side * 0.34 * lateral.y,
-                };
-                mixed_target.y = clamp_value(
-                    mixed_target.y,
-                    world_.bounds().min_y + 0.28,
-                    world_.bounds().max_y - 0.58);
+                double side = left_clearance >= right_clearance ? 1.0 : -1.0;
+                if (rejoin_stage && std::abs(road_projection.lateral_offset) > 0.04) {
+                    side = road_projection.lateral_offset >= 0.0 ? 1.0 : -1.0;
+                }
+
+                const double target_ahead = rejoin_stage ? 0.46 : 0.62;
+                const double road_offset = rejoin_stage ? 0.10 : 0.46;
+                if (road_projection.valid && !rejoin_stage) {
+                    const auto side_score = [&](double candidate_side) {
+                        const Vec2 road_target = point_at_road_s(road_projection.s + target_ahead);
+                        const Vec2 normal{-road_projection.tangent.y, road_projection.tangent.x};
+                        const Vec2 candidate_target{
+                            road_target.x + candidate_side * road_offset * normal.x,
+                            road_target.y + candidate_side * road_offset * normal.y,
+                        };
+                        if (!is_inside_bounds(world_, candidate_target, -0.18)) {
+                            return -1000.0;
+                        }
+                        double score = 0.0;
+                        const double padding = 0.5 * geometry_.body_width + 0.08;
+                        for (const Rect& obstacle : world_.obstacles()) {
+                            if (point_in_expanded_rect(candidate_target, obstacle, padding)) {
+                                score -= 12.0;
+                            }
+                        }
+                        score += candidate_side > 0.0 ? 0.05 * left_clearance : 0.05 * right_clearance;
+                        if (world_is_mixed(world_) &&
+                            std::max(world_.bounds().max_x - world_.bounds().min_x,
+                                     world_.bounds().max_y - world_.bounds().min_y) <= 2.50) {
+                            score += 1.20 * candidate_target.y;
+                        }
+                        return score;
+                    };
+                    const double upper_score = side_score(1.0);
+                    const double lower_score = side_score(-1.0);
+                    side = upper_score >= lower_score ? 1.0 : -1.0;
+                }
+                Vec2 mixed_target{};
+                if (road_projection.valid) {
+                    const Vec2 road_target = point_at_road_s(road_projection.s + target_ahead);
+                    const Vec2 normal{-road_projection.tangent.y, road_projection.tangent.x};
+                    mixed_target = {
+                        road_target.x + side * road_offset * normal.x,
+                        road_target.y + side * road_offset * normal.y,
+                    };
+                } else {
+                    const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
+                    const Vec2 lateral{-forward.y, forward.x};
+                    mixed_target = {
+                        estimate_.position.x + target_ahead * forward.x + side * road_offset * lateral.x,
+                        estimate_.position.y + target_ahead * forward.y + side * road_offset * lateral.y,
+                    };
+                }
+                mixed_target = clamp_point_to_bounds(world_, mixed_target, 0.18);
                 if (dynamic_gap_point_allowed(mixed_target)) {
                     set_locked_gap_goal(mixed_target);
                     publish_locked_gap_goal();
@@ -4611,7 +4916,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                   lidar_hits_,
                   estimate_.yaw,
                   motion_heading_local,
-                  0.50,
+                  mixed_gate_active ? 0.30 : 0.50,
                   config_.localization.max_range_m)
             : estimate_.front_lidar_distance;
     const bool lidar_side_clearance_blocked =
@@ -4882,6 +5187,26 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     } else if (!handled_gap_priority_tracking) {
         gap_recovery_turn_active_ = false;
     }
+    if (!use_gap_recovery_turn &&
+        mixed_gate_active &&
+        locked_gap_goal_.has_value() &&
+        lidar_front_blocked &&
+        have_motion_heading &&
+        std::abs(motion_heading_local) > 0.05 &&
+        estimate_.min_lidar_distance > config_.localization.min_valid_range_m + 0.04) {
+        gap_recovery_turn_active_ = true;
+        use_gap_recovery_turn = true;
+        use_direct_yaw_rate_command = true;
+        direct_yaw_rate_command = clamp_value(
+            1.25 * motion_heading_local,
+            -0.65 * config_.drive.max_yaw_rate,
+            0.65 * config_.drive.max_yaw_rate);
+        commanded_speed_ = 0.0;
+        commanded_steer_angle_ = 0.0;
+        last_command_.target_speed = 0.0;
+        last_command_.target_curvature = 0.0;
+        last_mpc_command_.reset();
+    }
     const bool dynamic_gap_safety_stop_enabled =
         use_dynamic_gap_gates_ && following_dynamic_gate && have_reference_trajectory;
     bool locked_gap_about_to_cross = false;
@@ -4908,10 +5233,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             crossing_progress + near_crossing_margin >= crossing_margin &&
             gate_distance <= near_crossing_gate_radius;
     }
+    const bool mixed_gate_side_motion_clear =
+        mixed_gate_active &&
+        have_motion_heading &&
+        std::abs(motion_heading_local) > 16.0 * kPi / 180.0 &&
+        motion_sector_clearance > std::max(
+            config_.localization.obstacle_stop_distance_m + 0.05,
+            config_.localization.min_valid_range_m + 0.16);
+    const bool effective_lidar_front_blocked =
+        lidar_front_blocked && !mixed_gate_side_motion_clear;
     if ((config_.planner_safety_stop_enabled || dynamic_gap_safety_stop_enabled) &&
         !scanning_startup &&
         !use_gap_recovery_turn &&
-        (lidar_front_blocked || lidar_side_clearance_blocked)) {
+        (effective_lidar_front_blocked || lidar_side_clearance_blocked)) {
         safety_stop_active_ = true;
         last_command_.safety_stop = true;
         commanded_speed_ = 0.0;
@@ -4922,9 +5256,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         if (dynamic_gap_safety_stop_enabled &&
             locked_gap_goal_.has_value() &&
             !locked_gap_about_to_cross) {
-            dynamic_gap_tracks_.clear();
-            next_dynamic_gap_track_id_ = 1;
-            restart_unstructured_scan();
+            if (!mixed_gate_active) {
+                dynamic_gap_tracks_.clear();
+                next_dynamic_gap_track_id_ = 1;
+                restart_unstructured_scan();
+            }
         }
     }
 

@@ -989,31 +989,31 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.structured_preset_ = StructuredMapPreset::HardwareTrack;
     world.bounds_ = {0.0, 0.0, 2.20, 1.80};
 
-    // Compact real-lab mixed validation: the reference is intentionally close
-    // to the 2 m manual hardware maps, with one road block and a lateral bypass.
-    world.road_centerline_ = {
-        {0.24, 0.72},
-        {0.48, 0.72},
-        {0.78, 0.72},
-        {1.04, 0.72},
-        {1.32, 0.72},
-        {1.62, 0.72},
-        {1.94, 0.72},
+    // Compact real-lab mixed validation: a scaled version of the large mixed
+    // road/gate scene, kept inside the 2 m hardware workspace.  The first
+    // half preserves the blocked road/bypass test; the upper half closes the
+    // road with a gentle return curve so the hardware scene remains comparable
+    // with the closed-loop simulation.
+    std::vector<Vec2> mixed_track_seed = {
+        {0.44, 0.88},
+        {0.66, 0.80},
+        {0.96, 0.82},
+        {1.20, 0.98},
+        {1.12, 1.18},
+        {0.84, 1.28},
+        {0.54, 1.12},
     };
+    mixed_track_seed = close_polyline_loop(std::move(mixed_track_seed), 0.45);
+    world.road_centerline_ = resample_closed_polyline(mixed_track_seed, 0.055);
     world.start_ = world.road_centerline_.front();
-    world.goal_ = world.road_centerline_.back();
+    world.goal_ = world.start_;
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
-    world.obstacles_ = {
-        // Physical layout suggestion: a block intersects the road, while the
-        // upper side remains a safe LiDAR-visible exit and rejoin corridor.
-        {0.98, 0.48, 1.20, 0.92},
-        {0.76, 0.16, 1.44, 0.34},
-    };
+    world.obstacles_.clear();
 
     world.gate_templates_ = {
-        {"block_bypass", {1.18, 1.12}, {1.18, 1.12}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"road_rejoin", {1.56, 0.82}, {1.56, 0.82}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"block_bypass", {1.00, 0.62}, {1.00, 0.62}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"road_rejoin", {1.18, 1.00}, {1.18, 1.00}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
         {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
     };
     world.gates_ = world.gate_templates_;

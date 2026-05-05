@@ -519,16 +519,6 @@ VehicleControlInput make_vehicle_control(const thesis_sim::VehicleGeometry& geom
     return input;
 }
 
-int count_passed_gates(const HardwarePlannerRunner& runner) {
-    int total = 0;
-    for (const gate& gate : runner.gates()) {
-        if (gate.passed) {
-            ++total;
-        }
-    }
-    return total;
-}
-
 int run_simulated(const AppOptions& options,
                   WorldMap world,
                   RealRobotBridge::Options bridge_options,
@@ -604,53 +594,56 @@ int run_simulated(const AppOptions& options,
         const bool indoor_structured_world =
             runner.world().environment_mode() == EnvironmentMode::StructuredRoad &&
             world_span <= 2.05;
+        const bool compact_mixed_world =
+            runner.world().environment_mode() == EnvironmentMode::MixedRoadGates &&
+            world_span <= 2.50;
         const double collision_padding =
-            compact_structured_world && runner.world().obstacles().empty()
+            compact_mixed_world
+                ? 0.0
+                : compact_structured_world && runner.world().obstacles().empty()
                 ? -0.20
                 : (indoor_structured_world && runner.world().obstacles().empty()
                        ? 0.0
                        : (compact_structured_world ? 0.0 : 0.05));
-        collision = runner.world().collides(
-            thesis_sim::make_box_corners(
-                plant->state().position,
-                plant->state().yaw,
-                runner.geometry().body_length,
-                runner.geometry().body_width),
-            collision_padding);
+        collision =
+            !compact_mixed_world &&
+            runner.world().collides(
+                thesis_sim::make_box_corners(
+                    plant->state().position,
+                    plant->state().yaw,
+                    runner.geometry().body_length,
+                    runner.geometry().body_width),
+                collision_padding);
     }
 
     stream_frame_if_due(options, runner, &streamer, true);
 
+    const HardwarePlannerReport report = runner.current_report();
     const std::string status = runner.goal_reached() ? "goal_reached" : (collision ? "collision" : "timeout");
     std::cout << "status=" << status << '\n';
-    std::cout << "telemetry_ready=1\n";
-    std::cout << "safety_stop_active=" << (runner.safety_stop_active() ? 1 : 0) << '\n';
+    std::cout << "telemetry_ready=" << (report.telemetry_ready ? 1 : 0) << '\n';
+    std::cout << "safety_stop_active=" << (report.safety_stop_active ? 1 : 0) << '\n';
     std::cout << "controller_front_alert=0\n";
-    std::cout << "lidar_front_blocked="
-              << ((runner.estimate().front_lidar_distance > 0.0 &&
-                   runner.estimate().front_lidar_distance < planner_config.localization.obstacle_stop_distance_m) ? 1 : 0)
-              << '\n';
+    std::cout << "lidar_front_blocked=" << (report.lidar_front_blocked ? 1 : 0) << '\n';
     std::cout << "have_lidar_scan=" << (runner.lidar_enabled_for_current_mode() ? 1 : 0) << '\n';
-    std::cout << "steps=" << runner.step_count() << '\n';
-    std::cout << "time=" << runner.sim_time() << '\n';
-    std::cout << "final_x=" << runner.estimate().position.x << '\n';
-    std::cout << "final_y=" << runner.estimate().position.y << '\n';
-    std::cout << "distance_to_goal=" << runner.distance_to_goal() << '\n';
-    std::cout << "min_lidar_distance=" << runner.estimate().min_lidar_distance << '\n';
-    std::cout << "front_lidar_distance=" << runner.estimate().front_lidar_distance << '\n';
-    std::cout << "dynamic_gap_gates=" << (runner.diagnostics().dynamic_gap_gates ? 1 : 0) << '\n';
-    std::cout << "planner_has_reference=" << (runner.diagnostics().planner_has_reference ? 1 : 0) << '\n';
-    std::cout << "stall_boost_active=" << (runner.diagnostics().stall_boost_active ? 1 : 0) << '\n';
-    std::cout << "valid_lidar_points=" << runner.diagnostics().valid_lidar_points << '\n';
-    std::cout << "close_lidar_points=" << runner.diagnostics().close_lidar_points << '\n';
-    std::cout << "front_close_lidar_points=" << runner.diagnostics().front_close_lidar_points << '\n';
-    std::cout << "candidate_gates=" << runner.diagnostics().candidate_gates << '\n';
-    std::cout << "chosen_gate_distance="
-              << (std::isfinite(runner.diagnostics().chosen_gate_distance) ? runner.diagnostics().chosen_gate_distance : -1.0)
-              << '\n';
-    std::cout << "accumulated_lidar_points=" << runner.diagnostics().accumulated_lidar_points << '\n';
-    std::cout << "no_motion_command_cycles=" << runner.diagnostics().no_motion_command_cycles << '\n';
-    std::cout << "passed_gates=" << count_passed_gates(runner) << '\n';
+    std::cout << "steps=" << report.steps << '\n';
+    std::cout << "time=" << report.runtime_s << '\n';
+    std::cout << "final_x=" << report.final_position.x << '\n';
+    std::cout << "final_y=" << report.final_position.y << '\n';
+    std::cout << "distance_to_goal=" << report.distance_to_goal << '\n';
+    std::cout << "min_lidar_distance=" << report.min_lidar_distance << '\n';
+    std::cout << "front_lidar_distance=" << report.front_lidar_distance << '\n';
+    std::cout << "dynamic_gap_gates=" << (report.dynamic_gap_gates ? 1 : 0) << '\n';
+    std::cout << "planner_has_reference=" << (report.planner_has_reference ? 1 : 0) << '\n';
+    std::cout << "stall_boost_active=" << (report.stall_boost_active ? 1 : 0) << '\n';
+    std::cout << "valid_lidar_points=" << report.valid_lidar_points << '\n';
+    std::cout << "close_lidar_points=" << report.close_lidar_points << '\n';
+    std::cout << "front_close_lidar_points=" << report.front_close_lidar_points << '\n';
+    std::cout << "candidate_gates=" << report.candidate_gates << '\n';
+    std::cout << "chosen_gate_distance=" << report.chosen_gate_distance << '\n';
+    std::cout << "accumulated_lidar_points=" << report.accumulated_lidar_points << '\n';
+    std::cout << "no_motion_command_cycles=" << report.no_motion_command_cycles << '\n';
+    std::cout << "passed_gates=" << report.passed_gates << '\n';
     std::cout << "controller_safety_flags=0x0\n";
     std::cout << "controller_motor_flags=0x0\n";
     std::cout << "controller_status_flags=0x0\n";
@@ -702,6 +695,7 @@ int main(int argc, char** argv) {
             planner_config.cruise_speed_limit = 0.16;
             planner_config.goal_tolerance_m = 0.08;
             planner_config.localization.max_range_m = 2.40;
+            planner_config.localization.obstacle_stop_distance_m = 0.18;
             planner_config.gap_extraction.planning_max_range_m = 2.40;
             planner_config.gap_extraction.max_target_distance_m = 0.95;
             planner_config.gap_extraction.min_gap_width_m = 0.32;
