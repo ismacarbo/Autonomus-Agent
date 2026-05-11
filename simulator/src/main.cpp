@@ -1103,9 +1103,11 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
         hardware.frame.goal_reached
             ? "goal_reached"
             : (hardware.frame.safety_stop_active ? "safety_stop"
-                                                : (hardware_server.connected()
+                                                : (hardware_server.connected() || hardware.frame.connected
                                                        ? "live"
-                                                       : (hardware_server.listening() ? "listening" : "idle")));
+                                                       : (!hardware.history.empty() || hardware.frame.telemetry_ready || hardware.frame.step_count > 0
+                                                              ? "disconnected"
+                                                              : (hardware_server.listening() ? "listening" : "idle"))));
 
     const MetricSummary planning_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::planning_ms);
     const MetricSummary tracking_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::tracking_ms);
@@ -4247,10 +4249,11 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         if (ImGui::Combo(environment_label, &hardware_environment, environment_items, IM_ARRAYSIZE(environment_items))) {
             ui_state->hardware_environment_mode = hardware_environment;
             load_hardware_editor_from_selection(ui_state);
-            clear_hardware_world_sync(
+            queue_current_hardware_world(
                 ui_state,
                 hardware_server,
-                "Scenario selection changed locally. It will be streamed automatically to the next Raspberry runner connection.");
+                "Scenario map queued for the Raspberry runner.",
+                "Scenario changed locally, but the map could not be queued for the Raspberry runner.");
         }
 
         if (static_cast<EnvironmentMode>(ui_state->hardware_environment_mode) == EnvironmentMode::StructuredRoad) {
@@ -4542,19 +4545,31 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
 
         if (ImGui::BeginTable("HardwareMapActions", 2, ImGuiTableFlags_SizingStretchSame)) {
             ImGui::TableNextColumn();
-            const bool can_reset_track = hardware_structured_mode;
+            const bool hardware_mixed_mode =
+                editor_world.environment_mode() == EnvironmentMode::MixedRoadGates ||
+                static_cast<EnvironmentMode>(ui_state->hardware_environment_mode) == EnvironmentMode::MixedRoadGates;
+            const bool can_reset_track = hardware_structured_mode || hardware_mixed_mode;
             if (!can_reset_track) {
                 ImGui::BeginDisabled();
             }
-            if (ImGui::Button("Reset Track", ImVec2(-1.0f, 0.0f))) {
-                ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
-                ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::HardwareTrack);
+            const char* reset_label = hardware_mixed_mode ? "Reset Mixed" : "Reset Track";
+            if (ImGui::Button(reset_label, ImVec2(-1.0f, 0.0f))) {
+                if (hardware_mixed_mode) {
+                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::MixedRoadGates);
+                } else {
+                    ui_state->hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
+                    ui_state->hardware_structured_preset = static_cast<int>(StructuredMapPreset::HardwareTrack);
+                }
                 load_hardware_editor_from_selection(ui_state);
                 queue_current_hardware_world(
                     ui_state,
                     hardware_server,
-                    "Hardware Track queued for the Raspberry runner.",
-                    "Hardware Track restored locally, but it could not be queued for the Raspberry runner.");
+                    hardware_mixed_mode
+                        ? "Mixed hardware road queued for the Raspberry runner."
+                        : "Hardware Track queued for the Raspberry runner.",
+                    hardware_mixed_mode
+                        ? "Mixed hardware road restored locally, but it could not be queued for the Raspberry runner."
+                        : "Hardware Track restored locally, but it could not be queued for the Raspberry runner.");
             }
             if (!can_reset_track) {
                 ImGui::EndDisabled();

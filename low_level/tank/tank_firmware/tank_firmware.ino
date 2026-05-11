@@ -1,12 +1,6 @@
 #include <Wire.h>
-#include <DHT.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
-
-// ===================== DHT11 =====================
-#define DHTPIN 6
-#define DHTTYPE DHT11
-DHT dht(DHTPIN, DHTTYPE);
 
 // ===================== BNO055 =====================
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
@@ -32,15 +26,33 @@ volatile long enc2_ticks = 0;
 // ===================== BATTERIA =====================
 #define BAT_PIN A0
 
-// ===================== ISR ENCODER =====================
+// ===================== TIMING =====================
+unsigned long lastPrint = 0;
+unsigned long lastImuRead = 0;
+
+// ===================== IMU DATA =====================
+float yaw = 0;
+float roll = 0;
+float pitch = 0;
+
+uint8_t sys = 0;
+uint8_t gyro = 0;
+uint8_t accel = 0;
+uint8_t mag = 0;
+
+// ===================== ISR =====================
 void enc1ISR() {
-  if (digitalRead(ENC1_A) == digitalRead(ENC1_B)) enc1_ticks++;
-  else enc1_ticks--;
+  if (digitalRead(ENC1_A) == digitalRead(ENC1_B))
+    enc1_ticks++;
+  else
+    enc1_ticks--;
 }
 
 void enc2ISR() {
-  if (digitalRead(ENC2_A) == digitalRead(ENC2_B)) enc2_ticks++;
-  else enc2_ticks--;
+  if (digitalRead(ENC2_A) == digitalRead(ENC2_B))
+    enc2_ticks++;
+  else
+    enc2_ticks--;
 }
 
 // ===================== MOTORI =====================
@@ -51,58 +63,91 @@ void stopMotors() {
 
 void forward() {
   digitalWrite(M1_IN1, HIGH);
-  analogWrite(M1_IN2, 150);
+  analogWrite(M1_IN2, 130);
 
   digitalWrite(M2_IN1, HIGH);
-  analogWrite(M2_IN2, 150);
+  analogWrite(M2_IN2, 130);
 }
 
 void backward() {
   digitalWrite(M1_IN1, LOW);
-  analogWrite(M1_IN2, 150);
+  analogWrite(M1_IN2, 130);
 
   digitalWrite(M2_IN1, LOW);
-  analogWrite(M2_IN2, 150);
+  analogWrite(M2_IN2, 130);
 }
 
 void turnRight() {
   digitalWrite(M1_IN1, HIGH);
-  analogWrite(M1_IN2, 150);
+  analogWrite(M1_IN2, 130);
 
   digitalWrite(M2_IN1, LOW);
-  analogWrite(M2_IN2, 150);
+  analogWrite(M2_IN2, 130);
 }
 
 void turnLeft() {
   digitalWrite(M1_IN1, LOW);
-  analogWrite(M1_IN2, 150);
+  analogWrite(M1_IN2, 130);
 
   digitalWrite(M2_IN1, HIGH);
-  analogWrite(M2_IN2, 150);
+  analogWrite(M2_IN2, 130);
 }
 
 // ===================== BATTERIA =====================
 float readBattery() {
-  int raw = analogRead(BAT_PIN);
+  long sum = 0;
+
+  for (int i = 0; i < 10; i++) {
+    sum += analogRead(BAT_PIN);
+    delay(2);
+  }
+
+  float raw = sum / 10.0;
   float v_out = raw * (5.0 / 1023.0);
-  float v_batt = v_out * 5.0;
-  return v_batt;
+
+  return v_out * 5.0;
+}
+
+// ===================== IMU =====================
+void updateIMU() {
+  if (!imuOk) return;
+
+  if (millis() - lastImuRead < 200)
+    return;
+
+  lastImuRead = millis();
+
+  sensors_event_t orientationData;
+  bno.getEvent(&orientationData, Adafruit_BNO055::VECTOR_EULER);
+
+  yaw = orientationData.orientation.x;
+  roll = orientationData.orientation.y;
+  pitch = orientationData.orientation.z;
+
+  bno.getCalibration(&sys, &gyro, &accel, &mag);
 }
 
 // ===================== PRINT =====================
 void printSensors(const char* phase) {
+  if (millis() - lastPrint < 500)
+    return;
+
+  lastPrint = millis();
+
   noInterrupts();
   long e1 = enc1_ticks;
   long e2 = enc2_ticks;
   interrupts();
 
   Serial.println();
+
   Serial.print("=== ");
   Serial.print(phase);
   Serial.println(" ===");
 
   Serial.print("ENC1: ");
   Serial.print(e1);
+
   Serial.print(" | ENC2: ");
   Serial.println(e2);
 
@@ -110,48 +155,33 @@ void printSensors(const char* phase) {
   Serial.print(readBattery(), 2);
   Serial.println(" V");
 
-  float t = dht.readTemperature();
-  float h = dht.readHumidity();
-
-  if (isnan(t) || isnan(h)) {
-    Serial.println("DHT11 ERROR");
-  } else {
-    Serial.print("Temp: ");
-    Serial.print(t);
-    Serial.print(" C | Hum: ");
-    Serial.print(h);
-    Serial.println(" %");
-  }
-
   if (imuOk) {
-    sensors_event_t orientationData;
-    bno.getEvent(&orientationData, Adafruit_BNO055::VECTOR_EULER);
-
-    uint8_t sys, gyro, accel, mag;
-    bno.getCalibration(&sys, &gyro, &accel, &mag);
-
     Serial.print("Yaw: ");
-    Serial.print(orientationData.orientation.x, 2);
-    Serial.print(" deg | Roll: ");
-    Serial.print(orientationData.orientation.y, 2);
-    Serial.print(" deg | Pitch: ");
-    Serial.print(orientationData.orientation.z, 2);
-    Serial.println(" deg");
+    Serial.print(yaw, 2);
+
+    Serial.print(" | Roll: ");
+    Serial.print(roll, 2);
+
+    Serial.print(" | Pitch: ");
+    Serial.println(pitch, 2);
 
     Serial.print("Calib SYS:");
     Serial.print(sys);
+
     Serial.print(" G:");
     Serial.print(gyro);
+
     Serial.print(" A:");
     Serial.print(accel);
+
     Serial.print(" M:");
     Serial.println(mag);
   } else {
-    Serial.println("IMU: not detected");
+    Serial.println("IMU not detected");
   }
 }
 
-// ===================== MOVIMENTO =====================
+// ===================== MOVEMENT =====================
 void runMotion(const char* name, void (*func)(), int duration) {
   Serial.print(">>> ");
   Serial.println(name);
@@ -159,46 +189,56 @@ void runMotion(const char* name, void (*func)(), int duration) {
   func();
 
   unsigned long start = millis();
+
   while (millis() - start < duration) {
+    updateIMU();
     printSensors(name);
-    delay(300);
   }
 
   stopMotors();
-  delay(800);
+
+  delay(1000);
 }
 
 // ===================== SETUP =====================
 void setup() {
   Serial.begin(115200);
+
   delay(2000);
 
-  Serial.println("===== FULL SYSTEM TEST ARDUINO UNO =====");
+  Serial.println("===== SYSTEM TEST NO DHT =====");
 
+  // MOTORI
   pinMode(M1_IN1, OUTPUT);
   pinMode(M1_IN2, OUTPUT);
+
   pinMode(M2_IN1, OUTPUT);
   pinMode(M2_IN2, OUTPUT);
+
   stopMotors();
 
+  // ENCODER
   pinMode(ENC1_A, INPUT_PULLUP);
   pinMode(ENC1_B, INPUT_PULLUP);
+
   pinMode(ENC2_A, INPUT_PULLUP);
   pinMode(ENC2_B, INPUT_PULLUP);
 
   attachInterrupt(digitalPinToInterrupt(ENC1_A), enc1ISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC2_A), enc2ISR, CHANGE);
 
-  dht.begin();
-
+  // IMU
   Wire.begin();
 
   if (bno.begin()) {
     imuOk = true;
+
     bno.setExtCrystalUse(true);
+
     Serial.println("[OK] BNO055 detected");
   } else {
     imuOk = false;
+
     Serial.println("[ERROR] BNO055 not detected");
   }
 
@@ -207,13 +247,19 @@ void setup() {
 
 // ===================== LOOP =====================
 void loop() {
+  updateIMU();
+
   printSensors("IDLE");
 
   runMotion("FORWARD", forward, 1500);
+
   runMotion("BACKWARD", backward, 1500);
+
   runMotion("RIGHT", turnRight, 1200);
+
   runMotion("LEFT", turnLeft, 1200);
 
   Serial.println("Cycle done");
+
   delay(2000);
 }
