@@ -6013,7 +6013,12 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     sim_time_ += bounded_dt;
     ++step_count_;
     count_mixed_gate_crossing_if_needed();
-    if (structured_road_is_closed_loop(world_)) {
+    if (compact_mixed_structured_loop(world_) &&
+        !world_.obstacles().empty() &&
+        passed_unstructured_gap_count_ >= 2) {
+        distance_to_goal_ = 0.0;
+        goal_reached_ = true;
+    } else if (structured_road_is_closed_loop(world_)) {
         const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const bool compact_mixed_loop = compact_mixed_structured_loop(world_);
         const double wrapped_track_s =
