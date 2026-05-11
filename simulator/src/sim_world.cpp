@@ -989,10 +989,9 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.structured_preset_ = StructuredMapPreset::HardwareTrack;
     world.bounds_ = {0.0, 0.0, 1.65, 1.35};
 
-    // Compact real-lab mixed validation: a scaled version of the large mixed
-    // road/gate scene, kept well inside the hardware workspace. The lower
-    // branch contains a small road block and a nearby bypass gate; the upper
-    // branch closes the road with a gentle return curve.
+    // Compact real-lab mixed validation: only the structured reference is
+    // mapped here. Obstacles and bypass gates must come from LiDAR at runtime,
+    // matching the unstructured validation workflow.
     std::vector<Vec2> mixed_track_seed = {
         {0.33, 0.66},
         {0.50, 0.60},
@@ -1008,18 +1007,9 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.goal_ = world.start_;
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
-    world.obstacles_ = {
-        {0.76, 0.57, 0.94, 0.78},
-    };
-
-    world.gate_templates_ = {
-        {"block_bypass", {0.78, 0.40}, {0.78, 0.40}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"road_rejoin", {0.90, 0.76}, {0.90, 0.76}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
-    };
+    world.obstacles_.clear();
+    world.gate_templates_.clear();
     world.gates_ = world.gate_templates_;
-    recompute_gate_headings(&world.gates_, world.goal_);
-    world.gate_templates_ = world.gates_;
     world.gate_behavior_ = GateBehaviorMode::Static;
     world.gate_seed_ = 0;
     return world;
