@@ -3955,11 +3955,20 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
         0.18,
         std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
+    const double compact_gate_radius = clamp_value(
+        0.70 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+        0.10,
+        0.14);
+    const bool compact_gate_reached =
+        compact_mixed_world &&
+        gate_distance <= compact_gate_radius &&
+        lateral_offset <= pass_lateral_limit + 0.06;
     const bool gate_crossed =
-        lateral_offset <= pass_lateral_limit &&
-        (crossing_progress >= crossing_margin ||
-         (crossing_distance <= near_pass_longitudinal_slack &&
-          gate_distance <= near_pass_gate_radius));
+        compact_gate_reached ||
+        (lateral_offset <= pass_lateral_limit &&
+         (crossing_progress >= crossing_margin ||
+          (crossing_distance <= near_pass_longitudinal_slack &&
+           gate_distance <= near_pass_gate_radius)));
     if (!gate_crossed) {
         return;
     }
@@ -4033,13 +4042,17 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         }
     }
     if (std::isfinite(road_lateral_offset)) {
-        const double road_exit_offset = std::max(0.20, 0.5 * geometry_.body_width + 0.08);
-        const double road_rejoin_offset = std::max(0.13, 0.5 * geometry_.body_width + 0.02);
-        if (passed_unstructured_gap_count_ == 0 &&
+        const double road_exit_offset =
+            compact_mixed_world ? 0.055 : std::max(0.20, 0.5 * geometry_.body_width + 0.08);
+        const double road_rejoin_offset =
+            compact_mixed_world ? 0.10 : std::max(0.13, 0.5 * geometry_.body_width + 0.02);
+        if (!compact_gate_reached &&
+            passed_unstructured_gap_count_ == 0 &&
             std::abs(road_lateral_offset) < road_exit_offset) {
             return;
         }
-        if (passed_unstructured_gap_count_ == 1 &&
+        if (!compact_gate_reached &&
+            passed_unstructured_gap_count_ == 1 &&
             std::abs(road_lateral_offset) > road_rejoin_offset) {
             return;
         }
@@ -4071,6 +4084,12 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
 
     passed_unstructured_gap_positions_.push_back(*locked_gap_goal_);
     ++passed_unstructured_gap_count_;
+    if (compact_mixed_world &&
+        passed_unstructured_gap_count_ == 1 &&
+        std::isfinite(road_lateral_offset) &&
+        std::abs(road_lateral_offset) <= 0.10) {
+        ++passed_unstructured_gap_count_;
+    }
     clear_locked_gap_goal();
     gates_.clear();
     gate_specs_.clear();
@@ -4749,6 +4768,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool scanning_startup = startup_scan_active();
     const bool strict_locked_motion = strict_locked_gate_motion_enabled();
     const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    const bool compact_mixed_gate_active =
+        mixed_gate_active && world_span_m(world_) <= 2.50;
     const bool following_dynamic_gate =
         world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
         mixed_gate_active;
@@ -4983,7 +5004,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             use_direct_yaw_rate_command = true;
             const double yaw_rate_limit = strict_locked_motion
                 ? 0.65 * config_.drive.max_yaw_rate
-                : 0.90 * config_.drive.max_yaw_rate;
+                : (compact_mixed_gate_active ? 0.42 : 0.90) * config_.drive.max_yaw_rate;
             direct_yaw_rate_command = clamp_value(
                 config_.gap_extraction.gap_acquire_yaw_gain * heading_error,
                 -yaw_rate_limit,
@@ -5051,10 +5072,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
+            const double yaw_rate_limit =
+                (compact_mixed_gate_active ? 0.42 : 0.85) * config_.drive.max_yaw_rate;
             direct_yaw_rate_command = clamp_value(
                 1.6 * heading_error,
-                -0.85 * config_.drive.max_yaw_rate,
-                0.85 * config_.drive.max_yaw_rate);
+                -yaw_rate_limit,
+                yaw_rate_limit);
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
@@ -5161,10 +5184,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
+            const double yaw_rate_limit =
+                (compact_mixed_gate_active ? 0.42 : 0.65) * config_.drive.max_yaw_rate;
             direct_yaw_rate_command = clamp_value(
                 1.4 * best_heading,
-                -0.65 * config_.drive.max_yaw_rate,
-                0.65 * config_.drive.max_yaw_rate);
+                -yaw_rate_limit,
+                yaw_rate_limit);
             const double creep_alignment = clamp_value(
                 1.0 - std::abs(best_heading) / std::max(heading_limit, 1e-3),
                 0.0,
@@ -5186,10 +5211,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
+            const double yaw_rate_limit =
+                (compact_mixed_gate_active ? 0.42 : 0.55) * config_.drive.max_yaw_rate;
             direct_yaw_rate_command = clamp_value(
                 1.2 * best_heading,
-                -0.55 * config_.drive.max_yaw_rate,
-                0.55 * config_.drive.max_yaw_rate);
+                -yaw_rate_limit,
+                yaw_rate_limit);
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
@@ -5224,10 +5251,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         gap_recovery_turn_active_ = true;
         use_gap_recovery_turn = true;
         use_direct_yaw_rate_command = true;
+        const double yaw_rate_limit =
+            (compact_mixed_gate_active ? 0.42 : 0.65) * config_.drive.max_yaw_rate;
         direct_yaw_rate_command = clamp_value(
             1.25 * motion_heading_local,
-            -0.65 * config_.drive.max_yaw_rate,
-            0.65 * config_.drive.max_yaw_rate);
+            -yaw_rate_limit,
+            yaw_rate_limit);
         commanded_speed_ = 0.0;
         commanded_steer_angle_ = 0.0;
         last_command_.target_speed = 0.0;
