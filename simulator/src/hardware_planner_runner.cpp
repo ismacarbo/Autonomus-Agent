@@ -4279,6 +4279,29 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                  estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m) ||
                 (estimate_.min_lidar_distance > 0.0 &&
                  estimate_.min_lidar_distance < config_.localization.obstacle_stop_distance_m);
+            if (compact_mixed_world &&
+                passed_unstructured_gap_count_ == 1 &&
+                road_projection.valid &&
+                std::abs(road_projection.lateral_offset) <= 0.065) {
+                const bool road_front_clear =
+                    estimate_.front_lidar_distance <= 0.0 ||
+                    estimate_.front_lidar_distance >=
+                        config_.localization.obstacle_stop_distance_m + 0.12 ||
+                    compute_mixed_road_block_score(0.45) < 0.35;
+                if (road_front_clear) {
+                    ++passed_unstructured_gap_count_;
+                    clear_locked_gap_goal();
+                    gates_.clear();
+                    gate_specs_.clear();
+                    visible_gate_indices_.clear();
+                    chosen_gate_index_ = -1;
+                    diagnostics_.candidate_gates = 0;
+                    diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+                    startup_scan_complete_ = true;
+                    unstructured_no_candidate_scan_elapsed_s_ = 0.0;
+                    return;
+                }
+            }
 
             if (!rejoin_stage && road_block_score < 0.12) {
                 gates_.clear();
@@ -4319,14 +4342,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }
 
                 const double target_ahead =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.14 : (compact_mixed_world ? 0.30 : 0.46))
-                                 : (lab_scale_mixed_world ? 0.20 : (compact_mixed_world ? 0.38 : 0.62));
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.18 : (compact_mixed_world ? 0.30 : 0.46))
+                                 : (lab_scale_mixed_world ? 0.24 : (compact_mixed_world ? 0.38 : 0.62));
                 const double road_offset =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.04 : (compact_mixed_world ? 0.08 : 0.10))
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.05 : (compact_mixed_world ? 0.08 : 0.10))
                                  : (compact_mixed_world
-                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.05 : 0.19),
-                                                      lab_scale_mixed_world ? 0.15 : 0.26,
-                                                      lab_scale_mixed_world ? 0.19 : 0.32)
+                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.08 : 0.19),
+                                                      lab_scale_mixed_world ? 0.18 : 0.26,
+                                                      lab_scale_mixed_world ? 0.22 : 0.32)
                                         : 0.46);
                 if (road_projection.valid && !rejoin_stage) {
                     const auto side_score = [&](double candidate_side) {
