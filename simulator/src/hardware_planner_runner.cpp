@@ -746,6 +746,13 @@ bool compact_mixed_structured_loop(const WorldMap& world) {
            structured_course_span_m(world) <= 1.20;
 }
 
+double compact_mixed_gate_acceptance_radius_m(const WorldMap& world) {
+    if (!world_is_mixed(world)) {
+        return 0.0;
+    }
+    return world_span_m(world) <= 1.25 ? 0.10 : 0.12;
+}
+
 double distance_to_gate_point(const gate& candidate, const Vec2& position) {
     return std::hypot(candidate.x_pos - position.x, candidate.y_pos - position.y);
 }
@@ -3959,13 +3966,12 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         0.18,
         std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
     const double compact_gate_radius = clamp_value(
-        0.70 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+        compact_mixed_gate_acceptance_radius_m(world_),
         0.10,
         0.14);
     const bool compact_gate_reached =
         compact_mixed_world &&
-        gate_distance <= compact_gate_radius &&
-        lateral_offset <= pass_lateral_limit + 0.06;
+        gate_distance <= compact_gate_radius;
     const bool gate_crossed =
         compact_gate_reached ||
         (lateral_offset <= pass_lateral_limit &&
@@ -4287,14 +4293,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }
 
                 const double target_ahead =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.24 : (compact_mixed_world ? 0.30 : 0.46))
-                                 : (lab_scale_mixed_world ? 0.32 : (compact_mixed_world ? 0.38 : 0.62));
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.18 : (compact_mixed_world ? 0.30 : 0.46))
+                                 : (lab_scale_mixed_world ? 0.24 : (compact_mixed_world ? 0.38 : 0.62));
                 const double road_offset =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.07 : (compact_mixed_world ? 0.08 : 0.10))
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.05 : (compact_mixed_world ? 0.08 : 0.10))
                                  : (compact_mixed_world
-                                        ? clamp_value(geometry_.body_width + (lab_scale_mixed_world ? 0.04 : 0.07),
-                                                      lab_scale_mixed_world ? 0.22 : 0.26,
-                                                      lab_scale_mixed_world ? 0.28 : 0.32)
+                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.08 : 0.19),
+                                                      lab_scale_mixed_world ? 0.18 : 0.26,
+                                                      lab_scale_mixed_world ? 0.22 : 0.32)
                                         : 0.46);
                 if (road_projection.valid && !rejoin_stage) {
                     const auto side_score = [&](double candidate_side) {
@@ -6093,8 +6099,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             structured_progress_s_ + progress_margin >= structured_goal_progress_target_;
         if (compact_mixed_loop) {
             const double minimum_mixed_progress =
-                std::max(0.90 * structured_goal_progress_target_,
-                         structured_goal_progress_target_ - progress_margin);
+                0.65 * structured_goal_progress_target_;
             const bool active_dynamic_gate = locked_gap_goal_.has_value();
             goal_reached_ =
                 !active_dynamic_gate &&

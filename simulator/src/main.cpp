@@ -1973,6 +1973,31 @@ void draw_goal_marker(ImDrawList* draw_list, const CanvasTransform& tx, const Ve
     draw_list->AddCircle(screen_pos, 10.8f, IM_COL32(245, 246, 240, 190), 0, 1.6f);
 }
 
+double mixed_gate_acceptance_radius_for_world(const WorldMap& world) {
+    if (world.environment_mode() != EnvironmentMode::MixedRoadGates) {
+        return 0.0;
+    }
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    return span <= 1.25 ? 0.10 : 0.12;
+}
+
+void draw_mixed_gate_acceptance_ring(ImDrawList* draw_list,
+                                     const CanvasTransform& tx,
+                                     const WorldMap& world,
+                                     const Vec2& gate_position) {
+    const double radius_m = mixed_gate_acceptance_radius_for_world(world);
+    if (!(radius_m > 0.0)) {
+        return;
+    }
+    draw_list->AddCircle(
+        world_to_screen(tx, gate_position),
+        static_cast<float>(radius_m * tx.scale),
+        IM_COL32(255, 206, 96, 150),
+        0,
+        1.8f);
+}
+
 void draw_vehicle(ImDrawList* draw_list,
                   const CanvasTransform& tx,
                   const VehicleSnapshot& vehicle,
@@ -2687,6 +2712,9 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
             color = IM_COL32(255, 233, 118, 255);
         }
 
+        if (sim.world().environment_mode() == EnvironmentMode::MixedRoadGates && !final_gate) {
+            draw_mixed_gate_acceptance_ring(draw_list, tx, sim.world(), gate_pos);
+        }
         const float radius = final_gate ? 7.0f : 5.0f;
         draw_list->AddCircleFilled(screen_pos, radius, color);
         draw_list->AddCircle(screen_pos, radius + 3.0f, IM_COL32(245, 246, 240, 180), 0, 1.5f);
@@ -3678,6 +3706,9 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             color = IM_COL32(255, 233, 118, 255);
         }
 
+        if (world.environment_mode() == EnvironmentMode::MixedRoadGates && !spec.final) {
+            draw_mixed_gate_acceptance_ring(draw_list, tx, world, spec.position);
+        }
         const float radius = spec.final ? 7.0f : 5.0f;
         draw_list->AddCircleFilled(screen_pos, radius, color);
         draw_list->AddCircle(screen_pos, radius + 3.0f, IM_COL32(245, 246, 240, 180), 0, 1.5f);
