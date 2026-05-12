@@ -4414,14 +4414,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }
 
                 const double target_ahead =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.18 : (compact_mixed_world ? 0.30 : 0.46))
-                                 : (lab_scale_mixed_world ? 0.24 : (compact_mixed_world ? 0.38 : 0.62));
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.14 : (compact_mixed_world ? 0.30 : 0.46))
+                                 : (lab_scale_mixed_world ? 0.20 : (compact_mixed_world ? 0.38 : 0.62));
                 const double road_offset =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.05 : (compact_mixed_world ? 0.08 : 0.10))
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.04 : (compact_mixed_world ? 0.08 : 0.10))
                                  : (compact_mixed_world
-                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.08 : 0.19),
-                                                      lab_scale_mixed_world ? 0.18 : 0.26,
-                                                      lab_scale_mixed_world ? 0.22 : 0.32)
+                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.045 : 0.19),
+                                                      lab_scale_mixed_world ? 0.15 : 0.26,
+                                                      lab_scale_mixed_world ? 0.17 : 0.32)
                                         : 0.46);
                 if (road_projection.valid && !rejoin_stage) {
                     const auto side_score = [&](double candidate_side) {
