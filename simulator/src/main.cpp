@@ -1979,7 +1979,7 @@ double mixed_gate_acceptance_radius_for_world(const WorldMap& world) {
     }
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
-    return span <= 1.25 ? 0.20 : 0.12;
+    return span <= 1.25 ? 0.10 : 0.12;
 }
 
 void draw_mixed_gate_acceptance_ring(ImDrawList* draw_list,
