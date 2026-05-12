@@ -697,9 +697,9 @@ int main(int argc, char** argv) {
             planner_config.localization.max_range_m = 2.40;
             planner_config.localization.obstacle_stop_distance_m = 0.18;
             planner_config.gap_extraction.planning_max_range_m = 2.40;
-            planner_config.gap_extraction.max_target_distance_m = 0.75;
-            planner_config.gap_extraction.min_gap_width_m = 0.30;
-            planner_config.gap_extraction.dynamic_bounds_margin_m = 0.18;
+            planner_config.gap_extraction.max_target_distance_m = 0.62;
+            planner_config.gap_extraction.min_gap_width_m = 0.28;
+            planner_config.gap_extraction.dynamic_bounds_margin_m = 0.12;
             planner_config.gap_extraction.startup_scan_duration_s = 0.0;
             planner_config.gap_extraction.strict_locked_gate_motion = false;
             planner_config.gap_extraction.min_passed_gates_to_complete = 1;

@@ -1612,8 +1612,11 @@ double HardwarePlannerRunner::compute_mixed_road_forward_clearance(double lookah
 
     const double corridor_padding = 0.5 * geometry_.body_width + 0.08;
     const double corridor_padding_sq = corridor_padding * corridor_padding;
+    const double current_world_span = world_span_m(world_);
     const double boundary_ignore_margin =
-        world_is_mixed(world_) && world_span_m(world_) <= 2.50 ? 0.30 : 0.0;
+        world_is_mixed(world_) && current_world_span <= 2.50
+            ? clamp_value(0.12 * current_world_span, 0.08, 0.18)
+            : 0.0;
     const double sample_step = 0.06;
     const bool closed_loop = structured_road_is_closed_loop(world_);
     for (double ahead = sample_step; ahead <= lookahead_m + 1e-9; ahead += sample_step) {
@@ -3898,7 +3901,7 @@ void HardwarePlannerRunner::publish_locked_gap_goal() {
     spec.motion_frequency_hz = 0.0;
     spec.motion_phase_rad = 0.0;
     spec.heading_hint = std::atan2(locked_gap_approach_direction_.y, locked_gap_approach_direction_.x);
-    spec.final = true;
+    spec.final = world_.environment_mode() == EnvironmentMode::UnstructuredGates;
 
     gate_specs_.assign(1, spec);
 
@@ -3910,7 +3913,7 @@ void HardwarePlannerRunner::publish_locked_gap_goal() {
     g.passed = locked_gap_crossed_;
     g.choose = !locked_gap_crossed_;
     g.too_far = false;
-    g.final = true;
+    g.final = spec.final;
     gates_.assign(1, g);
 
     chosen_gate_index_ = 0;
@@ -4231,6 +4234,10 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             const bool compact_mixed_world =
                 std::max(world_.bounds().max_x - world_.bounds().min_x,
                          world_.bounds().max_y - world_.bounds().min_y) <= 2.50;
+            const bool lab_scale_mixed_world =
+                compact_mixed_world &&
+                std::max(world_.bounds().max_x - world_.bounds().min_x,
+                         world_.bounds().max_y - world_.bounds().min_y) <= 1.25;
             const bool compact_dynamic_obstacle_required =
                 compact_mixed_world && world_.obstacles().empty();
             const bool have_close_dynamic_obstacle =
@@ -4280,12 +4287,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }
 
                 const double target_ahead =
-                    rejoin_stage ? (compact_mixed_world ? 0.30 : 0.46)
-                                 : (compact_mixed_world ? 0.38 : 0.62);
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.24 : (compact_mixed_world ? 0.30 : 0.46))
+                                 : (lab_scale_mixed_world ? 0.32 : (compact_mixed_world ? 0.38 : 0.62));
                 const double road_offset =
-                    rejoin_stage ? (compact_mixed_world ? 0.08 : 0.10)
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.07 : (compact_mixed_world ? 0.08 : 0.10))
                                  : (compact_mixed_world
-                                        ? clamp_value(geometry_.body_width + 0.07, 0.26, 0.32)
+                                        ? clamp_value(geometry_.body_width + (lab_scale_mixed_world ? 0.04 : 0.07),
+                                                      lab_scale_mixed_world ? 0.22 : 0.26,
+                                                      lab_scale_mixed_world ? 0.28 : 0.32)
                                         : 0.46);
                 if (road_projection.valid && !rejoin_stage) {
                     const auto side_score = [&](double candidate_side) {
@@ -6067,7 +6076,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                              : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
         const double goal_position_acceptance =
             tiny_indoor_loop ? std::clamp(0.28 * structured_course_span_m(world_), 0.09, 0.11)
-                             : compact_mixed_loop ? std::max(config_.goal_tolerance_m * 2.0, 0.24)
+                             : compact_mixed_loop ? std::clamp(0.24 * structured_course_span_m(world_), 0.11, 0.16)
                              : std::max(config_.goal_tolerance_m * 2.0, 0.35);
         const bool tiny_loop_neighborhood_complete =
             tiny_indoor_loop &&
@@ -6093,8 +6102,12 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                 structured_progress_s_ >= minimum_mixed_progress &&
                 returned_to_start &&
                 goal_position_distance < goal_position_acceptance;
-            if (!goal_reached_ && distance_to_goal_ <= 0.0) {
-                distance_to_goal_ = std::max(goal_position_distance, config_.goal_tolerance_m);
+            if (!goal_reached_ &&
+                distance_to_goal_ <= structured_goal_active_distance(world_, config_.goal_tolerance_m) &&
+                (!returned_to_start || goal_position_distance >= goal_position_acceptance)) {
+                distance_to_goal_ = std::max(
+                    goal_position_distance,
+                    structured_goal_active_distance(world_, config_.goal_tolerance_m));
             }
         } else {
             goal_reached_ =

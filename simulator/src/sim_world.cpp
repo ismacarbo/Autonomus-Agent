@@ -987,22 +987,23 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::HardwareTrack;
-    world.bounds_ = {0.0, 0.0, 1.65, 1.35};
+    world.bounds_ = {0.0, 0.0, 1.10, 0.90};
 
     // Compact real-lab mixed validation: only the structured reference is
     // mapped here. Obstacles and bypass gates must come from LiDAR at runtime,
     // matching the unstructured validation workflow.
     std::vector<Vec2> mixed_track_seed = {
-        {0.33, 0.66},
-        {0.50, 0.60},
-        {0.72, 0.62},
-        {0.90, 0.74},
-        {0.84, 0.88},
-        {0.63, 0.96},
-        {0.41, 0.84},
+        {0.24, 0.44},
+        {0.38, 0.38},
+        {0.58, 0.40},
+        {0.78, 0.49},
+        {0.80, 0.63},
+        {0.58, 0.71},
+        {0.36, 0.62},
     };
-    mixed_track_seed = close_polyline_loop(std::move(mixed_track_seed), 0.45);
-    world.road_centerline_ = resample_closed_polyline(mixed_track_seed, 0.045);
+    mixed_track_seed = close_polyline_loop(std::move(mixed_track_seed), 0.12);
+    world.road_centerline_ =
+        close_polyline_loop(resample_closed_polyline(mixed_track_seed, 0.035), 0.06);
     world.start_ = world.road_centerline_.front();
     world.goal_ = world.start_;
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);

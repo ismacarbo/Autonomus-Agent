@@ -1902,6 +1902,18 @@ void draw_structured_road_map(ImDrawList* draw_list, const CanvasTransform& tx, 
 }
 
 float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
+    if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
+        const Rect& bounds = world.bounds();
+        const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+        if (span <= 1.25) {
+            return 0.55f;
+        }
+        if (span <= 2.50) {
+            return 0.70f;
+        }
+        return 1.10f;
+    }
+
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return 1.45f;
     }
@@ -1921,6 +1933,12 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
 }
 
 ImU32 hardware_vehicle_body_color_for_world(const WorldMap& world) {
+    if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
+        const Rect& bounds = world.bounds();
+        const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+        return span <= 1.25 ? IM_COL32(238, 239, 226, 210) : kColorBody;
+    }
+
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return kColorBody;
     }
@@ -1931,7 +1949,10 @@ ImU32 hardware_vehicle_body_color_for_world(const WorldMap& world) {
 }
 
 float simulation_vehicle_visual_scale_for_world(const WorldMap& world) {
-    if (world.environment_mode() == EnvironmentMode::StructuredRoad) {
+    if (world.environment_mode() == EnvironmentMode::StructuredRoad ||
+        (world.environment_mode() == EnvironmentMode::MixedRoadGates &&
+         std::max(world.bounds().max_x - world.bounds().min_x,
+                  world.bounds().max_y - world.bounds().min_y) <= 2.50)) {
         return hardware_vehicle_visual_scale_for_world(world);
     }
 
@@ -1944,6 +1965,12 @@ float simulation_vehicle_visual_scale_for_world(const WorldMap& world) {
         return 1.95f;
     }
     return 2.40f;
+}
+
+void draw_goal_marker(ImDrawList* draw_list, const CanvasTransform& tx, const Vec2& goal) {
+    const ImVec2 screen_pos = world_to_screen(tx, goal);
+    draw_list->AddCircleFilled(screen_pos, 6.8f, kColorGoal);
+    draw_list->AddCircle(screen_pos, 10.8f, IM_COL32(245, 246, 240, 190), 0, 1.6f);
 }
 
 void draw_vehicle(ImDrawList* draw_list,
@@ -2577,6 +2604,10 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
             draw_structured_road_map(draw_list, tx, sim.world());
         } else {
             draw_polyline(draw_list, tx, sim.world().road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+        }
+        if (sim.world().environment_mode() == EnvironmentMode::StructuredRoad ||
+            sim.world().environment_mode() == EnvironmentMode::MixedRoadGates) {
+            draw_goal_marker(draw_list, tx, sim.world().goal());
         }
     }
 
@@ -3564,6 +3595,10 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
             draw_structured_road_map(draw_list, tx, world);
         } else {
             draw_polyline(draw_list, tx, world.road_centerline(), IM_COL32(113, 210, 255, 180), 4.0f);
+        }
+        if (world.environment_mode() == EnvironmentMode::StructuredRoad ||
+            world.environment_mode() == EnvironmentMode::MixedRoadGates) {
+            draw_goal_marker(draw_list, tx, world.goal());
         }
     }
 
