@@ -465,6 +465,8 @@ class HardwarePlannerRunner {
     double step_compute_ms_ = 0.0;
     double yaw_offset_ = 0.0;
     double last_raw_imu_yaw_ = 0.0;
+    double filtered_imu_yaw_ = 0.0;
+    double filtered_imu_yaw_rate_ = 0.0;
     double last_observation_time_ = 0.0;
     double distance_to_goal_ = 0.0;
     double commanded_speed_ = 0.0;
@@ -497,6 +499,7 @@ class HardwarePlannerRunner {
     bool locked_gap_crossed_ = false;
     bool yaw_offset_initialized_ = false;
     bool have_raw_imu_yaw_ = false;
+    bool imu_filter_initialized_ = false;
     bool encoder_ticks_initialized_ = false;
     int encoder_ready_streak_ = 0;
     bool measured_wheel_speeds_valid_ = false;

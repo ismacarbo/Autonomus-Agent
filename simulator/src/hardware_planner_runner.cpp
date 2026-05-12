@@ -1224,6 +1224,8 @@ void HardwarePlannerRunner::reset() {
     safety_stop_active_ = false;
     yaw_offset_ = 0.0;
     last_raw_imu_yaw_ = 0.0;
+    filtered_imu_yaw_ = 0.0;
+    filtered_imu_yaw_rate_ = 0.0;
     last_observation_time_ = 0.0;
     commanded_speed_ = 0.0;
     commanded_steer_angle_ = 0.0;
@@ -1240,6 +1242,7 @@ void HardwarePlannerRunner::reset() {
     latest_controller_encoder_dt_ms_ = 0.0;
     yaw_offset_initialized_ = false;
     have_raw_imu_yaw_ = false;
+    imu_filter_initialized_ = false;
     encoder_ticks_initialized_ = false;
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
@@ -1830,14 +1833,34 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         yaw_offset_initialized_ = true;
     }
 
-    const double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
+    const double measured_yaw_raw = wrap_angle(imu_yaw + yaw_offset_);
     const double measured_yaw_rate_raw = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
     // Hardware IMU spikes above the platform's physical yaw-rate envelope are
     // usually transients; keep them from destabilizing the EKF and controller.
-    const double measured_yaw_rate = clamp_value(
+    const double measured_yaw_rate_clamped = clamp_value(
         measured_yaw_rate_raw,
-        -1.5 * config_.drive.max_yaw_rate,
-        1.5 * config_.drive.max_yaw_rate);
+        -config_.drive.max_yaw_rate,
+        config_.drive.max_yaw_rate);
+    const double filter_dt = clamp_value(dt, 0.01, 0.25);
+    const bool compact_mixed_world =
+        world_is_mixed(world_) &&
+        world_span_m(world_) <= 1.25;
+    const double yaw_tau = compact_mixed_world ? 0.10 : 0.08;
+    const double yaw_rate_tau = compact_mixed_world ? 0.24 : 0.16;
+    if (!imu_filter_initialized_) {
+        filtered_imu_yaw_ = measured_yaw_raw;
+        filtered_imu_yaw_rate_ = measured_yaw_rate_clamped;
+        imu_filter_initialized_ = true;
+    } else {
+        const double yaw_alpha = clamp_value(filter_dt / (yaw_tau + filter_dt), 0.0, 1.0);
+        const double yaw_rate_alpha = clamp_value(filter_dt / (yaw_rate_tau + filter_dt), 0.0, 1.0);
+        filtered_imu_yaw_ = wrap_angle(
+            filtered_imu_yaw_ + yaw_alpha * wrap_angle(measured_yaw_raw - filtered_imu_yaw_));
+        filtered_imu_yaw_rate_ += yaw_rate_alpha * (measured_yaw_rate_clamped - filtered_imu_yaw_rate_);
+    }
+
+    const double measured_yaw = filtered_imu_yaw_;
+    const double measured_yaw_rate = filtered_imu_yaw_rate_;
 
     const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     if (world_has_structured_reference(world_) && !mixed_gate_active) {
@@ -2250,6 +2273,9 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
         if (have_raw_imu_yaw_) {
             yaw_offset_ = wrap_angle(estimate_.yaw - last_raw_imu_yaw_);
             yaw_offset_initialized_ = true;
+            filtered_imu_yaw_ = estimate_.yaw;
+            filtered_imu_yaw_rate_ = estimate_.yaw_rate;
+            imu_filter_initialized_ = true;
         }
     }
 }
@@ -4293,14 +4319,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }
 
                 const double target_ahead =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.18 : (compact_mixed_world ? 0.30 : 0.46))
-                                 : (lab_scale_mixed_world ? 0.24 : (compact_mixed_world ? 0.38 : 0.62));
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.14 : (compact_mixed_world ? 0.30 : 0.46))
+                                 : (lab_scale_mixed_world ? 0.20 : (compact_mixed_world ? 0.38 : 0.62));
                 const double road_offset =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.05 : (compact_mixed_world ? 0.08 : 0.10))
+                    rejoin_stage ? (lab_scale_mixed_world ? 0.04 : (compact_mixed_world ? 0.08 : 0.10))
                                  : (compact_mixed_world
-                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.08 : 0.19),
-                                                      lab_scale_mixed_world ? 0.18 : 0.26,
-                                                      lab_scale_mixed_world ? 0.22 : 0.32)
+                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.05 : 0.19),
+                                                      lab_scale_mixed_world ? 0.15 : 0.26,
+                                                      lab_scale_mixed_world ? 0.19 : 0.32)
                                         : 0.46);
                 if (road_projection.valid && !rejoin_stage) {
                     const auto side_score = [&](double candidate_side) {
@@ -5347,9 +5373,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 : (micro_structured_world(world_) ? deg_to_rad(48.0)
                                                   : (compact_mixed_loop ? deg_to_rad(50.0) : deg_to_rad(62.0)));
             const double min_turn_yaw_rate =
-                tiny_indoor_loop ? 0.14 : (micro_structured_world(world_) ? 0.35 : 0.25);
+                tiny_indoor_loop ? 0.14
+                : (micro_structured_world(world_) ? 0.35
+                                                  : (compact_mixed_loop ? 0.16 : 0.25));
             const double yaw_gain =
-                tiny_indoor_loop ? 0.70 : (micro_structured_world(world_) ? 1.55 : (compact_mixed_loop ? 1.30 : 1.20));
+                tiny_indoor_loop ? 0.70
+                : (micro_structured_world(world_) ? 1.55
+                                                  : (compact_mixed_loop ? 1.00 : 1.20));
             bool allow_direct_yaw_acquire =
                 !closed_structured_loop ||
                 (tiny_indoor_loop ? early_progress : (early_progress || std::abs(estimate_.speed) < 0.02));
@@ -5375,10 +5405,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 severe_indoor_heading ||
                 stalled_indoor_heading) {
                 use_direct_yaw_rate_command = true;
+                const double yaw_rate_limit =
+                    (compact_mixed_loop ? 0.55 : 0.85) * config_.drive.max_yaw_rate;
                 direct_yaw_rate_command = clamp_value(
                     -yaw_gain * heading_error,
-                    -0.85 * config_.drive.max_yaw_rate,
-                    0.85 * config_.drive.max_yaw_rate);
+                    -yaw_rate_limit,
+                    yaw_rate_limit);
                 if (std::abs(direct_yaw_rate_command) < min_turn_yaw_rate) {
                     direct_yaw_rate_command = signum(direct_yaw_rate_command == 0.0 ? -heading_error
                                                                                     : direct_yaw_rate_command) *
