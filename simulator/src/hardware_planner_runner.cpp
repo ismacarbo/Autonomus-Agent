@@ -4084,12 +4084,6 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
 
     passed_unstructured_gap_positions_.push_back(*locked_gap_goal_);
     ++passed_unstructured_gap_count_;
-    if (compact_mixed_world &&
-        passed_unstructured_gap_count_ == 1 &&
-        std::isfinite(road_lateral_offset) &&
-        std::abs(road_lateral_offset) <= 0.10) {
-        ++passed_unstructured_gap_count_;
-    }
     clear_locked_gap_goal();
     gates_.clear();
     gate_specs_.clear();
@@ -6056,11 +6050,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     sim_time_ += bounded_dt;
     ++step_count_;
     count_mixed_gate_crossing_if_needed();
-    if (compact_mixed_structured_loop(world_) &&
-        passed_unstructured_gap_count_ >= 2) {
-        distance_to_goal_ = 0.0;
-        goal_reached_ = true;
-    } else if (structured_road_is_closed_loop(world_)) {
+    if (structured_road_is_closed_loop(world_)) {
         const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const bool compact_mixed_loop = compact_mixed_structured_loop(world_);
         const double wrapped_track_s =
@@ -6084,22 +6074,34 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             structured_goal_ready_ &&
             structured_progress_s_ >= 0.50 * structured_goal_progress_target_ &&
             goal_position_distance < goal_position_acceptance;
-        const bool compact_mixed_neighborhood_complete =
-            compact_mixed_loop &&
-            structured_goal_ready_ &&
-            structured_progress_s_ >= 0.60 * structured_goal_progress_target_ &&
-            goal_position_distance < goal_position_acceptance;
         const bool returned_to_start =
             wrapped_track_s <= start_window || wrapped_track_s >= std::max(cl_.end_point_s - start_window, 0.0);
         distance_to_goal_ = structured_goal_ready_
                                 ? std::max(structured_goal_progress_target_ - structured_progress_s_, 0.0)
                                 : cl_.end_point_s;
-        goal_reached_ =
-            tiny_loop_neighborhood_complete ||
-            compact_mixed_neighborhood_complete ||
-            (structured_goal_ready_ &&
-             structured_progress_s_ + progress_margin >= structured_goal_progress_target_ &&
-             (returned_to_start || goal_position_distance < goal_position_acceptance));
+        const bool full_loop_progress_complete =
+            structured_goal_ready_ &&
+            structured_progress_s_ + progress_margin >= structured_goal_progress_target_;
+        if (compact_mixed_loop) {
+            const double minimum_mixed_progress =
+                std::max(0.90 * structured_goal_progress_target_,
+                         structured_goal_progress_target_ - progress_margin);
+            const bool active_dynamic_gate = locked_gap_goal_.has_value();
+            goal_reached_ =
+                !active_dynamic_gate &&
+                structured_goal_ready_ &&
+                structured_progress_s_ >= minimum_mixed_progress &&
+                returned_to_start &&
+                goal_position_distance < goal_position_acceptance;
+            if (!goal_reached_ && distance_to_goal_ <= 0.0) {
+                distance_to_goal_ = std::max(goal_position_distance, config_.goal_tolerance_m);
+            }
+        } else {
+            goal_reached_ =
+                tiny_loop_neighborhood_complete ||
+                (full_loop_progress_complete &&
+                 (returned_to_start || goal_position_distance < goal_position_acceptance));
+        }
         if (goal_reached_) {
             distance_to_goal_ = 0.0;
         }
