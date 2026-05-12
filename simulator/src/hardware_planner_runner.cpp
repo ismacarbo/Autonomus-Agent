@@ -750,7 +750,7 @@ double compact_mixed_gate_acceptance_radius_m(const WorldMap& world) {
     if (!world_is_mixed(world)) {
         return 0.0;
     }
-    return world_span_m(world) <= 1.25 ? 0.10 : 0.12;
+    return world_span_m(world) <= 1.25 ? 0.20 : 0.12;
 }
 
 double distance_to_gate_point(const gate& candidate, const Vec2& position) {
@@ -1224,8 +1224,6 @@ void HardwarePlannerRunner::reset() {
     safety_stop_active_ = false;
     yaw_offset_ = 0.0;
     last_raw_imu_yaw_ = 0.0;
-    filtered_imu_yaw_ = 0.0;
-    filtered_imu_yaw_rate_ = 0.0;
     last_observation_time_ = 0.0;
     commanded_speed_ = 0.0;
     commanded_steer_angle_ = 0.0;
@@ -1242,7 +1240,6 @@ void HardwarePlannerRunner::reset() {
     latest_controller_encoder_dt_ms_ = 0.0;
     yaw_offset_initialized_ = false;
     have_raw_imu_yaw_ = false;
-    imu_filter_initialized_ = false;
     encoder_ticks_initialized_ = false;
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
@@ -1833,34 +1830,14 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         yaw_offset_initialized_ = true;
     }
 
-    const double measured_yaw_raw = wrap_angle(imu_yaw + yaw_offset_);
+    const double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
     const double measured_yaw_rate_raw = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
     // Hardware IMU spikes above the platform's physical yaw-rate envelope are
     // usually transients; keep them from destabilizing the EKF and controller.
-    const double measured_yaw_rate_clamped = clamp_value(
+    const double measured_yaw_rate = clamp_value(
         measured_yaw_rate_raw,
-        -config_.drive.max_yaw_rate,
-        config_.drive.max_yaw_rate);
-    const double filter_dt = clamp_value(dt, 0.01, 0.25);
-    const bool compact_mixed_world =
-        world_is_mixed(world_) &&
-        world_span_m(world_) <= 1.25;
-    const double yaw_tau = compact_mixed_world ? 0.10 : 0.08;
-    const double yaw_rate_tau = compact_mixed_world ? 0.24 : 0.16;
-    if (!imu_filter_initialized_) {
-        filtered_imu_yaw_ = measured_yaw_raw;
-        filtered_imu_yaw_rate_ = measured_yaw_rate_clamped;
-        imu_filter_initialized_ = true;
-    } else {
-        const double yaw_alpha = clamp_value(filter_dt / (yaw_tau + filter_dt), 0.0, 1.0);
-        const double yaw_rate_alpha = clamp_value(filter_dt / (yaw_rate_tau + filter_dt), 0.0, 1.0);
-        filtered_imu_yaw_ = wrap_angle(
-            filtered_imu_yaw_ + yaw_alpha * wrap_angle(measured_yaw_raw - filtered_imu_yaw_));
-        filtered_imu_yaw_rate_ += yaw_rate_alpha * (measured_yaw_rate_clamped - filtered_imu_yaw_rate_);
-    }
-
-    const double measured_yaw = filtered_imu_yaw_;
-    const double measured_yaw_rate = filtered_imu_yaw_rate_;
+        -1.5 * config_.drive.max_yaw_rate,
+        1.5 * config_.drive.max_yaw_rate);
 
     const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     if (world_has_structured_reference(world_) && !mixed_gate_active) {
@@ -2273,9 +2250,6 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
         if (have_raw_imu_yaw_) {
             yaw_offset_ = wrap_angle(estimate_.yaw - last_raw_imu_yaw_);
             yaw_offset_initialized_ = true;
-            filtered_imu_yaw_ = estimate_.yaw;
-            filtered_imu_yaw_rate_ = estimate_.yaw_rate;
-            imu_filter_initialized_ = true;
         }
     }
 }
@@ -3994,7 +3968,7 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
     const double compact_gate_radius = clamp_value(
         compact_mixed_gate_acceptance_radius_m(world_),
         0.10,
-        0.14);
+        0.22);
     const bool compact_gate_reached =
         compact_mixed_world &&
         gate_distance <= compact_gate_radius;
