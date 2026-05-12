@@ -753,6 +753,14 @@ double compact_mixed_gate_acceptance_radius_m(const WorldMap& world) {
     return world_span_m(world) <= 1.25 ? 0.10 : 0.12;
 }
 
+double compact_mixed_gate_validation_radius_m(const WorldMap& world) {
+    const double nominal_radius = compact_mixed_gate_acceptance_radius_m(world);
+    if (!(nominal_radius > 0.0)) {
+        return 0.0;
+    }
+    return nominal_radius + (world_span_m(world) <= 1.25 ? 0.02 : 0.0);
+}
+
 double distance_to_gate_point(const gate& candidate, const Vec2& position) {
     return std::hypot(candidate.x_pos - position.x, candidate.y_pos - position.y);
 }
@@ -3985,7 +3993,7 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         0.18,
         std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
     const double compact_gate_radius = clamp_value(
-        compact_mixed_gate_acceptance_radius_m(world_),
+        compact_mixed_gate_validation_radius_m(world_),
         0.10,
         0.14);
     const bool compact_gate_reached =
@@ -4289,9 +4297,18 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                         estimate_.front_lidar_distance > 0.0 &&
                         estimate_.front_lidar_distance <
                             config_.localization.obstacle_stop_distance_m + 0.015));
+            const bool compact_close_obstacle_recovery =
+                compact_mixed_world &&
+                have_close_dynamic_obstacle &&
+                ((estimate_.front_lidar_distance > 0.0 &&
+                  estimate_.front_lidar_distance <
+                      config_.localization.obstacle_stop_distance_m + 0.025) ||
+                 no_motion_command_cycles_ >= 4 ||
+                 tracker_heading_error_deg_ >= 70.0);
             const bool road_needs_bypass =
                 road_block_score >= 0.12 ||
-                (compact_mixed_world && front_obstacle_pressure);
+                (compact_mixed_world &&
+                 (front_obstacle_pressure || compact_close_obstacle_recovery));
             auto lock_existing_dynamic_candidate = [&]() {
                 if (gate_specs_.empty()) {
                     return false;
@@ -4391,7 +4408,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 return;
             }
             if (!rejoin_stage &&
-                front_obstacle_pressure &&
+                (front_obstacle_pressure || compact_close_obstacle_recovery) &&
                 lock_existing_dynamic_candidate()) {
                 return;
             }
