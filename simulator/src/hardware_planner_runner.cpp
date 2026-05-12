@@ -65,6 +65,19 @@ double wrap_arc_length(double s, double s_max) {
     return wrapped;
 }
 
+double signed_wrapped_arc_delta(double from_s, double to_s, double s_max) {
+    if (!(s_max > 1e-6)) {
+        return 0.0;
+    }
+    double delta = wrap_arc_length(to_s, s_max) - wrap_arc_length(from_s, s_max);
+    if (delta > 0.5 * s_max) {
+        delta -= s_max;
+    } else if (delta < -0.5 * s_max) {
+        delta += s_max;
+    }
+    return delta;
+}
+
 double structured_road_length_m(const WorldMap& world) {
     if (!world_has_structured_reference(world) ||
         world.road_centerline().size() < 2) {
@@ -512,6 +525,7 @@ bool project_curvilinear_state(const clothoid_info& clothoid,
                                const Vec2& position,
                                double s_hint,
                                bool wrap_loop,
+                               bool prefer_hinted_loop_projection,
                                double* out_s,
                                double* out_n) {
     if (clothoid.prev_road.num_segments() <= 0 || !(clothoid.end_point_s > 0.0)) {
@@ -539,11 +553,21 @@ bool project_curvilinear_state(const clothoid_info& clothoid,
         }
     };
 
+    const bool compact_closed_loop =
+        prefer_hinted_loop_projection && wrap_loop && road_length <= 2.50;
+    const double hint_s = std::isfinite(s_hint)
+                              ? (wrap_loop ? wrap_arc_length(s_hint, road_length)
+                                           : clamp_value(s_hint, 0.0, road_length))
+                              : 0.0;
+    const double backward_search =
+        compact_closed_loop ? clamp_value(0.18 * road_length, 0.10, 0.22) : 2.0;
+    const double forward_search =
+        compact_closed_loop ? clamp_value(0.52 * road_length, 0.35, 0.70) : 8.0;
     if (std::isfinite(s_hint)) {
-        double lo = wrap_loop ? wrap_arc_length(s_hint, road_length) - 2.0
-                              : clamp_value(s_hint - 2.0, 0.0, road_length);
-        double hi = wrap_loop ? wrap_arc_length(s_hint, road_length) + 8.0
-                              : clamp_value(s_hint + 8.0, 0.0, road_length);
+        double lo = wrap_loop ? hint_s - backward_search
+                              : clamp_value(hint_s - backward_search, 0.0, road_length);
+        double hi = wrap_loop ? hint_s + forward_search
+                              : clamp_value(hint_s + forward_search, 0.0, road_length);
         double step = 0.25;
         for (int pass = 0; pass < 3; ++pass) {
             for (double sample_s = lo; sample_s <= hi + 0.5 * step; sample_s += step) {
@@ -577,10 +601,21 @@ bool project_curvilinear_state(const clothoid_info& clothoid,
         iso_n,
         iso_dst);
     if (found >= 0 && std::isfinite(iso_s) && iso_dst < best_distance) {
-        best_s = wrap_loop ? wrap_arc_length(iso_s, road_length) : clamp_value(iso_s, 0.0, road_length);
-        best_distance = iso_dst;
-        best_x = iso_x;
-        best_y = iso_y;
+        const double candidate_s =
+            wrap_loop ? wrap_arc_length(iso_s, road_length) : clamp_value(iso_s, 0.0, road_length);
+        bool accept_iso_projection = true;
+        if (compact_closed_loop && std::isfinite(s_hint)) {
+            const double arc_delta = signed_wrapped_arc_delta(hint_s, candidate_s, road_length);
+            accept_iso_projection =
+                arc_delta >= -backward_search - 1e-6 &&
+                arc_delta <= forward_search + 1e-6;
+        }
+        if (accept_iso_projection) {
+            best_s = candidate_s;
+            best_distance = iso_dst;
+            best_x = iso_x;
+            best_y = iso_y;
+        }
     }
 
     if (!std::isfinite(best_s)) {
@@ -2088,6 +2123,21 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         cl_.prev_road.num_segments() <= 0 ||
         !std::isfinite(cl_.end_point_s) ||
         cl_.end_point_s <= 1e-6) {
+        const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+        const bool closed_reference = structured_road_is_closed_loop(world_);
+        const double fallback_road_length = structured_road_length_m(world_);
+        if (world_is_mixed(world_) &&
+            !mixed_gate_active &&
+            closed_reference &&
+            fallback_road_length > 1e-6) {
+            const double progress_delta = std::max(odom_speed, 0.0) * effective_dt;
+            const double base_s =
+                std::isfinite(structured_last_s_)
+                    ? structured_last_s_
+                    : (std::isfinite(x0_.x) ? x0_.x : structured_progress_s_);
+            structured_last_s_ = wrap_arc_length(base_s + progress_delta, fallback_road_length);
+            structured_progress_s_ = std::max(0.0, structured_progress_s_ + progress_delta);
+        }
         x0_.x = std::isfinite(structured_last_s_) ? structured_last_s_ : 0.0;
         x0_.n = 0.0;
         x0_.b = 0.0;
@@ -2095,12 +2145,23 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
     }
 
     const bool closed_structured_loop = structured_road_is_closed_loop(world_);
+    const bool prefer_hinted_loop_projection =
+        world_is_mixed(world_) &&
+        closed_structured_loop &&
+        world_span_m(world_) <= 2.50;
     const double s_hint = std::isfinite(structured_last_s_)
                               ? structured_last_s_
                               : (std::isfinite(x0_.x) ? x0_.x : 0.0);
     double projected_s = s_hint;
     double projected_n = 0.0;
-    if (!project_curvilinear_state(cl_, estimate_.position, s_hint, closed_structured_loop, &projected_s, &projected_n)) {
+    if (!project_curvilinear_state(
+            cl_,
+            estimate_.position,
+            s_hint,
+            closed_structured_loop,
+            prefer_hinted_loop_projection,
+            &projected_s,
+            &projected_n)) {
         x0_.x = s_hint;
         x0_.n = 0.0;
         x0_.b = 0.0;
@@ -2122,7 +2183,14 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
 
     double constrained_n = 0.0;
     double confirmed_s = constrained_s;
-    if (project_curvilinear_state(cl_, estimate_.position, constrained_s, closed_structured_loop, &confirmed_s, &constrained_n)) {
+    if (project_curvilinear_state(
+            cl_,
+            estimate_.position,
+            constrained_s,
+            closed_structured_loop,
+            prefer_hinted_loop_projection,
+            &confirmed_s,
+            &constrained_n)) {
         x0_.n = constrained_n;
     } else {
         x0_.n = 0.0;
@@ -4019,6 +4087,7 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
     for (size_t i = 1; i < road.size(); ++i) {
         road_cumulative[i] = road_cumulative[i - 1] + distance(road[i - 1], road[i]);
     }
+    const bool closed_road_loop = structured_road_is_closed_loop(world_);
     if (!road_cumulative.empty()) {
         road_length = road_cumulative.back();
     }
@@ -4029,7 +4098,8 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         if (road.size() == 1 || road_cumulative.empty()) {
             return road.front();
         }
-        s = clamp_value(s, 0.0, road_cumulative.back());
+        s = closed_road_loop ? wrap_arc_length(s, road_cumulative.back())
+                             : clamp_value(s, 0.0, road_cumulative.back());
         auto upper = std::upper_bound(road_cumulative.begin(), road_cumulative.end(), s);
         if (upper == road_cumulative.begin()) {
             return road.front();
@@ -4046,6 +4116,7 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
             road[index - 1].y + (road[index].y - road[index - 1].y) * alpha,
         };
     };
+    double best_road_projection_cost = std::numeric_limits<double>::infinity();
     for (size_t i = 0; i + 1 < road.size(); ++i) {
         const Vec2 segment{
             road[i + 1].x - road[i].x,
@@ -4070,11 +4141,27 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         const double lateral_offset = dot_product(
             Vec2{estimate_.position.x - projection.x, estimate_.position.y - projection.y},
             normal);
-        if (std::abs(lateral_offset) < std::abs(road_lateral_offset)) {
+        double projection_cost = lateral_offset * lateral_offset;
+        if (compact_mixed_world &&
+            closed_road_loop &&
+            road_length > 1e-6 &&
+            (std::isfinite(structured_last_s_) || structured_progress_s_ > 0.0)) {
+            const double hint_s =
+                std::isfinite(structured_last_s_)
+                    ? structured_last_s_
+                    : wrap_arc_length(structured_progress_s_, road_length);
+            const double candidate_s = road_cumulative[i] + segment_len * t;
+            const double arc_delta =
+                std::abs(signed_wrapped_arc_delta(hint_s, candidate_s, road_length));
+            const double continuity_weight = 0.18;
+            projection_cost += continuity_weight * continuity_weight * arc_delta * arc_delta;
+        }
+        if (projection_cost < best_road_projection_cost) {
             road_lateral_offset = lateral_offset;
             road_s = road_cumulative[i] + segment_len * t;
             road_tangent = tangent;
             have_road_projection = true;
+            best_road_projection_cost = projection_cost;
         }
     }
     if (std::isfinite(road_lateral_offset)) {
@@ -4178,6 +4265,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             for (size_t i = 1; i < road.size(); ++i) {
                 road_cumulative[i] = road_cumulative[i - 1] + distance(road[i - 1], road[i]);
             }
+            const bool closed_road_loop = structured_road_is_closed_loop(world_);
             auto point_at_road_s = [&](double s) {
                 if (road.empty()) {
                     return estimate_.position;
@@ -4185,7 +4273,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 if (road.size() == 1 || road_cumulative.empty()) {
                     return road.front();
                 }
-                s = clamp_value(s, 0.0, road_cumulative.back());
+                const double road_length = road_cumulative.back();
+                s = closed_road_loop ? wrap_arc_length(s, road_length)
+                                     : clamp_value(s, 0.0, road_length);
                 auto upper = std::upper_bound(road_cumulative.begin(), road_cumulative.end(), s);
                 if (upper == road_cumulative.begin()) {
                     return road.front();
@@ -4208,7 +4298,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                     return projection;
                 }
 
-                double best_distance_sq = std::numeric_limits<double>::infinity();
+                double best_projection_cost = std::numeric_limits<double>::infinity();
                 for (size_t i = 0; i + 1 < road.size(); ++i) {
                     const Vec2 segment{
                         road[i + 1].x - road[i].x,
@@ -4228,10 +4318,25 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                         road[i].y + segment.y * t,
                     };
                     const double d_sq = distance_sq(estimate_.position, point);
-                    if (d_sq < best_distance_sq) {
-                        const double segment_len = std::sqrt(segment_len_sq);
+                    const double segment_len = std::sqrt(segment_len_sq);
+                    const double candidate_s = road_cumulative[i] + segment_len * t;
+                    double projection_cost = d_sq;
+                    if (compact_mixed_world &&
+                        closed_road_loop &&
+                        road_cumulative.back() > 1e-6 &&
+                        (std::isfinite(structured_last_s_) || structured_progress_s_ > 0.0)) {
+                        const double hint_s =
+                            std::isfinite(structured_last_s_)
+                                ? structured_last_s_
+                                : wrap_arc_length(structured_progress_s_, road_cumulative.back());
+                        const double arc_delta = std::abs(
+                            signed_wrapped_arc_delta(hint_s, candidate_s, road_cumulative.back()));
+                        const double continuity_weight = 0.18;
+                        projection_cost += continuity_weight * continuity_weight * arc_delta * arc_delta;
+                    }
+                    if (projection_cost < best_projection_cost) {
                         projection.valid = true;
-                        projection.s = road_cumulative[i] + segment_len * t;
+                        projection.s = candidate_s;
                         projection.length = road_cumulative.back();
                         projection.point = point;
                         projection.tangent = {segment.x / segment_len, segment.y / segment_len};
@@ -4239,7 +4344,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                         projection.lateral_offset = dot_product(
                             Vec2{estimate_.position.x - point.x, estimate_.position.y - point.y},
                             normal);
-                        best_distance_sq = d_sq;
+                        best_projection_cost = projection_cost;
                     }
                 }
                 return projection;
@@ -4832,6 +4937,10 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     }
 
     const bool closed_structured_loop = structured_road_is_closed_loop(world_);
+    const bool prefer_hinted_loop_projection =
+        world_is_mixed(world_) &&
+        closed_structured_loop &&
+        world_span_m(world_) <= 2.50;
     double s_current = x0_.x;
     if (!std::isfinite(s_current)) {
         s_current = 0.0;
@@ -4852,7 +4961,14 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         } else {
             s_current = clamp_value(std::max(0.0, s_current), 0.0, cl_.end_point_s);
         }
-    } else if (!project_curvilinear_state(cl_, estimate_.position, s_current, closed_structured_loop, &s_current, &lateral_offset)) {
+    } else if (!project_curvilinear_state(
+                   cl_,
+                   estimate_.position,
+                   s_current,
+                   closed_structured_loop,
+                   prefer_hinted_loop_projection,
+                   &s_current,
+                   &lateral_offset)) {
         double x_on_path = 0.0;
         double y_on_path = 0.0;
         cl_.prev_road.eval(s_current, x_on_path, y_on_path);
