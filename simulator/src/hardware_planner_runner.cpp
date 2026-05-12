@@ -6034,6 +6034,7 @@ void HardwarePlannerRunner::push_history() {
         static_cast<double>(diagnostics_.front_close_lidar_points),
         static_cast<double>(diagnostics_.candidate_gates),
         std::isfinite(diagnostics_.chosen_gate_distance) ? diagnostics_.chosen_gate_distance : -1.0,
+        static_cast<double>(count_passed_gates()),
         static_cast<double>(diagnostics_.accumulated_lidar_points),
         static_cast<double>(diagnostics_.no_motion_command_cycles),
         static_cast<double>(chosen_gate_index_),

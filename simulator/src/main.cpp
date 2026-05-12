@@ -1066,6 +1066,7 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"front_close_lidar_samples\":" << sample.front_close_lidar_samples
         << ",\"candidate_gates\":" << sample.candidate_gates
         << ",\"chosen_gate_distance\":" << sample.chosen_gate_distance
+        << ",\"passed_gates\":" << sample.passed_gates
         << ",\"accumulated_lidar_points\":" << sample.accumulated_lidar_points
         << ",\"no_motion_cycles\":" << sample.no_motion_cycles
         << ",\"chosen_gate_index\":" << sample.chosen_gate_index
@@ -1179,6 +1180,7 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "    \"accumulated_lidar_points\": " << hardware.frame.accumulated_lidar_points << ",\n";
     out << "    \"no_motion_command_cycles\": " << hardware.frame.no_motion_command_cycles << ",\n";
     out << "    \"chosen_gate_index\": " << hardware.frame.chosen_gate_index << ",\n";
+    out << "    \"passed_gates\": " << hardware.frame.passed_gates << ",\n";
     out << "    \"occupancy_cell_size_m\": " << hardware.frame.occupancy_cell_size_m << ",\n";
     out << "    \"vehicle\": ";
     write_live_vehicle_state_json(out, hardware.frame.vehicle);

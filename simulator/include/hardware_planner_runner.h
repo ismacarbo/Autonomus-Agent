@@ -222,6 +222,7 @@ struct HardwareTelemetrySample {
     double front_close_lidar_samples = 0.0;
     double candidate_gates = 0.0;
     double chosen_gate_distance = 0.0;
+    double passed_gates = 0.0;
     double accumulated_lidar_points = 0.0;
     double no_motion_cycles = 0.0;
     double chosen_gate_index = -1.0;
@@ -340,6 +341,7 @@ class HardwarePlannerRunner {
     double last_r() const { return last_r_; }
     double distance_to_goal() const { return distance_to_goal_; }
     int chosen_gate_index() const { return chosen_gate_index_; }
+    int passed_gate_count() const { return count_passed_gates(); }
     double planner_speed_reference() const { return planner_speed_ref_; }
     double tracker_cross_track_error() const { return tracker_cross_track_error_; }
     double tracker_heading_error_deg() const { return tracker_heading_error_deg_; }
