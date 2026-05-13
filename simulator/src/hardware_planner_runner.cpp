@@ -1731,7 +1731,7 @@ double HardwarePlannerRunner::compute_mixed_road_block_score(double lookahead_m)
     }
     const double clearance = compute_mixed_road_forward_clearance(lookahead_m);
     if (world_span_m(world_) <= 2.50) {
-        if (structured_course_span_m(world_) > 1.00) {
+        if (structured_course_span_m(world_) > 0.70) {
             return 1.0 - clamp_value((clearance - 0.32) / 0.45, 0.0, 1.0);
         }
         return 1.0 - clamp_value((clearance - 0.20) / 0.24, 0.0, 1.0);
