@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include <MPU6050.h>
+#include "SparkFun_BNO080_Arduino_Library.h"
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
@@ -34,10 +34,15 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 1;
+const uint8_t FW_MINOR = 2;
 const bool BOOT_DIAG_ASCII = true;
 
-const float GYRO_DPS_TO_RAD = 0.017453292519943295f;
+const uint16_t BNO080_REPORT_INTERVAL_MS = 20U;
+const uint16_t BNO080_STARTUP_WAIT_MS = 1600U;
+const uint16_t BNO080_ZERO_WAIT_MS = 900U;
+const uint8_t BNO080_MIN_VALID_FRAMES = 3U;
+const float BNO080_YAW_SIGN = 1.0f;
+const float BNO080_GYRO_Z_SIGN = 1.0f;
 
 const int LEFT_SIGN = 1;
 const int RIGHT_SIGN = 1;
@@ -161,10 +166,13 @@ const uint16_t ENC_FLAG_OVERFLOW_WARN = 1U << 4;
 const uint16_t RSP_MAX_PAYLOAD = 48U;
 const uint8_t RSP_HEADER_LEN = 6U;
 
-MPU6050 mpu;
-float gyro_bias_z = 0.0f;
+BNO080 imu;
+bool imu_present = false;
+float imu_yaw_zero_rad = 0.0f;
+float imu_raw_yaw_rad = 0.0f;
 float yaw_rad = 0.0f;
-float yaw_rate_dps = 0.0f;
+float yaw_rate_rad_s = 0.0f;
+uint8_t imu_valid_frames = 0U;
 int16_t acc_x_raw = 0;
 int16_t acc_y_raw = 0;
 int16_t acc_z_raw = 0;
@@ -280,6 +288,16 @@ static inline float wrap_pi(float a) {
   while (a > 3.14159265f) a -= 6.28318531f;
   while (a < -3.14159265f) a += 6.28318531f;
   return a;
+}
+
+static inline int16_t clamp_i16_long(long value) {
+  if (value < -32768L) return (int16_t)-32768;
+  if (value > 32767L) return (int16_t)32767;
+  return (int16_t)value;
+}
+
+static inline bool finite_float(float value) {
+  return !isnan(value) && !isinf(value);
 }
 
 static inline int16_t step_towards(int16_t current, int16_t target, uint8_t step) {
@@ -571,37 +589,56 @@ void set_targets(int16_t pwm_l, int16_t pwm_r) {
   last_cmd_ms = millis();
 }
 
-void calibrate_gyro_bias(uint16_t samples) {
-  long sum = 0L;
-  for (uint16_t i = 0; i < samples; ++i) {
-    int16_t ax, ay, az, gx, gy, gz;
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-    sum += gz;
-    delay(4);
+void update_imu() {
+  if (!imu_present) return;
+  uint32_t now = millis();
+  if (!imu.dataAvailable()) return;
+
+  const float raw_yaw = imu.getYaw();
+  const float gyro_z = imu.getGyroZ();
+  const float acc_x = imu.getAccelX();
+  const float acc_y = imu.getAccelY();
+  const float acc_z = imu.getAccelZ();
+
+  if (finite_float(acc_x)) acc_x_raw = clamp_i16_long(lroundf(acc_x * 1000.0f));
+  if (finite_float(acc_y)) acc_y_raw = clamp_i16_long(lroundf(acc_y * 1000.0f));
+  if (finite_float(acc_z)) acc_z_raw = clamp_i16_long(lroundf(acc_z * 1000.0f));
+
+  if (finite_float(gyro_z)) {
+    yaw_rate_rad_s = BNO080_GYRO_Z_SIGN * gyro_z;
+    gyro_z_raw = clamp_i16_long(lroundf(yaw_rate_rad_s * 1000.0f));
   }
-  gyro_bias_z = (float)sum / (float)samples;
+
+  if (finite_float(raw_yaw)) {
+    imu_raw_yaw_rad = raw_yaw;
+    yaw_rad = wrap_pi(BNO080_YAW_SIGN * (raw_yaw - imu_yaw_zero_rad));
+    if (imu_valid_frames < BNO080_MIN_VALID_FRAMES) {
+      ++imu_valid_frames;
+    }
+    if (imu_valid_frames >= BNO080_MIN_VALID_FRAMES) {
+      imu_ready = true;
+    }
+  }
+
+  last_imu_ms = now;
 }
 
-void update_imu() {
-  if (!imu_ready) return;
-  uint32_t now = millis();
-  float dt = (float)(now - last_imu_ms) / 1000.0f;
-  if (dt <= 0.0f) {
-    last_imu_ms = now;
-    return;
-  }
-  last_imu_ms = now;
+bool zero_bno080_yaw_reference(uint16_t wait_ms) {
+  if (!imu_present) return false;
 
-  int16_t ax, ay, az, gx, gy, gz;
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  const uint32_t start = millis();
+  do {
+    update_imu();
+    if (imu_ready && finite_float(imu_raw_yaw_rad)) {
+      imu_yaw_zero_rad = imu_raw_yaw_rad;
+      yaw_rad = 0.0f;
+      yaw_rate_rad_s = 0.0f;
+      return true;
+    }
+    delay(5);
+  } while ((uint32_t)(millis() - start) < wait_ms);
 
-  acc_x_raw = ax;
-  acc_y_raw = ay;
-  acc_z_raw = az;
-  gyro_z_raw = gz;
-
-  yaw_rate_dps = ((float)gz - gyro_bias_z) / 131.0f;
-  yaw_rad = wrap_pi(yaw_rad + yaw_rate_dps * GYRO_DPS_TO_RAD * dt);
+  return false;
 }
 
 bool send_frame(uint8_t msg_type, uint8_t flags, const uint8_t* payload, uint16_t len) {
@@ -802,7 +839,7 @@ void handle_motor_cmd(uint8_t seq, bool ack_req, const uint8_t* payload) {
 }
 
 void handle_gyro_zero_cmd(uint8_t seq, bool ack_req) {
-  if (!imu_ready) {
+  if (!imu_present) {
     reject_frame(RSP_MSG_GYRO_ZERO_CMD, seq, ack_req, ERR_IMU_NOT_READY, 0U);
     return;
   }
@@ -817,12 +854,16 @@ void handle_gyro_zero_cmd(uint8_t seq, bool ack_req) {
   stop_requested = true;
   hard_stop_motors();
 
-  calibrate_gyro_bias(120U);
-  yaw_rad = 0.0f;
-  yaw_rate_dps = 0.0f;
+  bool zero_ok = zero_bno080_yaw_reference(BNO080_ZERO_WAIT_MS);
 
   calibrating = false;
   controller_mode = prev_mode;
+
+  if (!zero_ok) {
+    last_error_code = ERR_SENSOR_TIMEOUT;
+    reject_frame(RSP_MSG_GYRO_ZERO_CMD, seq, ack_req, ERR_SENSOR_TIMEOUT, 0U);
+    return;
+  }
 
   if (!motors_enabled_mode()) stop_requested = true;
   if (ack_req) send_ack(seq, RSP_MSG_GYRO_ZERO_CMD, ACK_STATUS_COMPLETED, 0U);
@@ -1007,7 +1048,7 @@ void send_imu_telemetry() {
   uint8_t payload[20];
   uint8_t idx = 0U;
   int32_t yaw_mrad = (int32_t)lroundf(yaw_rad * 1000.0f);
-  int32_t yaw_rate_mrad_s = (int32_t)lroundf(yaw_rate_dps * GYRO_DPS_TO_RAD * 1000.0f);
+  int32_t yaw_rate_mrad_s = (int32_t)lroundf(yaw_rate_rad_s * 1000.0f);
 
   put_u32_le(payload, idx, now);
   put_i32_le(payload, idx, yaw_mrad);
@@ -1133,22 +1174,33 @@ void setup() {
   boot_log(F("wire-timeout"));
 #endif
 
-  if (i2c_device_present(0x68U)) {
-    boot_log(F("imu-detected"));
-    mpu.initialize();
-    boot_log(F("imu-init"));
-    delay(900);
-    calibrating = true;
-    boot_log(F("gyro-cal-start"));
-    calibrate_gyro_bias(200U);
-    calibrating = false;
-    imu_ready = true;
-    boot_log(F("gyro-cal-done"));
+  if (imu.begin()) {
+    imu_present = true;
+    imu_ready = false;
+    boot_log(F("bno080-detected"));
+    imu.enableRotationVector(BNO080_REPORT_INTERVAL_MS);
+    imu.enableGyro(BNO080_REPORT_INTERVAL_MS);
+    imu.enableAccelerometer(BNO080_REPORT_INTERVAL_MS);
+    boot_log(F("bno080-init"));
+
+    last_imu_ms = millis();
+    uint32_t warmup_start = millis();
+    while (!imu_ready && (uint32_t)(millis() - warmup_start) < BNO080_STARTUP_WAIT_MS) {
+      update_imu();
+      delay(5);
+    }
+
+    if (zero_bno080_yaw_reference(250U)) {
+      boot_log(F("bno080-zero-done"));
+    } else {
+      boot_log(F("bno080-warmup-pending"));
+    }
   } else {
+    imu_present = false;
     imu_ready = false;
     last_error_code = ERR_IMU_NOT_READY;
     yaw_rad = 0.0f;
-    yaw_rate_dps = 0.0f;
+    yaw_rate_rad_s = 0.0f;
     boot_log(F("imu-missing"));
   }
 

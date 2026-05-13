@@ -1267,6 +1267,7 @@ void HardwarePlannerRunner::reset() {
     safety_stop_active_ = false;
     yaw_offset_ = 0.0;
     last_raw_imu_yaw_ = 0.0;
+    last_accepted_imu_yaw_ = 0.0;
     last_observation_time_ = 0.0;
     commanded_speed_ = 0.0;
     commanded_steer_angle_ = 0.0;
@@ -1283,6 +1284,8 @@ void HardwarePlannerRunner::reset() {
     latest_controller_encoder_dt_ms_ = 0.0;
     yaw_offset_initialized_ = false;
     have_raw_imu_yaw_ = false;
+    have_accepted_imu_yaw_ = false;
+    last_accepted_imu_ms_ = 0;
     encoder_ticks_initialized_ = false;
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
@@ -1898,7 +1901,7 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         yaw_offset_initialized_ = true;
     }
 
-    const double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
+    double measured_yaw = wrap_angle(imu_yaw + yaw_offset_);
     const double measured_yaw_rate_raw = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
     // Hardware IMU spikes above the platform's physical yaw-rate envelope are
     // usually transients; keep them from destabilizing the EKF and controller.
@@ -1906,6 +1909,30 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         measured_yaw_rate_raw,
         -1.5 * config_.drive.max_yaw_rate,
         1.5 * config_.drive.max_yaw_rate);
+
+    if (have_accepted_imu_yaw_ && telemetry.imu_ms != last_accepted_imu_ms_) {
+        const double imu_dt =
+            telemetry.imu_ms > last_accepted_imu_ms_
+                ? clamp_value(static_cast<double>(telemetry.imu_ms - last_accepted_imu_ms_) / 1000.0,
+                              0.005,
+                              0.25)
+                : std::max(dt, 0.005);
+        const double yaw_delta = std::abs(wrap_angle(measured_yaw - last_accepted_imu_yaw_));
+        const double expected_delta =
+            std::abs(measured_yaw_rate) * imu_dt +
+            2.5 * config_.drive.max_yaw_rate * imu_dt;
+        const double max_plausible_yaw_step = std::max(0.70, expected_delta + 0.20);
+        if (yaw_delta > max_plausible_yaw_step) {
+            // BNO080 rotation-vector yaw can occasionally jump when magnetic
+            // calibration changes. Keep the estimator continuous and absorb
+            // the jump into the IMU-to-world offset.
+            yaw_offset_ = wrap_angle(last_accepted_imu_yaw_ - imu_yaw);
+            measured_yaw = last_accepted_imu_yaw_;
+        }
+    }
+    last_accepted_imu_yaw_ = measured_yaw;
+    last_accepted_imu_ms_ = telemetry.imu_ms;
+    have_accepted_imu_yaw_ = true;
 
     const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     if (world_has_structured_reference(world_) && !mixed_gate_active) {
