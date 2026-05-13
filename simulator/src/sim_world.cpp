@@ -988,9 +988,22 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::HardwareTrack;
 
-    // Use the same compact physical track as the structured hardware
-    // validation. The mixed behavior should differ only in the LiDAR-derived
-    // bypass layer, not in the road scale or initial centerline projection.
+    // Keep the structured hardware road at its real 30 cm scale, but place it
+    // inside the same 2 m lab workspace used by the manual unstructured runs.
+    const Vec2 road_offset{
+        0.240 - world.start_.x,
+        1.000 - world.start_.y,
+    };
+    for (Vec2& point : world.road_centerline_) {
+        point.x += road_offset.x;
+        point.y += road_offset.y;
+    }
+    world.start_.x += road_offset.x;
+    world.start_.y += road_offset.y;
+    world.goal_.x += road_offset.x;
+    world.goal_.y += road_offset.y;
+    world.bounds_ = {0.0, 0.0, 2.0, 2.0};
+
     world.obstacles_.clear();
     world.gate_templates_.clear();
     world.gates_.clear();

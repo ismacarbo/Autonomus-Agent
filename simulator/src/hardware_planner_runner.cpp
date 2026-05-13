@@ -2278,6 +2278,13 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
     if (static_cast<int>(scan.size()) < config_.localization.min_scan_points) {
         return;
     }
+    if (world_is_mixed(world_)) {
+        // Mixed hardware uses LiDAR to detect obstacles and synthesize gates.
+        // Pose must stay anchored to odometry/IMU plus the structured road;
+        // scan-matching against sparse lab bounds can otherwise move the robot
+        // estimate while the wheels are still physically stopped.
+        return;
+    }
 
     const bool unstructured_perception_mode = unstructured_perception_only_mode();
     const double motion_speed =

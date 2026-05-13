@@ -1194,10 +1194,13 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
     scene.geometry = runner.geometry();
     scene.imu_enabled = true;
     scene.lidar_enabled = lidar_enabled;
-    scene.localization_mode =
-        runner.world().environment_mode() == EnvironmentMode::UnstructuredGates
-            ? "EKF (IMU + perception map)"
-            : (lidar_enabled ? "EKF (IMU + LiDAR)" : "EKF (IMU + road constraint)");
+    if (runner.world().environment_mode() == EnvironmentMode::UnstructuredGates) {
+        scene.localization_mode = "EKF (IMU + perception map)";
+    } else if (runner.world().environment_mode() == EnvironmentMode::MixedRoadGates) {
+        scene.localization_mode = "EKF (IMU + road constraint; LiDAR gates)";
+    } else {
+        scene.localization_mode = lidar_enabled ? "EKF (IMU + LiDAR)" : "EKF (IMU + road constraint)";
+    }
     scene.heading_source = "IMU";
     scene.range_sensor_name =
         runner.world().environment_mode() == EnvironmentMode::UnstructuredGates
