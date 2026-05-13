@@ -987,9 +987,9 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::Custom;
-    world.bounds_ = {0.0, 0.0, 2.0, 2.0};
-    world.start_ = {0.240, 1.000};
-    world.goal_ = {1.200, 1.000};
+    world.bounds_ = {0.0, 0.0, 0.80, 0.65};
+    world.start_ = {0.120, 0.325};
+    world.goal_ = {0.680, 0.325};
     world.start_heading_ = 0.0;
 
     world.road_centerline_.clear();
