@@ -1731,6 +1731,9 @@ double HardwarePlannerRunner::compute_mixed_road_block_score(double lookahead_m)
     }
     const double clearance = compute_mixed_road_forward_clearance(lookahead_m);
     if (world_span_m(world_) <= 2.50) {
+        if (structured_course_span_m(world_) > 1.00) {
+            return 1.0 - clamp_value((clearance - 0.32) / 0.45, 0.0, 1.0);
+        }
         return 1.0 - clamp_value((clearance - 0.20) / 0.24, 0.0, 1.0);
     }
     return 1.0 - clamp_value((clearance - 0.18) / 0.70, 0.0, 1.0);
@@ -4885,7 +4888,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     const auto assign_compact_mixed_gate_fallback = [&]() {
         if (!mixed_gate_active ||
             !locked_gap_goal_.has_value() ||
-            world_span_m(world_) > 1.25) {
+            world_span_m(world_) > 2.50) {
             return false;
         }
         const Vec2 target = *locked_gap_goal_;

@@ -1809,6 +1809,9 @@ double structured_road_width_for_world(const WorldMap& world) {
         if (road_span <= 0.80) {
             return 0.14;
         }
+        if (road_span <= 2.00) {
+            return 0.30;
+        }
         return 1.20;
     }
     const Rect& bounds = world.bounds();

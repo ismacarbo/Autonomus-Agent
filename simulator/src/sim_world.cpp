@@ -983,26 +983,27 @@ WorldMap WorldMap::mixed_demo() {
 }
 
 WorldMap WorldMap::mixed_hardware_demo() {
-    WorldMap world = WorldMap::structured_demo(StructuredMapPreset::HardwareTrack);
+    WorldMap world;
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
-    world.structured_preset_ = StructuredMapPreset::HardwareTrack;
-
-    // Keep the structured hardware road at its real 30 cm scale, but place it
-    // inside the same 2 m lab workspace used by the manual unstructured runs.
-    const Vec2 road_offset{
-        0.240 - world.start_.x,
-        1.000 - world.start_.y,
-    };
-    for (Vec2& point : world.road_centerline_) {
-        point.x += road_offset.x;
-        point.y += road_offset.y;
-    }
-    world.start_.x += road_offset.x;
-    world.start_.y += road_offset.y;
-    world.goal_.x += road_offset.x;
-    world.goal_.y += road_offset.y;
+    world.structured_preset_ = StructuredMapPreset::Custom;
     world.bounds_ = {0.0, 0.0, 2.0, 2.0};
+    world.start_ = {0.240, 1.000};
+    world.goal_ = {1.760, 1.000};
+    world.start_heading_ = 0.0;
+
+    world.road_centerline_.clear();
+    constexpr int kRoadSamples = 20;
+    world.road_centerline_.reserve(kRoadSamples);
+    for (int i = 0; i < kRoadSamples; ++i) {
+        const double alpha = kRoadSamples > 1
+            ? static_cast<double>(i) / static_cast<double>(kRoadSamples - 1)
+            : 1.0;
+        world.road_centerline_.push_back({
+            world.start_.x + alpha * (world.goal_.x - world.start_.x),
+            world.start_.y + alpha * (world.goal_.y - world.start_.y),
+        });
+    }
 
     world.obstacles_.clear();
     world.gate_templates_.clear();
