@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include "SparkFun_BNO080_Arduino_Library.h"
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
@@ -15,37 +17,32 @@ void disableWatchdogEarly(void) {
 #endif
 
 // =========================
-// Motor pins
+// Tank hardware mapping
+// M1 is left track, M2 is right track.
+// Direction HIGH matches the working forward() test sketch.
 // =========================
-#define PIN_Motor_PWMA  5
-#define PIN_Motor_PWMB  6
-#define PIN_Motor_AIN_1 7
-#define PIN_Motor_BIN_1 8
-#define PIN_Motor_STBY  3
+#define PIN_LEFT_DIR   7
+#define PIN_LEFT_PWM   9
+#define PIN_RIGHT_DIR  8
+#define PIN_RIGHT_PWM  10
 
-// =========================
-// Encoder AO mapping
-// RF(A2) RR(A1) LF(A0) LR(A3)
-// =========================
-#define ENC_RF_AO A2
-#define ENC_RR_AO A1
-#define ENC_LF_AO A0
-#define ENC_LR_AO A3
+#define ENC_LEFT_A     2
+#define ENC_LEFT_B     4
+#define ENC_RIGHT_A    3
+#define ENC_RIGHT_B    5
+
+#define BAT_PIN        A0
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
 const uint8_t FW_MINOR = 2;
 const bool BOOT_DIAG_ASCII = true;
 
-const uint16_t BNO080_REPORT_INTERVAL_MS = 20U;
-const uint16_t BNO080_STARTUP_WAIT_MS = 1600U;
-const uint16_t BNO080_ZERO_WAIT_MS = 900U;
-const uint8_t BNO080_MIN_VALID_FRAMES = 3U;
-const float BNO080_YAW_SIGN = 1.0f;
-const float BNO080_GYRO_Z_SIGN = 1.0f;
+const float DEG_TO_RAD_F = 0.017453292519943295f;
 
 const int LEFT_SIGN = 1;
 const int RIGHT_SIGN = 1;
+const int YAW_RATE_SIGN = 1;
 
 const uint16_t HOST_LINK_TIMEOUT_MS = 1500U;
 const uint16_t DEFAULT_CMD_TIMEOUT_MS = 450U;
@@ -55,12 +52,9 @@ const uint16_t DEFAULT_ENCODER_TELEMETRY_MS = 100U;
 const uint16_t DEFAULT_MOTOR_TELEMETRY_MS = 60U;
 const uint16_t DEFAULT_HEARTBEAT_MS = 500U;
 const uint16_t RX_IDLE_TIMEOUT_MS = 80U;
+const uint16_t IMU_SAMPLE_PERIOD_MS = 20U;
+const uint16_t BATTERY_SAMPLE_PERIOD_MS = 250U;
 const uint8_t DEFAULT_SLEW_STEP = 16U;
-
-const uint16_t ENCODER_ARM_DELAY_MS = 350U;
-const uint16_t ENCODER_MIN_SPAN_DEFAULT = 120U;
-const uint16_t ENCODER_MIN_SPAN_LR = 80U;
-const uint32_t ENCODER_MIN_TRANSITION_US = 250U;
 
 const uint8_t RSP_SOF1 = 0xAA;
 const uint8_t RSP_SOF2 = 0x55;
@@ -85,32 +79,23 @@ const uint8_t RSP_MSG_MOTOR_STATE = 0x23;
 const uint8_t RSP_MSG_HEARTBEAT_STATE = 0x24;
 
 const uint8_t ACK_STATUS_COMPLETED = 0x00;
-const uint8_t ACK_STATUS_PENDING = 0x01;
 const uint8_t ACK_STATUS_ALREADY = 0x02;
 const uint8_t ACK_STATUS_REJECTED = 0x03;
 
 const uint8_t ERR_UNKNOWN_MSG_TYPE = 0x01;
 const uint8_t ERR_INVALID_LENGTH = 0x02;
-const uint8_t ERR_CRC_MISMATCH = 0x03;
 const uint8_t ERR_INVALID_VALUE = 0x04;
 const uint8_t ERR_IMU_NOT_READY = 0x05;
 const uint8_t ERR_CALIBRATION_BUSY = 0x06;
 const uint8_t ERR_MOTORS_DISABLED = 0x07;
-const uint8_t ERR_ENCODERS_UNAVAILABLE = 0x08;
-const uint8_t ERR_SENSOR_TIMEOUT = 0x09;
 const uint8_t ERR_UNSUPPORTED_MODE = 0x0A;
-const uint8_t ERR_INTERNAL_FAULT = 0x0B;
 const uint8_t ERR_BUSY = 0x0C;
-const uint8_t ERR_NOT_IMPLEMENTED = 0x0D;
 
 const uint8_t CONTROL_MODE_DIRECT_PWM = 0x00;
 const uint8_t CONTROL_MODE_SAFE_DIRECT_PWM = 0x01;
 
 const uint8_t STOP_REASON_USER_REQUEST = 0x00;
 const uint8_t STOP_REASON_HOST_TIMEOUT = 0x01;
-const uint8_t STOP_REASON_OBSTACLE = 0x02;
-const uint8_t STOP_REASON_SAFETY_OVERRIDE = 0x03;
-const uint8_t STOP_REASON_FAULT_RECOVERY = 0x04;
 const uint8_t STOP_REASON_SHUTDOWN = 0x05;
 
 const uint8_t MODE_IDLE = 0x00;
@@ -130,15 +115,10 @@ const uint8_t PARAM_IMU_TELEMETRY_MS = 0x02;
 const uint8_t PARAM_SAFETY_TELEMETRY_MS = 0x03;
 const uint8_t PARAM_MOTOR_TELEMETRY_MS = 0x04;
 const uint8_t PARAM_HEARTBEAT_MS = 0x05;
-// 0x06 e 0x07 non usati più (vecchi IR/front)
 const uint8_t PARAM_SLEW_STEP = 0x08;
 const uint8_t PARAM_SAFETY_BYPASS = 0x09;
 const uint8_t PARAM_ENCODER_TELEMETRY_MS = 0x0A;
 
-const uint16_t SAFETY_FLAG_ULTRA_VALID = 1U << 0;       // non usato
-const uint16_t SAFETY_FLAG_IR_LEFT_ALERT = 1U << 1;     // non usato
-const uint16_t SAFETY_FLAG_IR_RIGHT_ALERT = 1U << 2;    // non usato
-const uint16_t SAFETY_FLAG_FRONT_ALERT = 1U << 3;       // non usato
 const uint16_t SAFETY_FLAG_CMD_TIMEOUT = 1U << 4;
 const uint16_t SAFETY_FLAG_EMERGENCY_STOP = 1U << 5;
 
@@ -149,34 +129,37 @@ const uint16_t MOTOR_FLAG_SLEW_LIMITING = 1U << 3;
 const uint16_t MOTOR_FLAG_STOP_REQUESTED = 1U << 4;
 
 const uint16_t STATUS_FLAG_IMU_READY = 1U << 0;
-const uint16_t STATUS_FLAG_ULTRA_READY = 1U << 1;   // lasciato per compatibilità, rimane 0
-const uint16_t STATUS_FLAG_IR_READY = 1U << 2;      // lasciato per compatibilità, rimane 0
 const uint16_t STATUS_FLAG_ENCODERS_READY = 1U << 3;
 const uint16_t STATUS_FLAG_MOTORS_READY = 1U << 4;
 const uint16_t STATUS_FLAG_CALIBRATING = 1U << 5;
 const uint16_t STATUS_FLAG_FAULT_LATCHED = 1U << 6;
 const uint16_t STATUS_FLAG_HOST_LINK_OK = 1U << 7;
 
-const uint16_t ENC_FLAG_LEFT_VALID    = 1U << 0;
-const uint16_t ENC_FLAG_RIGHT_VALID   = 1U << 1;
-const uint16_t ENC_FLAG_LEFT_DIR_NEG  = 1U << 2;
+const uint16_t ENC_FLAG_LEFT_VALID = 1U << 0;
+const uint16_t ENC_FLAG_RIGHT_VALID = 1U << 1;
+const uint16_t ENC_FLAG_LEFT_DIR_NEG = 1U << 2;
 const uint16_t ENC_FLAG_RIGHT_DIR_NEG = 1U << 3;
-const uint16_t ENC_FLAG_OVERFLOW_WARN = 1U << 4;
 
 const uint16_t RSP_MAX_PAYLOAD = 48U;
 const uint8_t RSP_HEADER_LEN = 6U;
 
-BNO080 imu;
-bool imu_present = false;
-float imu_yaw_zero_rad = 0.0f;
-float imu_raw_yaw_rad = 0.0f;
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+
+volatile int32_t enc_left_ticks = 0;
+volatile int32_t enc_right_ticks = 0;
+volatile int32_t enc_left_signed_ticks = 0;
+volatile int32_t enc_right_signed_ticks = 0;
+volatile int8_t enc_left_last_dir = 0;
+volatile int8_t enc_right_last_dir = 0;
+
+float yaw_zero_deg = 0.0f;
 float yaw_rad = 0.0f;
 float yaw_rate_rad_s = 0.0f;
-uint8_t imu_valid_frames = 0U;
 int16_t acc_x_raw = 0;
 int16_t acc_y_raw = 0;
 int16_t acc_z_raw = 0;
 int16_t gyro_z_raw = 0;
+uint16_t battery_mv = 0U;
 
 int16_t target_pwm_l = 0;
 int16_t target_pwm_r = 0;
@@ -191,6 +174,7 @@ bool imu_ready = false;
 bool calibrating = false;
 bool stop_requested = true;
 bool safety_bypass = false;
+bool encoders_initialized = false;
 
 uint16_t cmd_timeout_ms = DEFAULT_CMD_TIMEOUT_MS;
 uint16_t imu_telemetry_ms = DEFAULT_IMU_TELEMETRY_MS;
@@ -202,12 +186,14 @@ uint8_t slew_step = DEFAULT_SLEW_STEP;
 
 uint32_t last_cmd_ms = 0U;
 uint32_t last_imu_ms = 0U;
+uint32_t last_imu_sample_ms = 0U;
 uint32_t last_safety_ms = 0U;
 uint32_t last_encoder_tx_ms = 0U;
 uint32_t last_motor_state_ms = 0U;
 uint32_t last_heartbeat_ms = 0U;
 uint32_t last_host_frame_ms = 0U;
 uint32_t last_host_heartbeat_ms = 0U;
+uint32_t last_battery_ms = 0U;
 uint32_t host_time_ms = 0U;
 uint16_t host_status_flags = 0U;
 bool host_link_seen = false;
@@ -225,53 +211,6 @@ uint8_t rx_flags = 0U;
 uint8_t rx_seq = 0U;
 uint32_t last_rx_byte_ms = 0U;
 
-struct EncoderAoState {
-  uint8_t aoPin;
-  int value;
-  int observedMin;
-  int observedMax;
-  int lowThreshold;
-  int highThreshold;
-  bool stateHigh;
-  bool armed;
-  bool everArmed;
-  bool valid;
-  bool overflowWarn;
-  uint32_t toggles;
-  uint32_t fallingTicks;
-  uint32_t lastTransitionUs;
-  int minSpanForArm;
-};
-
-
-
-void recalcThresholds(EncoderAoState &encoder);
-void reset_encoder_state(EncoderAoState &encoder);
-void rearm_encoder_state(EncoderAoState &encoder);
-void reset_all_encoders();
-void rearm_all_encoders_for_motion();
-void maybeArmEncoder(EncoderAoState &encoder);
-void updateEncoderAo(EncoderAoState &encoder, bool allowArming);
-void update_encoders();
-int32_t left_ticks_total();
-int32_t right_ticks_total();
-uint16_t build_encoder_flags();
-void clear_encoder_warnings();
-
-EncoderAoState enc_rf = {ENC_RF_AO, 0, 1023, 0, 0, 0, false, false, false, false, false, 0UL, 0UL, 0UL, ENCODER_MIN_SPAN_DEFAULT};
-EncoderAoState enc_rr = {ENC_RR_AO, 0, 1023, 0, 0, 0, false, false, false, false, false, 0UL, 0UL, 0UL, ENCODER_MIN_SPAN_DEFAULT};
-EncoderAoState enc_lf = {ENC_LF_AO, 0, 1023, 0, 0, 0, false, false, false, false, false, 0UL, 0UL, 0UL, ENCODER_MIN_SPAN_DEFAULT};
-EncoderAoState enc_lr = {ENC_LR_AO, 0, 1023, 0, 0, 0, false, false, false, false, false, 0UL, 0UL, 0UL, ENCODER_MIN_SPAN_LR};
-
-uint32_t encoder_motion_start_ms = 0U;
-uint32_t last_encoder_sample_ms = 0U;
-int16_t prev_current_pwm_l = 0;
-int16_t prev_current_pwm_r = 0;
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 static inline int clampi(int v, int lo, int hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
@@ -284,20 +223,16 @@ static inline uint16_t clampu16(uint32_t v, uint16_t lo, uint16_t hi) {
   return (uint16_t)v;
 }
 
+static inline int16_t clamp_i16_long(long v) {
+  if (v < -32768L) return (int16_t)-32768;
+  if (v > 32767L) return (int16_t)32767;
+  return (int16_t)v;
+}
+
 static inline float wrap_pi(float a) {
   while (a > 3.14159265f) a -= 6.28318531f;
   while (a < -3.14159265f) a += 6.28318531f;
   return a;
-}
-
-static inline int16_t clamp_i16_long(long value) {
-  if (value < -32768L) return (int16_t)-32768;
-  if (value > 32767L) return (int16_t)32767;
-  return (int16_t)value;
-}
-
-static inline bool finite_float(float value) {
-  return !isnan(value) && !isinf(value);
 }
 
 static inline int16_t step_towards(int16_t current, int16_t target, uint8_t step) {
@@ -358,6 +293,20 @@ bool i2c_device_present(uint8_t addr) {
   return rc == 0U;
 }
 
+void enc_left_isr() {
+  int8_t dir = (digitalRead(ENC_LEFT_A) == digitalRead(ENC_LEFT_B)) ? 1 : -1;
+  enc_left_signed_ticks += dir;
+  enc_left_ticks++;
+  enc_left_last_dir = dir;
+}
+
+void enc_right_isr() {
+  int8_t dir = (digitalRead(ENC_RIGHT_A) == digitalRead(ENC_RIGHT_B)) ? 1 : -1;
+  enc_right_signed_ticks += dir;
+  enc_right_ticks++;
+  enc_right_last_dir = dir;
+}
+
 uint16_t crc16_update(uint16_t crc, uint8_t data) {
   crc ^= (uint16_t)data << 8;
   for (uint8_t i = 0; i < 8; ++i) {
@@ -396,183 +345,47 @@ bool fault_latched() {
 }
 
 bool encoders_ready() {
-  return enc_rf.valid && enc_rr.valid && enc_lf.valid && enc_lr.valid &&
-         enc_rf.everArmed && enc_rr.everArmed && enc_lf.everArmed && enc_lr.everArmed;
+  return encoders_initialized;
 }
 
-int safeAnalogReadIfValid(uint8_t pin, bool &valid) {
-  valid = true;
-#if defined(ARDUINO_AVR_UNO) || defined(ARDUINO_AVR_NANO)
-  if (!(pin == A0 || pin == A1 || pin == A2 || pin == A3 || pin == A4 || pin == A5)) {
-    valid = false;
-    return -1;
-  }
-#endif
-  return analogRead(pin);
-}
-
-void recalcThresholds(EncoderAoState &encoder) {
-  const int span = encoder.observedMax - encoder.observedMin;
-  const int center = (encoder.observedMax + encoder.observedMin) / 2;
-  const int hysteresis = max(18, span / 10);
-  encoder.lowThreshold = center - hysteresis;
-  encoder.highThreshold = center + hysteresis;
-}
-
-void reset_encoder_state(EncoderAoState &encoder) {
-  bool valid = false;
-  int value = safeAnalogReadIfValid(encoder.aoPin, valid);
-  encoder.valid = valid;
-  encoder.value = value;
-  encoder.observedMin = valid ? value : 0;
-  encoder.observedMax = valid ? value : 0;
-  encoder.toggles = 0;
-  encoder.fallingTicks = 0;
-  encoder.stateHigh = false;
-  encoder.armed = false;
-  encoder.everArmed = false;
-  encoder.overflowWarn = false;
-  encoder.lastTransitionUs = 0U;
-  recalcThresholds(encoder);
-}
-
-void rearm_encoder_state(EncoderAoState &encoder) {
-  bool valid = false;
-  int value = safeAnalogReadIfValid(encoder.aoPin, valid);
-  encoder.valid = valid;
-  encoder.value = value;
-  encoder.observedMin = valid ? value : 0;
-  encoder.observedMax = valid ? value : 0;
-  encoder.stateHigh = false;
-  encoder.armed = false;
-  encoder.overflowWarn = false;
-  encoder.lastTransitionUs = 0U;
-  recalcThresholds(encoder);
-}
-
-void reset_all_encoders() {
-  reset_encoder_state(enc_rf);
-  reset_encoder_state(enc_rr);
-  reset_encoder_state(enc_lf);
-  reset_encoder_state(enc_lr);
-  encoder_motion_start_ms = millis();
-  last_encoder_sample_ms = millis();
-}
-
-void rearm_all_encoders_for_motion() {
-  rearm_encoder_state(enc_rf);
-  rearm_encoder_state(enc_rr);
-  rearm_encoder_state(enc_lf);
-  rearm_encoder_state(enc_lr);
-  encoder_motion_start_ms = millis();
-  last_encoder_sample_ms = millis();
-}
-
-void maybeArmEncoder(EncoderAoState &encoder) {
-  if (!encoder.valid || encoder.armed) return;
-  const int span = encoder.observedMax - encoder.observedMin;
-  if (span < encoder.minSpanForArm) return;
-  recalcThresholds(encoder);
-  const int center = (encoder.observedMax + encoder.observedMin) / 2;
-  encoder.stateHigh = (encoder.value >= center);
-  encoder.armed = true;
-  encoder.everArmed = true;
-  encoder.lastTransitionUs = micros();
-}
-
-void updateEncoderAo(EncoderAoState &encoder, bool allowArming) {
-  bool valid = false;
-  const int value = safeAnalogReadIfValid(encoder.aoPin, valid);
-  encoder.valid = valid;
-  encoder.value = value;
-  if (!valid) return;
-
-  if (value < encoder.observedMin) encoder.observedMin = value;
-  if (value > encoder.observedMax) encoder.observedMax = value;
-
-  if (!encoder.armed) {
-    recalcThresholds(encoder);
-    if (allowArming) maybeArmEncoder(encoder);
-    return;
-  }
-
-  const bool prevStateHigh = encoder.stateHigh;
-  if (!encoder.stateHigh && value >= encoder.highThreshold) encoder.stateHigh = true;
-  else if (encoder.stateHigh && value <= encoder.lowThreshold) encoder.stateHigh = false;
-
-  if (prevStateHigh != encoder.stateHigh) {
-    const uint32_t nowUs = micros();
-    if (encoder.lastTransitionUs != 0U &&
-        (uint32_t)(nowUs - encoder.lastTransitionUs) < ENCODER_MIN_TRANSITION_US) {
-      encoder.stateHigh = prevStateHigh;
-      encoder.overflowWarn = true;
-      return;
-    }
-    encoder.lastTransitionUs = nowUs;
-    encoder.toggles++;
-    if (prevStateHigh && !encoder.stateHigh) encoder.fallingTicks++;
-  }
-}
-
-void update_encoders() {
-  bool moving_now = (abs(current_pwm_l) > 0) || (abs(current_pwm_r) > 0);
-  bool moving_prev = (abs(prev_current_pwm_l) > 0) || (abs(prev_current_pwm_r) > 0);
-
-  if (moving_now && !moving_prev) {
-    rearm_all_encoders_for_motion();
-  }
-
-  bool allowArming = moving_now && ((uint32_t)(millis() - encoder_motion_start_ms) >= ENCODER_ARM_DELAY_MS);
-
-  updateEncoderAo(enc_rf, allowArming);
-  updateEncoderAo(enc_rr, allowArming);
-  updateEncoderAo(enc_lf, allowArming);
-  updateEncoderAo(enc_lr, allowArming);
-
-  prev_current_pwm_l = current_pwm_l;
-  prev_current_pwm_r = current_pwm_r;
+void read_encoder_snapshot(int32_t* left_ticks, int32_t* right_ticks) {
+  noInterrupts();
+  int32_t l = enc_left_ticks;
+  int32_t r = enc_right_ticks;
+  interrupts();
+  if (left_ticks != NULL) *left_ticks = l;
+  if (right_ticks != NULL) *right_ticks = r;
 }
 
 int32_t left_ticks_total() {
-  return (int32_t)(enc_lf.fallingTicks + enc_lr.fallingTicks);
+  int32_t l = 0;
+  read_encoder_snapshot(&l, NULL);
+  return l;
 }
 
 int32_t right_ticks_total() {
-  return (int32_t)(enc_rf.fallingTicks + enc_rr.fallingTicks);
+  int32_t r = 0;
+  read_encoder_snapshot(NULL, &r);
+  return r;
 }
 
 uint16_t build_encoder_flags() {
   uint16_t flags = 0U;
-  bool leftValid = enc_lf.valid && enc_lr.valid;
-  bool rightValid = enc_rf.valid && enc_rr.valid;
-  if (leftValid) flags |= ENC_FLAG_LEFT_VALID;
-  if (rightValid) flags |= ENC_FLAG_RIGHT_VALID;
+  if (encoders_ready()) flags |= ENC_FLAG_LEFT_VALID | ENC_FLAG_RIGHT_VALID;
   if (current_pwm_l < 0) flags |= ENC_FLAG_LEFT_DIR_NEG;
   if (current_pwm_r < 0) flags |= ENC_FLAG_RIGHT_DIR_NEG;
-  if (enc_rf.overflowWarn || enc_rr.overflowWarn || enc_lf.overflowWarn || enc_lr.overflowWarn) {
-    flags |= ENC_FLAG_OVERFLOW_WARN;
-  }
   return flags;
 }
 
-void clear_encoder_warnings() {
-  enc_rf.overflowWarn = false;
-  enc_rr.overflowWarn = false;
-  enc_lf.overflowWarn = false;
-  enc_lr.overflowWarn = false;
+void set_one_motor(uint8_t dir_pin, uint8_t pwm_pin, int16_t pwm, int sign) {
+  int hw = clampi((int)sign * (int)pwm, -255, 255);
+  digitalWrite(dir_pin, hw >= 0 ? HIGH : LOW);
+  analogWrite(pwm_pin, abs(hw));
 }
 
 void set_motor_hw(int16_t pwm_l, int16_t pwm_r) {
-  // Shield mapping confirmed:
-  // A = right side, B = left side
-  int hw_l = clampi((int)LEFT_SIGN * (int)pwm_l, -255, 255);
-  int hw_r = clampi((int)RIGHT_SIGN * (int)pwm_r, -255, 255);
-
-  digitalWrite(PIN_Motor_AIN_1, hw_r >= 0 ? HIGH : LOW);
-  digitalWrite(PIN_Motor_BIN_1, hw_l >= 0 ? HIGH : LOW);
-
-  analogWrite(PIN_Motor_PWMA, abs(hw_r));
-  analogWrite(PIN_Motor_PWMB, abs(hw_l));
+  set_one_motor(PIN_LEFT_DIR, PIN_LEFT_PWM, pwm_l, LEFT_SIGN);
+  set_one_motor(PIN_RIGHT_DIR, PIN_RIGHT_PWM, pwm_r, RIGHT_SIGN);
 }
 
 void hard_stop_motors() {
@@ -589,56 +402,60 @@ void set_targets(int16_t pwm_l, int16_t pwm_r) {
   last_cmd_ms = millis();
 }
 
-void update_imu() {
-  if (!imu_present) return;
-  uint32_t now = millis();
-  if (!imu.dataAvailable()) return;
-
-  const float raw_yaw = imu.getYaw();
-  const float gyro_z = imu.getGyroZ();
-  const float acc_x = imu.getAccelX();
-  const float acc_y = imu.getAccelY();
-  const float acc_z = imu.getAccelZ();
-
-  if (finite_float(acc_x)) acc_x_raw = clamp_i16_long(lroundf(acc_x * 1000.0f));
-  if (finite_float(acc_y)) acc_y_raw = clamp_i16_long(lroundf(acc_y * 1000.0f));
-  if (finite_float(acc_z)) acc_z_raw = clamp_i16_long(lroundf(acc_z * 1000.0f));
-
-  if (finite_float(gyro_z)) {
-    yaw_rate_rad_s = BNO080_GYRO_Z_SIGN * gyro_z;
-    gyro_z_raw = clamp_i16_long(lroundf(yaw_rate_rad_s * 1000.0f));
-  }
-
-  if (finite_float(raw_yaw)) {
-    imu_raw_yaw_rad = raw_yaw;
-    yaw_rad = wrap_pi(BNO080_YAW_SIGN * (raw_yaw - imu_yaw_zero_rad));
-    if (imu_valid_frames < BNO080_MIN_VALID_FRAMES) {
-      ++imu_valid_frames;
-    }
-    if (imu_valid_frames >= BNO080_MIN_VALID_FRAMES) {
-      imu_ready = true;
-    }
-  }
-
-  last_imu_ms = now;
+bool read_bno_yaw_deg(float* out_yaw_deg) {
+  if (!imu_ready || out_yaw_deg == NULL) return false;
+  sensors_event_t orientation_data;
+  bno.getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
+  *out_yaw_deg = orientation_data.orientation.x;
+  return true;
 }
 
-bool zero_bno080_yaw_reference(uint16_t wait_ms) {
-  if (!imu_present) return false;
+void zero_bno_heading() {
+  if (!imu_ready) return;
+  float yaw_deg_now = 0.0f;
+  if (read_bno_yaw_deg(&yaw_deg_now)) {
+    yaw_zero_deg = yaw_deg_now;
+  }
+  yaw_rad = 0.0f;
+  yaw_rate_rad_s = 0.0f;
+  last_imu_ms = millis();
+  last_imu_sample_ms = millis();
+}
 
-  const uint32_t start = millis();
-  do {
-    update_imu();
-    if (imu_ready && finite_float(imu_raw_yaw_rad)) {
-      imu_yaw_zero_rad = imu_raw_yaw_rad;
-      yaw_rad = 0.0f;
-      yaw_rate_rad_s = 0.0f;
-      return true;
-    }
-    delay(5);
-  } while ((uint32_t)(millis() - start) < wait_ms);
+void update_imu() {
+  if (!imu_ready) return;
+  uint32_t now = millis();
+  if ((uint32_t)(now - last_imu_sample_ms) < IMU_SAMPLE_PERIOD_MS) return;
+  last_imu_sample_ms = now;
+  last_imu_ms = now;
 
-  return false;
+  sensors_event_t orientation_data;
+  bno.getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
+
+  imu::Vector<3> accel = bno.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
+  imu::Vector<3> gyro = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+
+  yaw_rad = wrap_pi((orientation_data.orientation.x - yaw_zero_deg) * DEG_TO_RAD_F);
+  yaw_rate_rad_s = (float)YAW_RATE_SIGN * (float)gyro.z() * DEG_TO_RAD_F;
+
+  acc_x_raw = clamp_i16_long(lroundf((float)accel.x() * 1000.0f));
+  acc_y_raw = clamp_i16_long(lroundf((float)accel.y() * 1000.0f));
+  acc_z_raw = clamp_i16_long(lroundf((float)accel.z() * 1000.0f));
+  gyro_z_raw = clamp_i16_long(lroundf(yaw_rate_rad_s * 1000.0f));
+}
+
+void update_battery() {
+  uint32_t now = millis();
+  if ((uint32_t)(now - last_battery_ms) < BATTERY_SAMPLE_PERIOD_MS) return;
+  last_battery_ms = now;
+
+  int raw = analogRead(BAT_PIN);
+  float v_out = (float)raw * (5.0f / 1023.0f);
+  float v_bat = v_out * 5.0f;
+  long mv = lroundf(v_bat * 1000.0f);
+  if (mv < 0L) mv = 0L;
+  if (mv > 65535L) mv = 65535L;
+  battery_mv = (uint16_t)mv;
 }
 
 bool send_frame(uint8_t msg_type, uint8_t flags, const uint8_t* payload, uint16_t len) {
@@ -831,7 +648,6 @@ void handle_motor_cmd(uint8_t seq, bool ack_req, const uint8_t* payload) {
     return;
   }
 
-  // SAFE_DIRECT_PWM qui non blocca più per sensori inesistenti.
   stop_requested = false;
   set_targets(pwm_l, pwm_r);
 
@@ -839,7 +655,7 @@ void handle_motor_cmd(uint8_t seq, bool ack_req, const uint8_t* payload) {
 }
 
 void handle_gyro_zero_cmd(uint8_t seq, bool ack_req) {
-  if (!imu_present) {
+  if (!imu_ready) {
     reject_frame(RSP_MSG_GYRO_ZERO_CMD, seq, ack_req, ERR_IMU_NOT_READY, 0U);
     return;
   }
@@ -854,16 +670,10 @@ void handle_gyro_zero_cmd(uint8_t seq, bool ack_req) {
   stop_requested = true;
   hard_stop_motors();
 
-  bool zero_ok = zero_bno080_yaw_reference(BNO080_ZERO_WAIT_MS);
+  zero_bno_heading();
 
   calibrating = false;
   controller_mode = prev_mode;
-
-  if (!zero_ok) {
-    last_error_code = ERR_SENSOR_TIMEOUT;
-    reject_frame(RSP_MSG_GYRO_ZERO_CMD, seq, ack_req, ERR_SENSOR_TIMEOUT, 0U);
-    return;
-  }
 
   if (!motors_enabled_mode()) stop_requested = true;
   if (ack_req) send_ack(seq, RSP_MSG_GYRO_ZERO_CMD, ACK_STATUS_COMPLETED, 0U);
@@ -1018,7 +828,7 @@ uint16_t build_motor_flags() {
   bool stop_active = stop_requested || timeout || !enabled;
 
   if (enabled) flags |= MOTOR_FLAG_ENABLED;
-  if (digitalRead(PIN_Motor_STBY)) flags |= MOTOR_FLAG_STBY_HIGH;
+  flags |= MOTOR_FLAG_STBY_HIGH;
   if (timeout) flags |= MOTOR_FLAG_CMD_TIMEOUT;
   if (slew_active) flags |= MOTOR_FLAG_SLEW_LIMITING;
   if (stop_active) flags |= MOTOR_FLAG_STOP_REQUESTED;
@@ -1069,9 +879,9 @@ void send_safety_telemetry() {
   uint8_t payload[12];
   uint8_t idx = 0U;
   put_u32_le(payload, idx, now);
-  put_u16_le(payload, idx, 0U);  // ultra cm non usato
-  put_u16_le(payload, idx, 0U);  // ir left non usato
-  put_u16_le(payload, idx, 0U);  // ir right non usato
+  put_u16_le(payload, idx, 0U);
+  put_u16_le(payload, idx, 0U);
+  put_u16_le(payload, idx, 0U);
   put_u16_le(payload, idx, build_safety_flags());
   send_frame(RSP_MSG_SAFETY_TELEMETRY, 0U, payload, idx);
 }
@@ -1084,16 +894,18 @@ void send_encoder_telemetry() {
   uint16_t dt_ms = (uint16_t)min((uint32_t)65535U, (uint32_t)(now - last_encoder_tx_ms));
   last_encoder_tx_ms = now;
 
+  int32_t ticks_l = 0;
+  int32_t ticks_r = 0;
+  read_encoder_snapshot(&ticks_l, &ticks_r);
+
   uint8_t payload[16];
   uint8_t idx = 0U;
   put_u32_le(payload, idx, now);
-  put_i32_le(payload, idx, left_ticks_total());
-  put_i32_le(payload, idx, right_ticks_total());
+  put_i32_le(payload, idx, ticks_l);
+  put_i32_le(payload, idx, ticks_r);
   put_u16_le(payload, idx, dt_ms);
   put_u16_le(payload, idx, build_encoder_flags());
-  if (send_frame(RSP_MSG_ENCODER_TELEMETRY, 0U, payload, idx)) {
-    clear_encoder_warnings();
-  }
+  send_frame(RSP_MSG_ENCODER_TELEMETRY, 0U, payload, idx);
 }
 
 void send_motor_state() {
@@ -1155,17 +967,22 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   boot_log(F("serial"));
 
-  pinMode(PIN_Motor_PWMA, OUTPUT);
-  pinMode(PIN_Motor_PWMB, OUTPUT);
-  pinMode(PIN_Motor_AIN_1, OUTPUT);
-  pinMode(PIN_Motor_BIN_1, OUTPUT);
-  pinMode(PIN_Motor_STBY, OUTPUT);
-  digitalWrite(PIN_Motor_STBY, HIGH);
+  pinMode(PIN_LEFT_DIR, OUTPUT);
+  pinMode(PIN_LEFT_PWM, OUTPUT);
+  pinMode(PIN_RIGHT_DIR, OUTPUT);
+  pinMode(PIN_RIGHT_PWM, OUTPUT);
+  hard_stop_motors();
 
-  pinMode(ENC_RF_AO, INPUT);
-  pinMode(ENC_RR_AO, INPUT);
-  pinMode(ENC_LF_AO, INPUT);
-  pinMode(ENC_LR_AO, INPUT);
+  pinMode(ENC_LEFT_A, INPUT_PULLUP);
+  pinMode(ENC_LEFT_B, INPUT_PULLUP);
+  pinMode(ENC_RIGHT_A, INPUT_PULLUP);
+  pinMode(ENC_RIGHT_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC_LEFT_A), enc_left_isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_RIGHT_A), enc_right_isr, CHANGE);
+  encoders_initialized = true;
+  boot_log(F("encoders"));
+
+  pinMode(BAT_PIN, INPUT);
 
   Wire.begin();
   boot_log(F("wire"));
@@ -1174,47 +991,32 @@ void setup() {
   boot_log(F("wire-timeout"));
 #endif
 
-  if (imu.begin()) {
-    imu_present = true;
-    imu_ready = false;
-    boot_log(F("bno080-detected"));
-    imu.enableRotationVector(BNO080_REPORT_INTERVAL_MS);
-    imu.enableGyro(BNO080_REPORT_INTERVAL_MS);
-    imu.enableAccelerometer(BNO080_REPORT_INTERVAL_MS);
-    boot_log(F("bno080-init"));
-
-    last_imu_ms = millis();
-    uint32_t warmup_start = millis();
-    while (!imu_ready && (uint32_t)(millis() - warmup_start) < BNO080_STARTUP_WAIT_MS) {
-      update_imu();
-      delay(5);
-    }
-
-    if (zero_bno080_yaw_reference(250U)) {
-      boot_log(F("bno080-zero-done"));
-    } else {
-      boot_log(F("bno080-warmup-pending"));
-    }
+  if (i2c_device_present(0x28U) && bno.begin()) {
+    delay(900);
+    bno.setExtCrystalUse(true);
+    imu_ready = true;
+    zero_bno_heading();
+    boot_log(F("bno055-ready"));
   } else {
-    imu_present = false;
     imu_ready = false;
     last_error_code = ERR_IMU_NOT_READY;
+    yaw_zero_deg = 0.0f;
     yaw_rad = 0.0f;
     yaw_rate_rad_s = 0.0f;
-    boot_log(F("imu-missing"));
+    boot_log(F("bno055-missing"));
   }
-
-  reset_all_encoders();
 
   uint32_t now = millis();
   last_cmd_ms = now;
   last_imu_ms = now;
+  last_imu_sample_ms = now;
   last_safety_ms = now;
   last_encoder_tx_ms = now;
   last_motor_state_ms = now;
   last_heartbeat_ms = now;
   last_host_frame_ms = now;
   last_host_heartbeat_ms = now;
+  last_battery_ms = now;
   host_link_seen = false;
 
   hard_stop_motors();
@@ -1225,8 +1027,8 @@ void setup() {
 void loop() {
   poll_serial();
   update_imu();
+  update_battery();
   update_motors();
-  update_encoders();
   send_imu_telemetry();
   send_safety_telemetry();
   send_encoder_telemetry();

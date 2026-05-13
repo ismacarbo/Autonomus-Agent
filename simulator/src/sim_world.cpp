@@ -928,50 +928,36 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
 WorldMap WorldMap::mixed_demo() {
     WorldMap world;
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
-    world.unstructured_preset_ = UnstructuredMapPreset::RobotValidation;
-    world.structured_preset_ = StructuredMapPreset::ValidationRoad;
-    world.bounds_ = {-1.00, -0.80, 9.00, 5.60};
+    world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
+    world.structured_preset_ = StructuredMapPreset::HardwareTrack;
+    world.bounds_ = {0.0, 0.0, 3.60, 2.40};
 
-    std::vector<Vec2> mixed_track_seed = {
-        {0.55, 2.70},
-        {1.20, 4.35},
-        {2.55, 4.85},
-        {3.85, 4.55},
-        {4.75, 3.30},
-        {5.85, 2.85},
-        {7.25, 3.55},
-        {8.20, 2.80},
-        {7.70, 1.55},
-        {6.35, 1.05},
-        {4.75, 0.88},
-        {3.00, 0.78},
-        {1.42, 1.00},
-        {0.48, 1.82},
+    // Real-lab mixed simulation: same vehicle envelope as the hardware runs,
+    // but with a long, simple road so the dataset validates the mixed logic
+    // instead of the wall clearance of the physical room.
+    world.road_centerline_ = {
+        {0.36, 1.18},
+        {0.70, 1.18},
+        {1.02, 1.18},
+        {1.34, 1.18},
+        {1.66, 1.18},
+        {2.00, 1.18},
+        {2.46, 1.18},
+        {2.85, 1.18},
+        {3.20, 1.18},
     };
-    mixed_track_seed = close_polyline_loop(std::move(mixed_track_seed), 0.45);
-    mixed_track_seed = chaikin_closed_polyline(mixed_track_seed, 2);
-    world.road_centerline_ = resample_closed_polyline(mixed_track_seed, 0.24);
     world.start_ = world.road_centerline_.front();
-    world.goal_ = world.start_;
+    world.goal_ = world.road_centerline_.back();
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
     world.obstacles_ = {
-        // Mixed validation: the first obstacles shape the start gate, while
-        // the center block cuts the road and leaves a safe lateral bypass.
-        {-0.78, 1.90, -0.10, 3.55},
-        {0.00, 1.90, 0.18, 3.55},
-        {2.20, 2.05, 3.05, 2.78},
-        {4.72, 2.72, 5.55, 3.52},
-        {7.20, 4.78, 7.75, 5.25},
+        {1.70, 1.03, 1.90, 1.34},
     };
 
     world.gate_templates_ = {
-        {"left_gate", {0.56, 2.72}, {0.56, 2.72}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"inner_shortcut", {3.42, 2.95}, {3.42, 2.95}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"block_bypass", {5.30, 4.08}, {5.30, 4.08}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"road_rejoin", {6.18, 3.36}, {6.18, 3.36}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"outer_decoy", {7.28, 1.58}, {7.28, 1.58}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-        {"late_rejoin", {7.45, 3.15}, {7.45, 3.15}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+        {"upper_bypass_entry", {1.15, 1.74}, {1.15, 1.74}, {0.08, 0.06}, 0.05, 0.20, 0.0, false},
+        {"upper_bypass_exit", {2.12, 1.74}, {2.12, 1.74}, {0.08, 0.06}, 0.05, 1.30, 0.0, false},
+        {"road_rejoin", {2.45, 1.18}, {2.45, 1.18}, {0.04, 0.05}, 0.04, 2.20, 0.0, false},
         {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
     };
     world.gates_ = world.gate_templates_;

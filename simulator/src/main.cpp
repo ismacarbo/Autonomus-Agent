@@ -1800,18 +1800,6 @@ double structured_road_width_for_world(const WorldMap& world) {
         return 0.0;
     }
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
-        const Rect content = structured_content_bounds(world);
-        const double road_span =
-            std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-        if (road_span <= 0.35) {
-            return std::clamp(road_span * 0.18, 0.045, 0.065);
-        }
-        if (road_span <= 0.80) {
-            return 0.14;
-        }
-        if (road_span <= 2.00) {
-            return 0.30;
-        }
         return 1.20;
     }
     const Rect& bounds = world.bounds();
@@ -1917,17 +1905,8 @@ void draw_structured_road_map(ImDrawList* draw_list, const CanvasTransform& tx, 
 
 float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
-        const Rect content = structured_content_bounds(world);
-        const double road_span =
-            std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-        if (road_span <= 0.36) {
-            return 0.16f;
-        }
         const Rect& bounds = world.bounds();
         const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
-        if (span <= 0.35) {
-            return 0.16f;
-        }
         if (span <= 1.25) {
             return 0.55f;
         }
@@ -1957,12 +1936,6 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
 
 ImU32 hardware_vehicle_body_color_for_world(const WorldMap& world) {
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
-        const Rect content = structured_content_bounds(world);
-        const double road_span =
-            std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-        if (road_span <= 0.36) {
-            return IM_COL32(238, 239, 226, 188);
-        }
         const Rect& bounds = world.bounds();
         const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
         return span <= 1.25 ? IM_COL32(238, 239, 226, 210) : kColorBody;
@@ -2003,8 +1976,12 @@ void draw_goal_marker(ImDrawList* draw_list, const CanvasTransform& tx, const Ve
 }
 
 double mixed_gate_acceptance_radius_for_world(const WorldMap& world) {
-    (void)world;
-    return 0.0;
+    if (world.environment_mode() != EnvironmentMode::MixedRoadGates) {
+        return 0.0;
+    }
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    return span <= 1.25 ? 0.10 : 0.12;
 }
 
 void draw_mixed_gate_acceptance_ring(ImDrawList* draw_list,
