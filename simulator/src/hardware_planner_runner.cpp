@@ -137,7 +137,11 @@ double structured_tracking_speed_floor(const WorldMap& world, double speed_limit
         distance(world.road_centerline().front(), world.road_centerline().back()) <= closure_threshold;
     double floor = 0.060;
     if (closed_loop && road_length <= 0.90) {
-        floor = 0.022;
+        // The compact real-robot structured tracks need a little more creep
+        // authority than simulation: below this value the inner wheel can sit
+        // under the useful PWM band on imperfect floor while the planner is
+        // already in its final slowdown phase.
+        floor = 0.028;
     } else if (closed_loop && road_length <= 1.40) {
         floor = 0.024;
     } else if (effective_span <= 0.35) {
@@ -779,21 +783,6 @@ bool compact_mixed_structured_loop(const WorldMap& world) {
            structured_road_is_closed_loop(world) &&
            world_span_m(world) <= 2.50 &&
            structured_course_span_m(world) <= 1.20;
-}
-
-double compact_mixed_gate_acceptance_radius_m(const WorldMap& world) {
-    if (!world_is_mixed(world)) {
-        return 0.0;
-    }
-    return world_span_m(world) <= 1.25 ? 0.10 : 0.12;
-}
-
-double compact_mixed_gate_validation_radius_m(const WorldMap& world) {
-    const double nominal_radius = compact_mixed_gate_acceptance_radius_m(world);
-    if (!(nominal_radius > 0.0)) {
-        return 0.0;
-    }
-    return nominal_radius + (world_span_m(world) <= 1.25 ? 0.02 : 0.0);
 }
 
 double distance_to_gate_point(const gate& candidate, const Vec2& position) {
@@ -4087,19 +4076,11 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
         0.18,
         std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
-    const double compact_gate_radius = clamp_value(
-        compact_mixed_gate_validation_radius_m(world_),
-        0.10,
-        0.14);
-    const bool compact_gate_reached =
-        compact_mixed_world &&
-        gate_distance <= compact_gate_radius;
     const bool gate_crossed =
-        compact_gate_reached ||
-        (lateral_offset <= pass_lateral_limit &&
-         (crossing_progress >= crossing_margin ||
-          (crossing_distance <= near_pass_longitudinal_slack &&
-           gate_distance <= near_pass_gate_radius)));
+        lateral_offset <= pass_lateral_limit &&
+        (crossing_progress >= crossing_margin ||
+         (crossing_distance <= near_pass_longitudinal_slack &&
+          gate_distance <= near_pass_gate_radius));
     if (!gate_crossed) {
         return;
     }
@@ -4196,13 +4177,11 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
             compact_mixed_world ? 0.055 : std::max(0.20, 0.5 * geometry_.body_width + 0.08);
         const double road_rejoin_offset =
             compact_mixed_world ? 0.10 : std::max(0.13, 0.5 * geometry_.body_width + 0.02);
-        if (!compact_gate_reached &&
-            !compact_rejoin_phase &&
+        if (!compact_rejoin_phase &&
             std::abs(road_lateral_offset) < road_exit_offset) {
             return;
         }
-        if (!compact_gate_reached &&
-            compact_rejoin_phase &&
+        if (compact_rejoin_phase &&
             std::abs(road_lateral_offset) > road_rejoin_offset) {
             return;
         }
@@ -5766,7 +5745,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             } else if (tracker_heading_error_deg_ > heading_slow_deg ||
                        tracker_cross_track_error_ > cross_slow_m) {
                 const double slow_floor =
-                    tiny_indoor_loop ? 0.016 : (micro_structured_world(world_) ? 0.014 : (compact_mixed_loop ? 0.018 : 0.0));
+                    tiny_indoor_loop
+                        ? std::max(0.024, 0.85 * structured_tracking_speed_floor(world_, speed_limit))
+                        : (micro_structured_world(world_) ? 0.018 : (compact_mixed_loop ? 0.018 : 0.0));
                 last_command_.target_speed =
                     std::min(std::max(last_command_.target_speed, slow_floor),
                              tiny_indoor_loop ? 0.030 : (compact_mixed_loop ? 0.045 : 0.04));
@@ -5785,7 +5766,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             if ((tiny_indoor_loop || micro_structured_world(world_) || compact_mixed_loop) &&
                 tracker_heading_error_deg_ < (compact_mixed_loop ? 50.0 : 42.0) &&
                 tracker_cross_track_error_ < (compact_mixed_loop ? 0.12 : 0.025)) {
-                last_command_.target_speed = std::max(last_command_.target_speed, 0.018);
+                last_command_.target_speed = std::max(
+                    last_command_.target_speed,
+                    tiny_indoor_loop ? structured_tracking_speed_floor(world_, speed_limit) : 0.018);
             }
             if (tracker_heading_error_deg_ < heading_floor_deg &&
                 tracker_cross_track_error_ < cross_floor_m) {

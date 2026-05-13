@@ -983,34 +983,17 @@ WorldMap WorldMap::mixed_demo() {
 }
 
 WorldMap WorldMap::mixed_hardware_demo() {
-    WorldMap world;
+    WorldMap world = WorldMap::structured_demo(StructuredMapPreset::HardwareTrack);
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::HardwareTrack;
-    world.bounds_ = {0.0, 0.0, 0.86, 0.68};
 
-    // Compact real-lab mixed validation: only the structured reference is
-    // mapped here. Obstacles and bypass gates must come from LiDAR at runtime,
-    // matching the unstructured validation workflow.
-    std::vector<Vec2> mixed_track_seed = {
-        {0.20, 0.34},
-        {0.30, 0.30},
-        {0.45, 0.31},
-        {0.61, 0.37},
-        {0.62, 0.48},
-        {0.46, 0.55},
-        {0.29, 0.49},
-    };
-    mixed_track_seed = close_polyline_loop(std::move(mixed_track_seed), 0.12);
-    world.road_centerline_ =
-        close_polyline_loop(resample_closed_polyline(mixed_track_seed, 0.030), 0.05);
-    world.start_ = world.road_centerline_.front();
-    world.goal_ = world.start_;
-    world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
-
+    // Use the same compact physical track as the structured hardware
+    // validation. The mixed behavior should differ only in the LiDAR-derived
+    // bypass layer, not in the road scale or initial centerline projection.
     world.obstacles_.clear();
     world.gate_templates_.clear();
-    world.gates_ = world.gate_templates_;
+    world.gates_.clear();
     world.gate_behavior_ = GateBehaviorMode::Static;
     world.gate_seed_ = 0;
     return world;
