@@ -58,6 +58,7 @@ struct AppOptions {
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
+    int mixed_preset = 0;
     VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     VehicleTuningOverrides tuning_overrides;
 };
@@ -113,6 +114,7 @@ struct UiState {
     int environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
     int unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
     int structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
+    int mixed_preset = 0;
     int vehicle_model = static_cast<int>(VehicleModelKind::CarLikeBicycle);
     WorldMap scenario_editor_world;
     bool scenario_editor_dirty = false;
@@ -190,7 +192,8 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
                               UnstructuredMapPreset preset,
                               StructuredMapPreset structured_preset,
                               GateBehaviorMode gate_behavior,
-                              std::uint32_t gate_seed);
+                              std::uint32_t gate_seed,
+                              int mixed_preset);
 bool workspace_source_is_hardware(int source);
 
 Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
@@ -535,7 +538,8 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
                               UnstructuredMapPreset preset,
                               StructuredMapPreset structured_preset,
                               GateBehaviorMode gate_behavior,
-                              std::uint32_t gate_seed);
+                              std::uint32_t gate_seed,
+                              int mixed_preset = 0);
 
 std::string json_escape(const std::string& value) {
     std::string escaped;
@@ -593,9 +597,36 @@ std::string map_preset_name(const WorldMap& world) {
         return thesis_sim::structured_map_preset_name(world.structured_preset());
     }
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
+        const Rect& bounds = world.bounds();
+        const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+        if (span <= 1.20 && !world.obstacles().empty()) {
+            return "Mixed Hardware Aligned";
+        }
+        if (span <= 1.20) {
+            return "Mixed Hardware Runner";
+        }
         return "Mixed Road Gate Validation";
     }
     return thesis_sim::unstructured_map_preset_name(world.unstructured_preset());
+}
+
+const char* mixed_map_preset_name(int preset) {
+    switch (preset) {
+        case 1:
+            return "Hardware-Aligned Lab";
+        case 0:
+        default:
+            return "Validation Road/Gates";
+    }
+}
+
+int mixed_preset_from_world(const WorldMap& world) {
+    if (world.environment_mode() != EnvironmentMode::MixedRoadGates) {
+        return 0;
+    }
+    const Rect& bounds = world.bounds();
+    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    return span <= 1.20 && !world.obstacles().empty() ? 1 : 0;
 }
 
 void sync_ui_state_from_sim(UiState* ui_state, const PlannerDrivenVehicleSim& sim) {
@@ -605,6 +636,7 @@ void sync_ui_state_from_sim(UiState* ui_state, const PlannerDrivenVehicleSim& si
     ui_state->environment_mode = static_cast<int>(sim.environment_mode());
     ui_state->unstructured_preset = static_cast<int>(sim.world().unstructured_preset());
     ui_state->structured_preset = static_cast<int>(sim.world().structured_preset());
+    ui_state->mixed_preset = mixed_preset_from_world(sim.world());
     ui_state->vehicle_model = static_cast<int>(sim.vehicle_model_kind());
     ui_state->dynamic_lidar_gates = sim.config().dynamic_lidar_gates;
     ui_state->gate_seed_input = static_cast<int>(sim.gate_seed());
@@ -648,7 +680,13 @@ WorldMap world_from_ui_selection(const PlannerDrivenVehicleSim& sim, const UiSta
         custom.finalize_editor_changes();
         return custom;
     }
-    return make_world_from_mode(selected_mode, selected_preset, selected_structured_preset, sim.gate_behavior(), sim.gate_seed());
+    return make_world_from_mode(
+        selected_mode,
+        selected_preset,
+        selected_structured_preset,
+        sim.gate_behavior(),
+        sim.gate_seed(),
+        ui_state.mixed_preset);
 }
 
 WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
@@ -1515,9 +1553,14 @@ AppOptions parse_args(int argc, char** argv) {
             const std::string value = argv[++i];
             if (value == "structured") {
                 options.environment_mode = EnvironmentMode::StructuredRoad;
-            } else if (value == "mixed") {
+            } else if (value == "mixed" || value == "mixed_road_gates") {
                 options.environment_mode = EnvironmentMode::MixedRoadGates;
                 options.dynamic_lidar_gates = true;
+            } else if (value == "mixed_hardware" || value == "mixed-hardware" ||
+                       value == "mixed_hardware_aligned" || value == "mixed-hardware-aligned") {
+                options.environment_mode = EnvironmentMode::MixedRoadGates;
+                options.dynamic_lidar_gates = true;
+                options.mixed_preset = 1;
             } else {
                 options.environment_mode = EnvironmentMode::UnstructuredGates;
             }
@@ -1528,6 +1571,21 @@ AppOptions parse_args(int argc, char** argv) {
         } else if (arg == "--scenario=mixed") {
             options.environment_mode = EnvironmentMode::MixedRoadGates;
             options.dynamic_lidar_gates = true;
+        } else if (arg == "--scenario=mixed_hardware" || arg == "--scenario=mixed-hardware" ||
+                   arg == "--scenario=mixed_hardware_aligned" || arg == "--scenario=mixed-hardware-aligned") {
+            options.environment_mode = EnvironmentMode::MixedRoadGates;
+            options.dynamic_lidar_gates = true;
+            options.mixed_preset = 1;
+        } else if (arg == "--mixed-map" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            options.mixed_preset =
+                (value == "hardware" || value == "hardware_aligned" || value == "hardware-aligned" ||
+                 value == "hardware_lab" || value == "hardware-lab") ? 1 : 0;
+        } else if (arg.rfind("--mixed-map=", 0) == 0) {
+            const std::string value = arg.substr(std::strlen("--mixed-map="));
+            options.mixed_preset =
+                (value == "hardware" || value == "hardware_aligned" || value == "hardware-aligned" ||
+                 value == "hardware_lab" || value == "hardware-lab") ? 1 : 0;
         } else if (arg == "--unstructured-map" && i + 1 < argc) {
             const std::string value = argv[++i];
             if (value == "tight") {
@@ -1625,11 +1683,15 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
                               UnstructuredMapPreset preset,
                               StructuredMapPreset structured_preset,
                               GateBehaviorMode gate_behavior,
-                              std::uint32_t gate_seed) {
+                              std::uint32_t gate_seed,
+                              int mixed_preset) {
     if (mode == EnvironmentMode::StructuredRoad) {
         return WorldMap::structured_demo(structured_preset);
     }
     if (mode == EnvironmentMode::MixedRoadGates) {
+        if (mixed_preset == 1) {
+            return WorldMap::mixed_hardware_aligned_demo();
+        }
         return WorldMap::mixed_demo();
     }
     if (preset == UnstructuredMapPreset::Custom) {
@@ -5014,6 +5076,17 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             }
         } else if (sim.environment_mode() == EnvironmentMode::MixedRoadGates) {
             ImGui::TextWrapped("Mixed mode follows the structured road while LiDAR gaps compete as dynamic gates. The arbiter only leaves the road when the gate is stable, aligned, safe and useful for progress.");
+            const char* mixed_items[] = {
+                mixed_map_preset_name(0),
+                mixed_map_preset_name(1),
+            };
+            int mixed_selection = std::clamp(ui_state->mixed_preset, 0, static_cast<int>(IM_ARRAYSIZE(mixed_items)) - 1);
+            if (ImGui::Combo("Mixed Map", &mixed_selection, mixed_items, IM_ARRAYSIZE(mixed_items))) {
+                ui_state->mixed_preset = mixed_selection;
+                sim.load_world(world_from_ui_selection(sim, *ui_state));
+                sync_ui_state_from_sim(ui_state, sim);
+                ui_state->paused = true;
+            }
             ImGui::Text("Preset = %s", map_preset_name(sim.world()).c_str());
             bool dynamic_lidar_gates = sim.config().dynamic_lidar_gates;
             if (ImGui::Checkbox("LiDAR dynamic gates", &dynamic_lidar_gates)) {
@@ -5396,7 +5469,8 @@ int run_headless(const AppOptions& options) {
         options.unstructured_preset,
         options.structured_preset,
         GateBehaviorMode::Static,
-        7),
+        7,
+        options.mixed_preset),
         sim_config);
     apply_sim_tuning_overrides(&sim, options);
     const SimulationReport report = sim.run_headless(options.max_steps);
@@ -5468,7 +5542,8 @@ int run_gui(const AppOptions& options) {
         options.unstructured_preset,
         options.structured_preset,
         GateBehaviorMode::Static,
-        7),
+        7,
+        options.mixed_preset),
         sim_config);
     apply_sim_tuning_overrides(&sim, options);
     HardwareViewerState hardware_view;

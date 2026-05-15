@@ -377,8 +377,21 @@ uint16_t build_encoder_flags() {
   return flags;
 }
 
+void force_motor_pins_off() {
+  digitalWrite(PIN_LEFT_PWM, LOW);
+  digitalWrite(PIN_RIGHT_PWM, LOW);
+  digitalWrite(PIN_LEFT_DIR, LOW);
+  digitalWrite(PIN_RIGHT_DIR, LOW);
+}
+
 void set_one_motor(uint8_t dir_pin, uint8_t pwm_pin, int16_t pwm, int sign) {
   int hw = clampi((int)sign * (int)pwm, -255, 255);
+  if (hw == 0) {
+    analogWrite(pwm_pin, 0);
+    digitalWrite(pwm_pin, LOW);
+    digitalWrite(dir_pin, LOW);
+    return;
+  }
   digitalWrite(dir_pin, hw >= 0 ? HIGH : LOW);
   analogWrite(pwm_pin, abs(hw));
 }
@@ -393,7 +406,7 @@ void hard_stop_motors() {
   target_pwm_r = 0;
   current_pwm_l = 0;
   current_pwm_r = 0;
-  set_motor_hw(0, 0);
+  force_motor_pins_off();
 }
 
 void set_targets(int16_t pwm_l, int16_t pwm_r) {
@@ -964,14 +977,14 @@ void update_motors() {
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
-  boot_log(F("serial"));
-
   pinMode(PIN_LEFT_DIR, OUTPUT);
   pinMode(PIN_LEFT_PWM, OUTPUT);
   pinMode(PIN_RIGHT_DIR, OUTPUT);
   pinMode(PIN_RIGHT_PWM, OUTPUT);
   hard_stop_motors();
+
+  Serial.begin(SERIAL_BAUD);
+  boot_log(F("serial"));
 
   pinMode(ENC_LEFT_A, INPUT_PULLUP);
   pinMode(ENC_LEFT_B, INPUT_PULLUP);

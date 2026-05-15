@@ -41,6 +41,11 @@ using thesis_sim::WorldMap;
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kStreamReconnectRetryMs = 1500;
 
+enum class VehicleProfile {
+    Car,
+    Tank,
+};
+
 struct AppOptions {
     std::string controller_port;
     std::string lidar_port;
@@ -53,6 +58,14 @@ struct AppOptions {
     bool planner_safety_stop_enabled = false;
     bool controller_reset_on_connect = false;
     bool simulate = false;
+    bool stop_on_stream_loss = false;
+    VehicleProfile vehicle_profile = VehicleProfile::Car;
+    int encoder_ticks_per_revolution = 0;
+    double wheel_radius_m = 0.0;
+    double track_width_m = 0.0;
+    double max_linear_speed_mps = 0.0;
+    double max_yaw_rate_rad_s = 0.0;
+    double cruise_speed_limit_mps = 0.0;
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
@@ -251,6 +264,14 @@ void print_usage(const char* argv0) {
         << "  --stream-host HOST        send live view snapshots to HOST\n"
         << "  --stream-port N           send live view snapshots to TCP port N\n"
         << "  --stream-every N          send one frame every N planner steps (default 1)\n"
+        << "  --stop-on-stream-loss     stop the robot if a previously connected GUI stream drops\n"
+        << "  --vehicle-model NAME      car | tank (tracked/skid-steer profile)\n"
+        << "  --ticks-per-rev N         override encoder ticks per wheel revolution\n"
+        << "  --wheel-radius M          override wheel/track effective radius in meters\n"
+        << "  --track-width M           override differential track width in meters\n"
+        << "  --max-linear-speed MPS    override hardware max linear speed\n"
+        << "  --max-yaw-rate RADS       override hardware max yaw rate\n"
+        << "  --cruise-speed MPS        override planner cruise speed limit\n"
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
         << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n"
         << "  --enable-planner-safety   enable planner-side LiDAR safety stop logic\n"
@@ -297,6 +318,36 @@ AppOptions parse_args(int argc, char** argv) {
             options.stream_port = std::atoi(argv[++i]);
         } else if (arg == "--stream-every" && i + 1 < argc) {
             options.stream_every_n_steps = std::atoi(argv[++i]);
+        } else if (arg == "--stop-on-stream-loss") {
+            options.stop_on_stream_loss = true;
+        } else if (arg == "--vehicle-model" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            if (value == "tank" || value == "tracked" || value == "tracked_vehicle" ||
+                value == "skid" || value == "skid_steer") {
+                options.vehicle_profile = VehicleProfile::Tank;
+            } else {
+                options.vehicle_profile = VehicleProfile::Car;
+            }
+        } else if (arg.rfind("--vehicle-model=", 0) == 0) {
+            const std::string value = arg.substr(std::strlen("--vehicle-model="));
+            if (value == "tank" || value == "tracked" || value == "tracked_vehicle" ||
+                value == "skid" || value == "skid_steer") {
+                options.vehicle_profile = VehicleProfile::Tank;
+            } else {
+                options.vehicle_profile = VehicleProfile::Car;
+            }
+        } else if (arg == "--ticks-per-rev" && i + 1 < argc) {
+            options.encoder_ticks_per_revolution = std::atoi(argv[++i]);
+        } else if (arg == "--wheel-radius" && i + 1 < argc) {
+            options.wheel_radius_m = std::atof(argv[++i]);
+        } else if (arg == "--track-width" && i + 1 < argc) {
+            options.track_width_m = std::atof(argv[++i]);
+        } else if (arg == "--max-linear-speed" && i + 1 < argc) {
+            options.max_linear_speed_mps = std::atof(argv[++i]);
+        } else if (arg == "--max-yaw-rate" && i + 1 < argc) {
+            options.max_yaw_rate_rad_s = std::atof(argv[++i]);
+        } else if (arg == "--cruise-speed" && i + 1 < argc) {
+            options.cruise_speed_limit_mps = std::atof(argv[++i]);
         } else if (arg == "--no-auto-mode") {
             options.auto_mode = false;
         } else if (arg == "--no-gyro-zero") {
@@ -316,6 +367,51 @@ AppOptions parse_args(int argc, char** argv) {
 
 bool stream_enabled(const AppOptions& options) {
     return !options.stream_host.empty() && options.stream_port > 0;
+}
+
+void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* config) {
+    if (config == nullptr) {
+        return;
+    }
+
+    if (options.vehicle_profile == VehicleProfile::Tank) {
+        // Conservative tracked/skid-steer defaults. The tank encoders produce
+        // far more ticks per wheel revolution than the small car profile; using
+        // the car default makes odometry jump and collapses structured tracking
+        // into an in-place yaw correction.
+        config->drive.track_width = 0.18;
+        config->drive.wheel_radius = 0.032;
+        config->drive.encoder_ticks_per_revolution = 2400;
+        config->drive.max_linear_speed = 0.22;
+        config->drive.max_yaw_rate = 1.20;
+        config->drive.max_curvature = 3.60;
+        config->pwm.start_motion_pwm = 82;
+        config->pwm.min_effective_pwm = 38;
+        config->pwm.linear_feedback_gain = 42.0;
+        config->pwm.yaw_feedback_gain = 18.0;
+        config->pwm.stall_boost_after_cycles = 8;
+        config->pwm.stall_target_speed_threshold_mps = 0.045;
+        config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.09);
+    }
+
+    if (options.encoder_ticks_per_revolution > 0) {
+        config->drive.encoder_ticks_per_revolution = options.encoder_ticks_per_revolution;
+    }
+    if (options.wheel_radius_m > 0.0) {
+        config->drive.wheel_radius = options.wheel_radius_m;
+    }
+    if (options.track_width_m > 0.0) {
+        config->drive.track_width = options.track_width_m;
+    }
+    if (options.max_linear_speed_mps > 0.0) {
+        config->drive.max_linear_speed = options.max_linear_speed_mps;
+    }
+    if (options.max_yaw_rate_rad_s > 0.0) {
+        config->drive.max_yaw_rate = options.max_yaw_rate_rad_s;
+    }
+    if (options.cruise_speed_limit_mps > 0.0) {
+        config->cruise_speed_limit = options.cruise_speed_limit_mps;
+    }
 }
 
 bool setup_stream_client(const AppOptions& options,
@@ -704,6 +800,7 @@ int main(int argc, char** argv) {
             planner_config.gap_extraction.strict_locked_gate_motion = false;
             planner_config.gap_extraction.min_passed_gates_to_complete = 1;
         }
+        apply_vehicle_profile(options, &planner_config);
 
         if (options.simulate) {
             return run_simulated(options, world, std::move(bridge_options), planner_config);
@@ -754,6 +851,22 @@ int main(int argc, char** argv) {
             return 2;
         }
         stream_frame_if_due(options, *runner, &streamer, true);
+        bool stream_connected_once = streamer.connected();
+        auto stop_if_stream_lost = [&]() {
+            if (streamer.connected()) {
+                stream_connected_once = true;
+                return false;
+            }
+            if (options.stop_on_stream_loss && stream_connected_once) {
+                std::cerr << "hardware_runner_error=live stream disconnected; stopping robot\n";
+                runner->disconnect();
+                return true;
+            }
+            return false;
+        };
+        if (stop_if_stream_lost()) {
+            return 1;
+        }
 
         const int limit = options.max_steps > 0 ? options.max_steps : 1500;
         while (runner->step_count() < limit && !runner->goal_reached()) {
@@ -761,10 +874,16 @@ int main(int argc, char** argv) {
                 runner->disconnect();
                 return 2;
             }
+            if (stop_if_stream_lost()) {
+                return 1;
+            }
             world_applied = false;
             if (!process_stream_control(options, runner.get(), &streamer, &world_applied)) {
                 runner->disconnect();
                 return 2;
+            }
+            if (stop_if_stream_lost()) {
+                return 1;
             }
             if (world_applied) {
                 if (!send_stream_scene(options, *runner, &streamer)) {
@@ -772,10 +891,16 @@ int main(int argc, char** argv) {
                     return 2;
                 }
                 stream_frame_if_due(options, *runner, &streamer, true);
+                if (stop_if_stream_lost()) {
+                    return 1;
+                }
                 continue;
             }
             runner->step();
             stream_frame_if_due(options, *runner, &streamer);
+            if (stop_if_stream_lost()) {
+                return 1;
+            }
         }
         stream_frame_if_due(options, *runner, &streamer, true);
 

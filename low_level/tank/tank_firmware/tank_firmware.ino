@@ -143,7 +143,10 @@ const uint16_t ENC_FLAG_RIGHT_DIR_NEG = 1U << 3;
 const uint16_t RSP_MAX_PAYLOAD = 48U;
 const uint8_t RSP_HEADER_LEN = 6U;
 
-Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+Adafruit_BNO055 bno_28 = Adafruit_BNO055(55, 0x28);
+Adafruit_BNO055 bno_29 = Adafruit_BNO055(55, 0x29);
+Adafruit_BNO055* bno = &bno_28;
+uint8_t bno_i2c_addr = 0x28U;
 
 volatile int32_t enc_left_ticks = 0;
 volatile int32_t enc_right_ticks = 0;
@@ -377,8 +380,21 @@ uint16_t build_encoder_flags() {
   return flags;
 }
 
+void force_motor_pins_off() {
+  digitalWrite(PIN_LEFT_PWM, LOW);
+  digitalWrite(PIN_RIGHT_PWM, LOW);
+  digitalWrite(PIN_LEFT_DIR, LOW);
+  digitalWrite(PIN_RIGHT_DIR, LOW);
+}
+
 void set_one_motor(uint8_t dir_pin, uint8_t pwm_pin, int16_t pwm, int sign) {
   int hw = clampi((int)sign * (int)pwm, -255, 255);
+  if (hw == 0) {
+    analogWrite(pwm_pin, 0);
+    digitalWrite(pwm_pin, LOW);
+    digitalWrite(dir_pin, LOW);
+    return;
+  }
   digitalWrite(dir_pin, hw >= 0 ? HIGH : LOW);
   analogWrite(pwm_pin, abs(hw));
 }
@@ -393,7 +409,7 @@ void hard_stop_motors() {
   target_pwm_r = 0;
   current_pwm_l = 0;
   current_pwm_r = 0;
-  set_motor_hw(0, 0);
+  force_motor_pins_off();
 }
 
 void set_targets(int16_t pwm_l, int16_t pwm_r) {
@@ -405,7 +421,7 @@ void set_targets(int16_t pwm_l, int16_t pwm_r) {
 bool read_bno_yaw_deg(float* out_yaw_deg) {
   if (!imu_ready || out_yaw_deg == NULL) return false;
   sensors_event_t orientation_data;
-  bno.getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
+  bno->getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
   *out_yaw_deg = orientation_data.orientation.x;
   return true;
 }
@@ -430,10 +446,10 @@ void update_imu() {
   last_imu_ms = now;
 
   sensors_event_t orientation_data;
-  bno.getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
+  bno->getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
 
-  imu::Vector<3> accel = bno.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
-  imu::Vector<3> gyro = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+  imu::Vector<3> accel = bno->getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
+  imu::Vector<3> gyro = bno->getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
 
   yaw_rad = wrap_pi((orientation_data.orientation.x - yaw_zero_deg) * DEG_TO_RAD_F);
   yaw_rate_rad_s = (float)YAW_RATE_SIGN * (float)gyro.z() * DEG_TO_RAD_F;
@@ -480,6 +496,20 @@ bool send_frame(uint8_t msg_type, uint8_t flags, const uint8_t* payload, uint16_
   Serial.write((uint8_t)(crc & 0xFFU));
   Serial.write((uint8_t)((crc >> 8) & 0xFFU));
   return true;
+}
+
+bool begin_bno055() {
+  if (i2c_device_present(0x28U)) {
+    bno = &bno_28;
+    bno_i2c_addr = 0x28U;
+    if (bno->begin()) return true;
+  }
+  if (i2c_device_present(0x29U)) {
+    bno = &bno_29;
+    bno_i2c_addr = 0x29U;
+    if (bno->begin()) return true;
+  }
+  return false;
 }
 
 void send_ack(uint8_t acked_seq, uint8_t acked_type, uint8_t status, uint8_t detail) {
@@ -964,14 +994,14 @@ void update_motors() {
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
-  boot_log(F("serial"));
-
   pinMode(PIN_LEFT_DIR, OUTPUT);
   pinMode(PIN_LEFT_PWM, OUTPUT);
   pinMode(PIN_RIGHT_DIR, OUTPUT);
   pinMode(PIN_RIGHT_PWM, OUTPUT);
   hard_stop_motors();
+
+  Serial.begin(SERIAL_BAUD);
+  boot_log(F("serial"));
 
   pinMode(ENC_LEFT_A, INPUT_PULLUP);
   pinMode(ENC_LEFT_B, INPUT_PULLUP);
@@ -991,12 +1021,13 @@ void setup() {
   boot_log(F("wire-timeout"));
 #endif
 
-  if (i2c_device_present(0x28U) && bno.begin()) {
+  if (begin_bno055()) {
     delay(900);
-    bno.setExtCrystalUse(true);
+    bno->setExtCrystalUse(true);
     imu_ready = true;
     zero_bno_heading();
-    boot_log(F("bno055-ready"));
+    if (bno_i2c_addr == 0x29U) boot_log(F("bno055-ready-0x29"));
+    else boot_log(F("bno055-ready-0x28"));
   } else {
     imu_ready = false;
     last_error_code = ERR_IMU_NOT_READY;

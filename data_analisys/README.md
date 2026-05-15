@@ -197,6 +197,36 @@ Output principali:
 - figure SVG su lock del gate, reference windows, timing e clearance
 - copia stabile in `documentation/Unstructured_Dynamic_Gate_Data_Analysis_20260503.md`
 
+## Analisi mixed simulazione vs hardware
+
+Per la modalita mixed usa la pipeline dedicata, che normalizza progresso,
+deviazione dalla road e finestre gate tra simulazione e run reali:
+
+```bash
+python -m data_analisys.mixed_model_validation \
+  --simulation reports/<mixed_hardware_aligned_sim>.json \
+  --hardware reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_052657_596.json \
+  --hardware reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_053236_711.json
+```
+
+Output principali:
+
+- `data_analisys/outputs/mixed_model_validation_20260514/mixed_metrics.csv`
+- `data_analisys/outputs/mixed_model_validation_20260514/mixed_metrics.json`
+- `data_analisys/outputs/mixed_model_validation_20260514/mixed_model_validation_summary.md`
+- figure SVG su `road_deviation_normalized`, `progress_normalized`, `gate_windows` e metriche aggregate
+
+Per generare una baseline simulata piu vicina ai run reali mixed:
+
+```bash
+build/simulator/thesis_planner_sim \
+  --headless \
+  --scenario mixed \
+  --mixed-map hardware_aligned \
+  --dynamic-lidar-gates \
+  --max-steps 2400
+```
+
 ## Idea del fitting
 
 Il fitting iniziale e volutamente semplice e ispezionabile. Per ogni segnale trattiamo il
