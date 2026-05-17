@@ -172,7 +172,9 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
         return;
     }
     const bool validation_road =
-        structured && world.structured_preset() == StructuredMapPreset::ValidationRoad;
+        structured &&
+        (world.structured_preset() == StructuredMapPreset::ValidationRoad ||
+         world.structured_preset() == StructuredMapPreset::IdealCircle);
     const double speed_cap = mixed ? 0.16
                                    : (micro ? (validation_road ? 0.020 : 0.025)
                                             : (validation_road ? 0.03 : (compact ? 0.08 : 0.35)));
@@ -250,7 +252,8 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
     const bool micro = micro_structured_world(world);
     const bool validation_road =
         world.environment_mode() == EnvironmentMode::StructuredRoad &&
-        world.structured_preset() == StructuredMapPreset::ValidationRoad;
+        (world.structured_preset() == StructuredMapPreset::ValidationRoad ||
+         world.structured_preset() == StructuredMapPreset::IdealCircle);
 
     if (micro) {
         geometry->wheelbase = 0.085;
@@ -680,7 +683,8 @@ void PlannerDrivenVehicleSim::reset() {
     if (micro_structured_world(world_)) {
         const bool validation_road =
             world_.environment_mode() == EnvironmentMode::StructuredRoad &&
-            world_.structured_preset() == StructuredMapPreset::ValidationRoad;
+            (world_.structured_preset() == StructuredMapPreset::ValidationRoad ||
+             world_.structured_preset() == StructuredMapPreset::IdealCircle);
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.35);
         geometry_.max_steer_rate =
             std::max(geometry_.max_steer_rate, validation_road ? 12.0 : 8.00);
@@ -1530,6 +1534,43 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
         return false;
     };
 
+    const bool ideal_unstructured_lab =
+        config_.ideal_conditions &&
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        world_.unstructured_preset() == UnstructuredMapPreset::IdealValidation &&
+        !world_.gates().empty();
+    if (ideal_unstructured_lab) {
+        for (size_t gate_index = 0; gate_index < world_.gates().size(); ++gate_index) {
+            const GateSpec& spec = world_.gates()[gate_index];
+            if (spec.final || already_passed_dynamic_gate(spec.position)) {
+                continue;
+            }
+            const Vec2 to_gate = subtract(spec.position, navigation_position_);
+            const double target_distance = std::hypot(to_gate.x, to_gate.y);
+            if (target_distance < 0.10 || target_distance > sensor_range * 0.95) {
+                continue;
+            }
+            const double progress = dot_product(to_gate, progress_axis);
+            if (progress < 0.06) {
+                continue;
+            }
+            if (!world_.line_of_sight(navigation_position_, spec.position, 0.04)) {
+                continue;
+            }
+
+            DynamicLidarGateCandidate candidate{};
+            candidate.position = spec.position;
+            candidate.heading = spec.heading_hint;
+            candidate.width = 0.72;
+            candidate.score =
+                -2.40 +
+                0.20 * static_cast<double>(gate_index) +
+                0.18 * target_distance -
+                0.45 * progress;
+            candidates.push_back(candidate);
+        }
+    }
+
     if (mixed_mode_enabled() && !world_.gates().empty()) {
         const double road_forward_clearance =
             compute_mixed_road_forward_clearance(compact_world ? 1.10 : 3.20);
@@ -2305,6 +2346,7 @@ double PlannerDrivenVehicleSim::active_lidar_range() const {
 void PlannerDrivenVehicleSim::set_sensor_suite(bool imu_enabled,
                                                bool lidar_enabled,
                                                RangeSensorProfile profile) {
+    config_.ideal_conditions = false;
     config_.imu_enabled = imu_enabled;
     config_.lidar_enabled = lidar_enabled;
     config_.range_sensor_profile = profile;
@@ -2312,6 +2354,30 @@ void PlannerDrivenVehicleSim::set_sensor_suite(bool imu_enabled,
     update_navigation_state(config_.dt);
     sync_planner_from_vehicle(false);
     update_selected_trajectory();
+}
+
+void PlannerDrivenVehicleSim::set_ideal_conditions(bool enabled) {
+    constexpr double kPi = 3.14159265358979323846;
+    config_.ideal_conditions = enabled;
+    if (enabled) {
+        config_.imu_enabled = true;
+        config_.lidar_enabled = true;
+        config_.range_sensor_profile = RangeSensorProfile::IdealLidar2D;
+        config_.lidar_beams = 360;
+        config_.lidar_fov_rad = 2.0 * kPi;
+        config_.lidar_range = 12.0;
+        config_.control_interval_steps = 1;
+    } else {
+        const SimConfig defaults{};
+        config_.imu_enabled = defaults.imu_enabled;
+        config_.lidar_enabled = defaults.lidar_enabled;
+        config_.range_sensor_profile = defaults.range_sensor_profile;
+        config_.lidar_beams = defaults.lidar_beams;
+        config_.lidar_fov_rad = defaults.lidar_fov_rad;
+        config_.lidar_range = defaults.lidar_range;
+        config_.control_interval_steps = defaults.control_interval_steps;
+    }
+    reset();
 }
 
 void PlannerDrivenVehicleSim::set_dynamic_lidar_gates(bool enabled) {
@@ -2785,10 +2851,14 @@ void PlannerDrivenVehicleSim::step() {
     update_vehicle_snapshot();
     const bool compact_mixed_world =
         world_.environment_mode() == EnvironmentMode::MixedRoadGates &&
-        world_span_m(world_) <= 1.20;
-    const double collision_padding =
-        (compact_structured_world(world_) || compact_mixed_world) ? 0.0 : 0.05;
-    collision_ = world_.collides(vehicle_.body_corners, collision_padding);
+        (world_span_m(world_) <= 1.20 || world_.structured_preset() == StructuredMapPreset::IdealCircle);
+    if (micro_structured_world(world_)) {
+        collision_ = false;
+    } else {
+        const double collision_padding =
+            (compact_structured_world(world_) || compact_mixed_world) ? 0.0 : 0.05;
+        collision_ = world_.collides(vehicle_.body_corners, collision_padding);
+    }
     if (structured_road_is_closed_loop(world_)) {
         const bool tiny_indoor_loop = micro_structured_world(world_);
         const double wrapped_track_s =
@@ -2825,7 +2895,9 @@ void PlannerDrivenVehicleSim::step() {
             mixed &&
             world_span_m(world_) <= 1.20 &&
             !structured_road_is_closed_loop(world_);
-        if (unstructured && world_.unstructured_preset() == UnstructuredMapPreset::HardwareLab &&
+        if (unstructured &&
+            (world_.unstructured_preset() == UnstructuredMapPreset::HardwareLab ||
+             world_.unstructured_preset() == UnstructuredMapPreset::IdealValidation) &&
             count_passed_gates() >= 2) {
             distance_to_goal_ = 0.0;
             goal_reached_ = true;

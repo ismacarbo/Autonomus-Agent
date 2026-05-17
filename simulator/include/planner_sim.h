@@ -124,6 +124,7 @@ struct SimConfig {
     bool imu_enabled = true;
     bool lidar_enabled = true;
     bool dynamic_lidar_gates = false;
+    bool ideal_conditions = false;
     RangeSensorProfile range_sensor_profile = RangeSensorProfile::RplidarA1;
     GateBehaviorMode gate_behavior = GateBehaviorMode::Static;
     std::uint32_t gate_seed = 7;
@@ -217,6 +218,7 @@ class PlannerDrivenVehicleSim {
     double active_lidar_range() const;
     void load_world(WorldMap world);
     void set_sensor_suite(bool imu_enabled, bool lidar_enabled, RangeSensorProfile profile);
+    void set_ideal_conditions(bool enabled);
     void set_dynamic_lidar_gates(bool enabled);
     void set_gate_behavior(GateBehaviorMode mode, std::uint32_t seed);
     void regenerate_gate_layout(std::uint32_t seed);

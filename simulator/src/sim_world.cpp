@@ -697,6 +697,8 @@ const char* unstructured_map_preset_name(UnstructuredMapPreset preset) {
             return "Manual Gate Editor";
         case UnstructuredMapPreset::HardwareLab:
             return "Hardware Lab";
+        case UnstructuredMapPreset::IdealValidation:
+            return "Ideal Hardware Lab";
         default:
             return "Unknown";
     }
@@ -716,6 +718,8 @@ const char* structured_map_preset_name(StructuredMapPreset preset) {
             return "Hardware Track";
         case StructuredMapPreset::FigureEight:
             return "Figure Eight";
+        case StructuredMapPreset::IdealCircle:
+            return "Ideal Validation Road";
         default:
             return "Unknown";
     }
@@ -778,6 +782,21 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
                 {"upper_bypass", {17.4, 17.8}, {17.4, 17.8}, {0.32, 0.22}, 0.05, 1.40, 0.0, false},
                 {"exit_gap", {28.4, 16.2}, {28.4, 16.2}, {0.22, 0.40}, 0.06, 2.20, 0.0, false},
                 {"goal_approach", {33.0, 18.5}, {33.0, 18.5}, {0.32, 0.28}, 0.05, 2.90, 0.0, false},
+                {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+            };
+            break;
+        case UnstructuredMapPreset::IdealValidation:
+            world.bounds_ = {0.0, 0.0, 2.70, 2.40};
+            world.start_ = {0.28, 1.00};
+            world.goal_ = {2.35, 1.15};
+            world.start_heading_ = 0.0;
+            world.obstacles_ = {
+                {0.90, 0.00, 1.08, 0.55},
+                {1.70, 0.00, 1.88, 0.60},
+            };
+            world.gate_templates_ = {
+                {"gate_entry", {1.18, 1.00}, {1.18, 1.00}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"exit_align", {2.00, 1.15}, {2.00, 1.15}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
                 {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
             };
             break;
@@ -874,6 +893,7 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
     switch (preset) {
         case StructuredMapPreset::ValidationRoad:
         case StructuredMapPreset::Custom:
+        case StructuredMapPreset::IdealCircle:
             world.bounds_ = {0.0, 0.0, 0.30, 0.30};
             world.road_centerline_ = close_polyline_loop(make_validation_loop(), 0.45);
             world.start_ = world.road_centerline_.front();
@@ -965,6 +985,13 @@ WorldMap WorldMap::mixed_demo() {
     world.gate_templates_ = world.gates_;
     world.gate_behavior_ = GateBehaviorMode::Static;
     world.gate_seed_ = 0;
+    return world;
+}
+
+WorldMap WorldMap::mixed_ideal_demo() {
+    WorldMap world = mixed_hardware_aligned_demo();
+    world.unstructured_preset_ = UnstructuredMapPreset::IdealValidation;
+    world.structured_preset_ = StructuredMapPreset::IdealCircle;
     return world;
 }
 

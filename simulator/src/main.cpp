@@ -59,6 +59,7 @@ struct AppOptions {
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::RobotValidation;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
     int mixed_preset = 0;
+    bool ideal_simulation = false;
     VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     VehicleTuningOverrides tuning_overrides;
 };
@@ -116,6 +117,7 @@ struct UiState {
     int structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
     int mixed_preset = 0;
     int vehicle_model = static_cast<int>(VehicleModelKind::CarLikeBicycle);
+    bool ideal_simulation = false;
     WorldMap scenario_editor_world;
     bool scenario_editor_dirty = false;
     WorldMap hardware_editor_world;
@@ -599,6 +601,9 @@ std::string map_preset_name(const WorldMap& world) {
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
         const Rect& bounds = world.bounds();
         const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+        if (world.structured_preset() == StructuredMapPreset::IdealCircle && !world.obstacles().empty()) {
+            return "Mixed Ideal Hardware-Aligned";
+        }
         if (span <= 1.20 && !world.obstacles().empty()) {
             return "Mixed Hardware Aligned";
         }
@@ -612,6 +617,8 @@ std::string map_preset_name(const WorldMap& world) {
 
 const char* mixed_map_preset_name(int preset) {
     switch (preset) {
+        case 2:
+            return "Ideal Hardware-Aligned";
         case 1:
             return "Hardware-Aligned Lab";
         case 0:
@@ -626,6 +633,9 @@ int mixed_preset_from_world(const WorldMap& world) {
     }
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    if (world.structured_preset() == StructuredMapPreset::IdealCircle && !world.obstacles().empty()) {
+        return 2;
+    }
     return span <= 1.20 && !world.obstacles().empty() ? 1 : 0;
 }
 
@@ -638,6 +648,7 @@ void sync_ui_state_from_sim(UiState* ui_state, const PlannerDrivenVehicleSim& si
     ui_state->structured_preset = static_cast<int>(sim.world().structured_preset());
     ui_state->mixed_preset = mixed_preset_from_world(sim.world());
     ui_state->vehicle_model = static_cast<int>(sim.vehicle_model_kind());
+    ui_state->ideal_simulation = sim.config().ideal_conditions;
     ui_state->dynamic_lidar_gates = sim.config().dynamic_lidar_gates;
     ui_state->gate_seed_input = static_cast<int>(sim.gate_seed());
     ui_state->scenario_editor_world = sim.world();
@@ -814,6 +825,9 @@ std::string default_report_path(const PlannerDrivenVehicleSim& sim, const char* 
     }
     if (sim.config().dynamic_lidar_gates) {
         name << "_lidar_dynamic";
+    }
+    if (sim.config().ideal_conditions) {
+        name << "_ideal";
     }
     name << "_" << source_tag << "_"
          << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
@@ -1356,6 +1370,7 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
     out << "    \"imu_enabled\": " << (config.imu_enabled ? "true" : "false") << ",\n";
     out << "    \"lidar_enabled\": " << (config.lidar_enabled ? "true" : "false") << ",\n";
     out << "    \"dynamic_lidar_gates\": " << (config.dynamic_lidar_gates ? "true" : "false") << ",\n";
+    out << "    \"simulation_level\": \"" << (config.ideal_conditions ? "ideal" : "baseline") << "\",\n";
     out << "    \"gate_source\": \"" << (config.dynamic_lidar_gates ? "Simulated LiDAR dynamic gates" : "Static scenario gates") << "\",\n";
     out << "    \"range_sensor_profile\": \"" << json_escape(thesis_sim::range_sensor_profile_name(config.range_sensor_profile)) << "\",\n";
     out << "    \"lidar_beams\": " << sim.active_lidar_beams() << ",\n";
@@ -1539,6 +1554,108 @@ void apply_sim_tuning_overrides(PlannerDrivenVehicleSim* sim, const AppOptions& 
     sim->set_tuning_overrides(options.tuning_overrides);
 }
 
+void fill_ideal_tuning_defaults(VehicleTuningOverrides* tuning) {
+    if (tuning == nullptr) {
+        return;
+    }
+    // Keep the same vehicle limits as the baseline map so L0/L1 compare the
+    // planner and sensing stack, not a different robot geometry/dynamics.
+}
+
+void apply_ideal_simulation_defaults(AppOptions* options) {
+    if (options == nullptr || !options->ideal_simulation) {
+        return;
+    }
+    fill_ideal_tuning_defaults(&options->tuning_overrides);
+}
+
+void apply_sim_level_to_config(const AppOptions& options, thesis_sim::SimConfig* config) {
+    if (config == nullptr || !options.ideal_simulation) {
+        return;
+    }
+    constexpr double kPi = 3.14159265358979323846;
+    config->ideal_conditions = true;
+    config->imu_enabled = true;
+    config->lidar_enabled = true;
+    config->range_sensor_profile = RangeSensorProfile::IdealLidar2D;
+    config->lidar_beams = 360;
+    config->lidar_fov_rad = 2.0 * kPi;
+    config->lidar_range = 12.0;
+    config->control_interval_steps = 1;
+}
+
+bool structured_preset_is_ideal(StructuredMapPreset preset) {
+    return preset == StructuredMapPreset::IdealCircle;
+}
+
+bool unstructured_preset_is_ideal(UnstructuredMapPreset preset) {
+    return preset == UnstructuredMapPreset::IdealValidation;
+}
+
+bool mixed_preset_is_ideal(int preset) {
+    return preset == 2;
+}
+
+bool ui_selection_uses_ideal_map(const UiState& ui_state) {
+    const EnvironmentMode mode = static_cast<EnvironmentMode>(ui_state.environment_mode);
+    if (mode == EnvironmentMode::StructuredRoad) {
+        return structured_preset_is_ideal(static_cast<StructuredMapPreset>(ui_state.structured_preset));
+    }
+    if (mode == EnvironmentMode::UnstructuredGates) {
+        return unstructured_preset_is_ideal(static_cast<UnstructuredMapPreset>(ui_state.unstructured_preset));
+    }
+    if (mode == EnvironmentMode::MixedRoadGates) {
+        return mixed_preset_is_ideal(ui_state.mixed_preset);
+    }
+    return false;
+}
+
+void set_ui_ideal_map_for_mode(UiState* ui_state) {
+    if (ui_state == nullptr) {
+        return;
+    }
+    const EnvironmentMode selected_mode = static_cast<EnvironmentMode>(ui_state->environment_mode);
+    if (selected_mode == EnvironmentMode::StructuredRoad) {
+        ui_state->structured_preset = static_cast<int>(StructuredMapPreset::IdealCircle);
+    } else if (selected_mode == EnvironmentMode::UnstructuredGates) {
+        ui_state->unstructured_preset = static_cast<int>(UnstructuredMapPreset::IdealValidation);
+    } else if (selected_mode == EnvironmentMode::MixedRoadGates) {
+        ui_state->mixed_preset = 2;
+    }
+}
+
+void apply_gui_stack_for_selected_map(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
+    if (ui_state == nullptr) {
+        return;
+    }
+
+    const EnvironmentMode selected_mode = static_cast<EnvironmentMode>(ui_state->environment_mode);
+    const bool ideal_map = ui_selection_uses_ideal_map(*ui_state);
+    if (ideal_map) {
+        if (selected_mode == EnvironmentMode::MixedRoadGates ||
+            selected_mode == EnvironmentMode::UnstructuredGates) {
+            sim.set_dynamic_lidar_gates(true);
+        }
+        VehicleTuningOverrides ideal_tuning;
+        fill_ideal_tuning_defaults(&ideal_tuning);
+        sim.set_tuning_overrides(ideal_tuning);
+        sim.set_ideal_conditions(true);
+    } else {
+        if (sim.config().ideal_conditions) {
+            sim.set_tuning_overrides(VehicleTuningOverrides{});
+            sim.set_ideal_conditions(false);
+        }
+        if (selected_mode == EnvironmentMode::MixedRoadGates && !sim.config().dynamic_lidar_gates) {
+            sim.set_dynamic_lidar_gates(true);
+        }
+    }
+
+    sync_ui_state_from_sim(ui_state, sim);
+    ui_state->paused = true;
+    ui_state->report_written = false;
+    ui_state->last_report_path.clear();
+}
+
 AppOptions parse_args(int argc, char** argv) {
     AppOptions options;
     for (int i = 1; i < argc; ++i) {
@@ -1549,6 +1666,14 @@ AppOptions parse_args(int argc, char** argv) {
             options.dynamic_lidar_gates = true;
         } else if (arg == "--static-gates") {
             options.dynamic_lidar_gates = false;
+        } else if (arg == "--ideal-sim" || arg == "--perfect-sim") {
+            options.ideal_simulation = true;
+        } else if (arg == "--sim-level" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            options.ideal_simulation = value == "ideal" || value == "perfect";
+        } else if (arg.rfind("--sim-level=", 0) == 0) {
+            const std::string value = arg.substr(std::strlen("--sim-level="));
+            options.ideal_simulation = value == "ideal" || value == "perfect";
         } else if (arg == "--scenario" && i + 1 < argc) {
             const std::string value = argv[++i];
             if (value == "structured") {
@@ -1578,14 +1703,26 @@ AppOptions parse_args(int argc, char** argv) {
             options.mixed_preset = 1;
         } else if (arg == "--mixed-map" && i + 1 < argc) {
             const std::string value = argv[++i];
-            options.mixed_preset =
-                (value == "hardware" || value == "hardware_aligned" || value == "hardware-aligned" ||
-                 value == "hardware_lab" || value == "hardware-lab") ? 1 : 0;
+            if (value == "ideal" || value == "perfect") {
+                options.mixed_preset = 2;
+                options.ideal_simulation = true;
+                options.dynamic_lidar_gates = true;
+            } else {
+                options.mixed_preset =
+                    (value == "hardware" || value == "hardware_aligned" || value == "hardware-aligned" ||
+                     value == "hardware_lab" || value == "hardware-lab") ? 1 : 0;
+            }
         } else if (arg.rfind("--mixed-map=", 0) == 0) {
             const std::string value = arg.substr(std::strlen("--mixed-map="));
-            options.mixed_preset =
-                (value == "hardware" || value == "hardware_aligned" || value == "hardware-aligned" ||
-                 value == "hardware_lab" || value == "hardware-lab") ? 1 : 0;
+            if (value == "ideal" || value == "perfect") {
+                options.mixed_preset = 2;
+                options.ideal_simulation = true;
+                options.dynamic_lidar_gates = true;
+            } else {
+                options.mixed_preset =
+                    (value == "hardware" || value == "hardware_aligned" || value == "hardware-aligned" ||
+                     value == "hardware_lab" || value == "hardware-lab") ? 1 : 0;
+            }
         } else if (arg == "--unstructured-map" && i + 1 < argc) {
             const std::string value = argv[++i];
             if (value == "tight") {
@@ -1596,6 +1733,11 @@ AppOptions parse_args(int argc, char** argv) {
                 options.unstructured_preset = UnstructuredMapPreset::LowerBypass;
             } else if (value == "hardware_lab" || value == "hardware" || value == "lab") {
                 options.unstructured_preset = UnstructuredMapPreset::HardwareLab;
+            } else if (value == "ideal" || value == "perfect" || value == "ideal_validation" ||
+                       value == "perfect_validation") {
+                options.unstructured_preset = UnstructuredMapPreset::IdealValidation;
+                options.ideal_simulation = true;
+                options.dynamic_lidar_gates = true;
             } else {
                 options.unstructured_preset = UnstructuredMapPreset::RobotValidation;
             }
@@ -1609,6 +1751,10 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::HardwareTrack;
             } else if (value == "figure_eight" || value == "figure8" || value == "eight") {
                 options.structured_preset = StructuredMapPreset::FigureEight;
+            } else if (value == "ideal" || value == "perfect" || value == "ideal_circle" ||
+                       value == "perfect_circle") {
+                options.structured_preset = StructuredMapPreset::IdealCircle;
+                options.ideal_simulation = true;
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
@@ -1622,6 +1768,11 @@ AppOptions parse_args(int argc, char** argv) {
                 options.unstructured_preset = UnstructuredMapPreset::LowerBypass;
             } else if (value == "hardware_lab" || value == "hardware" || value == "lab") {
                 options.unstructured_preset = UnstructuredMapPreset::HardwareLab;
+            } else if (value == "ideal" || value == "perfect" || value == "ideal_validation" ||
+                       value == "perfect_validation") {
+                options.unstructured_preset = UnstructuredMapPreset::IdealValidation;
+                options.ideal_simulation = true;
+                options.dynamic_lidar_gates = true;
             } else {
                 options.unstructured_preset = UnstructuredMapPreset::RobotValidation;
             }
@@ -1635,6 +1786,10 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::HardwareTrack;
             } else if (value == "figure_eight" || value == "figure8" || value == "eight") {
                 options.structured_preset = StructuredMapPreset::FigureEight;
+            } else if (value == "ideal" || value == "perfect" || value == "ideal_circle" ||
+                       value == "perfect_circle") {
+                options.structured_preset = StructuredMapPreset::IdealCircle;
+                options.ideal_simulation = true;
             } else {
                 options.structured_preset = StructuredMapPreset::ValidationRoad;
             }
@@ -1676,6 +1831,7 @@ AppOptions parse_args(int argc, char** argv) {
         }
     }
     options.max_steps = std::max(options.max_steps, 1);
+    apply_ideal_simulation_defaults(&options);
     return options;
 }
 
@@ -1689,6 +1845,9 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
         return WorldMap::structured_demo(structured_preset);
     }
     if (mode == EnvironmentMode::MixedRoadGates) {
+        if (mixed_preset == 2) {
+            return WorldMap::mixed_ideal_demo();
+        }
         if (mixed_preset == 1) {
             return WorldMap::mixed_hardware_aligned_demo();
         }
@@ -4984,13 +5143,23 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             thesis_sim::environment_mode_name(EnvironmentMode::MixedRoadGates),
         };
         if (ImGui::Combo("Environment", &ui_state->environment_mode, environment_items, IM_ARRAYSIZE(environment_items))) {
-            sim.load_world(world_from_ui_selection(sim, *ui_state));
-            if (static_cast<EnvironmentMode>(ui_state->environment_mode) == EnvironmentMode::MixedRoadGates &&
-                !sim.config().dynamic_lidar_gates) {
-                sim.set_dynamic_lidar_gates(true);
+            const bool ideal_active = ui_state->ideal_simulation || sim.config().ideal_conditions;
+            if (ideal_active) {
+                set_ui_ideal_map_for_mode(ui_state);
+            } else {
+                if (static_cast<EnvironmentMode>(ui_state->environment_mode) == EnvironmentMode::StructuredRoad &&
+                    structured_preset_is_ideal(static_cast<StructuredMapPreset>(ui_state->structured_preset))) {
+                    ui_state->structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
+                } else if (static_cast<EnvironmentMode>(ui_state->environment_mode) == EnvironmentMode::UnstructuredGates &&
+                           unstructured_preset_is_ideal(static_cast<UnstructuredMapPreset>(ui_state->unstructured_preset))) {
+                    ui_state->unstructured_preset = static_cast<int>(UnstructuredMapPreset::RobotValidation);
+                } else if (static_cast<EnvironmentMode>(ui_state->environment_mode) == EnvironmentMode::MixedRoadGates &&
+                           mixed_preset_is_ideal(ui_state->mixed_preset)) {
+                    ui_state->mixed_preset = 0;
+                }
             }
-            sync_ui_state_from_sim(ui_state, sim);
-            ui_state->paused = true;
+            sim.load_world(world_from_ui_selection(sim, *ui_state));
+            apply_gui_stack_for_selected_map(sim, ui_state);
         }
 
         const char* vehicle_items[] = {
@@ -5023,17 +5192,20 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::LowerBypass),
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::Custom),
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::HardwareLab),
+                thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::IdealValidation),
             };
             if (ImGui::Combo("Unstructured Map", &ui_state->unstructured_preset, preset_items, IM_ARRAYSIZE(preset_items))) {
                 const bool manual_editor = ui_state->unstructured_preset == static_cast<int>(UnstructuredMapPreset::Custom);
                 sim.load_world(world_from_ui_selection(sim, *ui_state));
-                sync_ui_state_from_sim(ui_state, sim);
+                apply_gui_stack_for_selected_map(sim, ui_state);
                 ui_state->map_editor_enabled = manual_editor;
-                ui_state->paused = true;
             }
             ImGui::Text("Preset = %s", thesis_sim::unstructured_map_preset_name(sim.world().unstructured_preset()));
             bool dynamic_lidar_gates = sim.config().dynamic_lidar_gates;
-            if (ImGui::Checkbox("LiDAR dynamic gates", &dynamic_lidar_gates)) {
+            if (sim.config().ideal_conditions) {
+                ImGui::TextColored(ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
+                                   "Ideal matched map: dynamic gates, Ideal 2D LiDAR, baseline vehicle limits");
+            } else if (ImGui::Checkbox("LiDAR dynamic gates", &dynamic_lidar_gates)) {
                 const bool was_paused = ui_state->paused;
                 sim.set_dynamic_lidar_gates(dynamic_lidar_gates);
                 sync_ui_state_from_sim(ui_state, sim);
@@ -5079,17 +5251,20 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             const char* mixed_items[] = {
                 mixed_map_preset_name(0),
                 mixed_map_preset_name(1),
+                mixed_map_preset_name(2),
             };
             int mixed_selection = std::clamp(ui_state->mixed_preset, 0, static_cast<int>(IM_ARRAYSIZE(mixed_items)) - 1);
             if (ImGui::Combo("Mixed Map", &mixed_selection, mixed_items, IM_ARRAYSIZE(mixed_items))) {
                 ui_state->mixed_preset = mixed_selection;
                 sim.load_world(world_from_ui_selection(sim, *ui_state));
-                sync_ui_state_from_sim(ui_state, sim);
-                ui_state->paused = true;
+                apply_gui_stack_for_selected_map(sim, ui_state);
             }
             ImGui::Text("Preset = %s", map_preset_name(sim.world()).c_str());
             bool dynamic_lidar_gates = sim.config().dynamic_lidar_gates;
-            if (ImGui::Checkbox("LiDAR dynamic gates", &dynamic_lidar_gates)) {
+            if (sim.config().ideal_conditions) {
+                ImGui::TextColored(ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
+                                   "Ideal matched map: dynamic gates, Ideal 2D LiDAR, baseline vehicle limits");
+            } else if (ImGui::Checkbox("LiDAR dynamic gates", &dynamic_lidar_gates)) {
                 const bool was_paused = ui_state->paused;
                 sim.set_dynamic_lidar_gates(dynamic_lidar_gates);
                 sync_ui_state_from_sim(ui_state, sim);
@@ -5106,6 +5281,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::FigureEight),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::IdealCircle),
             };
             StructuredMapPreset previous_structured_preset =
                 static_cast<StructuredMapPreset>(ui_state->structured_preset);
@@ -5125,6 +5301,9 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                     break;
                 case StructuredMapPreset::FigureEight:
                     structured_selection = 4;
+                    break;
+                case StructuredMapPreset::IdealCircle:
+                    structured_selection = 5;
                     break;
                 case StructuredMapPreset::Custom:
                 default:
@@ -5146,6 +5325,9 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                     case 4:
                         next_structured_preset = StructuredMapPreset::FigureEight;
                         break;
+                    case 5:
+                        next_structured_preset = StructuredMapPreset::IdealCircle;
+                        break;
                     case 0:
                     default:
                         next_structured_preset = StructuredMapPreset::ValidationRoad;
@@ -5153,8 +5335,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 }
                 ui_state->structured_preset = static_cast<int>(next_structured_preset);
                 sim.load_world(world_from_ui_selection(sim, *ui_state));
-                sync_ui_state_from_sim(ui_state, sim);
-                ui_state->paused = true;
+                apply_gui_stack_for_selected_map(sim, ui_state);
             }
             ImGui::Text("Preset = %s", thesis_sim::structured_map_preset_name(sim.world().structured_preset()));
             ImGui::Text("Road points = %d", static_cast<int>(sim.world().road_centerline().size()));
@@ -5186,28 +5367,34 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         int sensor_profile = static_cast<int>(sim.range_sensor_profile());
         bool sensor_changed = false;
 
-        if (ImGui::Checkbox("Enable IMU", &imu_enabled)) {
-            sensor_changed = true;
-        }
-        if (ImGui::Checkbox("Enable LiDAR", &lidar_enabled)) {
-            sensor_changed = true;
-        }
+        if (sim.config().ideal_conditions) {
+            ImGui::TextColored(ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
+                               "Ideal preset locks IMU, LiDAR and range profile.");
+        } else {
+            if (ImGui::Checkbox("Enable IMU", &imu_enabled)) {
+                sensor_changed = true;
+            }
+            if (ImGui::Checkbox("Enable LiDAR", &lidar_enabled)) {
+                sensor_changed = true;
+            }
 
-        const char* sensor_items[] = {
-            thesis_sim::range_sensor_profile_name(RangeSensorProfile::IdealLidar2D),
-            thesis_sim::range_sensor_profile_name(RangeSensorProfile::RplidarA1),
-            thesis_sim::range_sensor_profile_name(RangeSensorProfile::ShortRangeScanner),
-        };
-        if (ImGui::Combo("Range Sensor", &sensor_profile, sensor_items, IM_ARRAYSIZE(sensor_items))) {
-            sensor_changed = true;
-        }
-        if (sensor_changed) {
-            sim.set_sensor_suite(
-                imu_enabled,
-                lidar_enabled,
-                static_cast<RangeSensorProfile>(std::clamp(sensor_profile, 0, static_cast<int>(IM_ARRAYSIZE(sensor_items)) - 1)));
-            ui_state->report_written = false;
-            ui_state->last_report_path.clear();
+            const char* sensor_items[] = {
+                thesis_sim::range_sensor_profile_name(RangeSensorProfile::IdealLidar2D),
+                thesis_sim::range_sensor_profile_name(RangeSensorProfile::RplidarA1),
+                thesis_sim::range_sensor_profile_name(RangeSensorProfile::ShortRangeScanner),
+            };
+            if (ImGui::Combo("Range Sensor", &sensor_profile, sensor_items, IM_ARRAYSIZE(sensor_items))) {
+                sensor_changed = true;
+            }
+            if (sensor_changed) {
+                sim.set_sensor_suite(
+                    imu_enabled,
+                    lidar_enabled,
+                    static_cast<RangeSensorProfile>(std::clamp(sensor_profile, 0, static_cast<int>(IM_ARRAYSIZE(sensor_items)) - 1)));
+                sync_ui_state_from_sim(ui_state, sim);
+                ui_state->report_written = false;
+                ui_state->last_report_path.clear();
+            }
         }
 
         ImGui::Text("Localization = %s", sim.localization_mode_name());
@@ -5464,6 +5651,7 @@ int run_headless(const AppOptions& options) {
     thesis_sim::SimConfig sim_config;
     sim_config.vehicle_model = options.vehicle_model;
     sim_config.dynamic_lidar_gates = options.dynamic_lidar_gates;
+    apply_sim_level_to_config(options, &sim_config);
     PlannerDrivenVehicleSim sim(make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,
@@ -5537,6 +5725,7 @@ int run_gui(const AppOptions& options) {
     thesis_sim::SimConfig sim_config;
     sim_config.vehicle_model = options.vehicle_model;
     sim_config.dynamic_lidar_gates = options.dynamic_lidar_gates;
+    apply_sim_level_to_config(options, &sim_config);
     PlannerDrivenVehicleSim sim(make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,

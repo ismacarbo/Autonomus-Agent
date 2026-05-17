@@ -30,6 +30,7 @@ enum class UnstructuredMapPreset {
     LowerBypass = 3,
     Custom = 4,
     HardwareLab = 5,
+    IdealValidation = 6,
 };
 
 const char* unstructured_map_preset_name(UnstructuredMapPreset preset);
@@ -41,6 +42,7 @@ enum class StructuredMapPreset {
     Custom = 3,
     HardwareTrack = 4,
     FigureEight = 5,
+    IdealCircle = 6,
 };
 
 const char* structured_map_preset_name(StructuredMapPreset preset);
@@ -82,6 +84,7 @@ class WorldMap {
                                       std::uint32_t gate_seed = 0);
     static WorldMap structured_demo(StructuredMapPreset preset = StructuredMapPreset::ValidationRoad);
     static WorldMap mixed_demo();
+    static WorldMap mixed_ideal_demo();
     static WorldMap mixed_hardware_aligned_demo();
     static WorldMap mixed_hardware_demo();
     static WorldMap thesis_demo(UnstructuredMapPreset preset = UnstructuredMapPreset::RobotValidation,

@@ -227,6 +227,35 @@ build/simulator/thesis_planner_sim \
   --max-steps 2400
 ```
 
+## Analisi multilivello finale
+
+Per confrontare tutte e tre le modalita su tre livelli
+`ideal -> baseline -> hardware`:
+
+```bash
+python -m data_analisys.multilevel_validation
+```
+
+Output principali:
+
+- `data_analisys/outputs/multilevel_validation_20260516/multilevel_metrics.csv`
+- `data_analisys/outputs/multilevel_validation_20260516/multilevel_metrics.json`
+- `data_analisys/outputs/multilevel_validation_20260516/multilevel_validation_summary.md`
+- figure SVG su successo, tracking normalizzato, completamento gate, durata, path/reference,
+  tempo per metro, velocita media, compute time e stabilita road/gate
+
+I run ideali si generano dal simulatore con:
+
+```bash
+build/simulator/thesis_planner_sim --headless --scenario structured --structured-map ideal
+build/simulator/thesis_planner_sim --headless --scenario unstructured --unstructured-map ideal
+build/simulator/thesis_planner_sim --headless --scenario mixed --mixed-map ideal
+```
+
+Gli stessi preset sono disponibili dalla GUI nel menu mappa:
+`Ideal Validation Road`, `Ideal Hardware Lab` e `Ideal Hardware-Aligned`.
+Selezionandoli, il simulatore applica automaticamente mappa confrontabile, LiDAR ideale e loop di controllo ideale mantenendo i limiti veicolo della baseline.
+
 ## Idea del fitting
 
 Il fitting iniziale e volutamente semplice e ispezionabile. Per ogni segnale trattiamo il
