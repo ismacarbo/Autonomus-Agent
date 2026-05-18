@@ -752,6 +752,37 @@ bool is_finite_pair(double a, double b) {
     return std::isfinite(a) && std::isfinite(b);
 }
 
+double primitive_control_at(const traj_info& trajectory, double t, double fallback) {
+    if (!std::isfinite(trajectory.c3) ||
+        !std::isfinite(trajectory.c4) ||
+        !std::isfinite(trajectory.c5)) {
+        return fallback;
+    }
+    return trajectory.c3 + trajectory.c4 * t + 0.5 * trajectory.c5 * t * t;
+}
+
+double primitive_integral(const traj_info& trajectory, double t, double fallback_control) {
+    if (!std::isfinite(trajectory.c3) ||
+        !std::isfinite(trajectory.c4) ||
+        !std::isfinite(trajectory.c5)) {
+        return fallback_control * t;
+    }
+    return trajectory.c3 * t +
+           0.5 * trajectory.c4 * t * t +
+           (trajectory.c5 * t * t * t) / 6.0;
+}
+
+double primitive_sample_time(const traj_info& trajectory, double elapsed) {
+    if (std::isfinite(trajectory.Tf) && trajectory.Tf > 1e-6) {
+        return clamp_value(elapsed, 0.0, trajectory.Tf);
+    }
+    return std::max(0.0, elapsed);
+}
+
+double tracked_planner_yaw_accel_limit(const VehicleGeometry& geometry) {
+    return clamp_value(2.0 * geometry.max_yaw_rate, 1.4, 5.0);
+}
+
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
     return points.size() >= 3 && distance(points.front(), points.back()) <= threshold;
 }
@@ -1041,8 +1072,7 @@ HardwarePlannerRunner::HardwarePlannerRunner(WorldMap world,
     : world_(std::move(world)),
       config_(config),
       geometry_(make_vehicle_geometry(config_)),
-      bridge_(std::move(bridge_options)),
-      null_stream_("/dev/null") {
+      bridge_(std::move(bridge_options)) {
     estimator_.set_geometry(geometry_);
     initialize_planner_state();
     reset();
@@ -1185,6 +1215,15 @@ void HardwarePlannerRunner::apply_world(WorldMap world) {
     reset();
 }
 
+void HardwarePlannerRunner::apply_config(HardwarePlannerConfig config) {
+    if (connected_ && bridge_.controller_connected()) {
+        bridge_.send_pwm(0, 0, true);
+    }
+
+    config_ = config;
+    reset();
+}
+
 void HardwarePlannerRunner::reset() {
     geometry_ = make_vehicle_geometry(config_);
     const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
@@ -1244,6 +1283,10 @@ void HardwarePlannerRunner::reset() {
     last_r_ = 0.0;
     planner_speed_ref_ = 0.0;
     planner_accel_ref_ = 0.0;
+    planner_yaw_rate_ref_ = 0.0;
+    planner_yaw_accel_ref_ = 0.0;
+    planner_initial_yaw_rate_ = 0.0;
+    last_planner_command_step_ = 0;
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
     planning_compute_ms_ = 0.0;
@@ -1495,6 +1538,7 @@ void HardwarePlannerRunner::sync_planner_from_estimate(bool reset_relative_state
     g_x0_.y_fix = estimate_.position.y;
     g_x0_.theta = estimate_.yaw;
     g_x0_.kappa_veh = estimate_.curvature;
+    g_x0_.omega = estimate_.yaw_rate;
     g_x0_.v_fix = estimate_.speed;
     g_x0_.a_fix = estimate_.accel;
 
@@ -1785,6 +1829,16 @@ void HardwarePlannerRunner::plan_if_needed() {
     }
 
     update_speed_limit();
+    const double planner_r_limit =
+        config_.vehicle_model == VehicleModelKind::TrackedVehicle
+            ? tracked_planner_yaw_accel_limit(geometry_)
+            : 1.4;
+    auto commit_planner_command = [&](double next_j, double next_r) {
+        last_j_ = clamp_value(next_j, -3.5, 2.5);
+        last_r_ = clamp_value(next_r, -planner_r_limit, planner_r_limit);
+        planner_initial_yaw_rate_ = estimate_.yaw_rate;
+        last_planner_command_step_ = step_count_;
+    };
     const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     if (world_has_structured_reference(world_) && road_ != nullptr && !mixed_gate_active) {
         std::vector<double> commands = sel_jr(
@@ -1798,9 +1852,7 @@ void HardwarePlannerRunner::plan_if_needed() {
             x0_,
             g_x0_,
             cl_,
-            null_stream_,
-            null_stream_,
-            null_stream_);
+            planner_traj_);
 
         double next_j = commands.size() > 0 ? commands[0] : 0.0;
         double next_r = commands.size() > 1 ? commands[1] : 0.0;
@@ -1811,8 +1863,7 @@ void HardwarePlannerRunner::plan_if_needed() {
 
         visible_gate_indices_.clear();
         chosen_gate_index_ = -1;
-        last_j_ = clamp_value(next_j, -3.5, 2.5);
-        last_r_ = clamp_value(next_r, -1.4, 1.4);
+        commit_planner_command(next_j, next_r);
         update_selected_trajectory();
         return;
     }
@@ -1855,9 +1906,7 @@ void HardwarePlannerRunner::plan_if_needed() {
         x0_,
         g_x0_,
         cl_,
-        null_stream_,
-        null_stream_,
-        null_stream_);
+        planner_traj_);
 
     double next_j = commands.size() > 0 ? commands[0] : 0.0;
     double next_r = commands.size() > 1 ? commands[1] : 0.0;
@@ -1878,8 +1927,7 @@ void HardwarePlannerRunner::plan_if_needed() {
         chosen_gate_global = active_indices[static_cast<size_t>(chosen_gate)];
     }
 
-    last_j_ = clamp_value(next_j, -3.5, 2.5);
-    last_r_ = clamp_value(next_r, -1.4, 1.4);
+    commit_planner_command(next_j, next_r);
     refresh_gate_diagnostics();
     if (chosen_gate_global >= 0 && chosen_gate_global < static_cast<int>(gates_.size())) {
         chosen_gate_index_ = chosen_gate_global;
@@ -4800,6 +4848,28 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
         estimate_.speed + planner_accel_ref_ * dt,
         0.0,
         config_.cruise_speed_limit);
+    const auto update_tracked_yaw_reference = [&]() {
+        if (config_.vehicle_model == VehicleModelKind::TrackedVehicle) {
+            const double elapsed =
+                std::max(1, step_count_ - last_planner_command_step_ + 1) *
+                std::max(dt, 1e-3);
+            const double t = primitive_sample_time(planner_traj_.lat_traj, elapsed);
+            const double yaw_accel_limit = tracked_planner_yaw_accel_limit(geometry_);
+            planner_yaw_accel_ref_ = clamp_value(
+                primitive_control_at(planner_traj_.lat_traj, t, last_r_),
+                -yaw_accel_limit,
+                yaw_accel_limit);
+            planner_yaw_rate_ref_ = clamp_value(
+                planner_initial_yaw_rate_ +
+                    primitive_integral(planner_traj_.lat_traj, t, last_r_),
+                -geometry_.max_yaw_rate,
+                geometry_.max_yaw_rate);
+        } else {
+            planner_yaw_accel_ref_ = 0.0;
+            planner_yaw_rate_ref_ = 0.0;
+            planner_initial_yaw_rate_ = estimate_.yaw_rate;
+        }
+    };
 
     const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     if (world_has_structured_reference(world_) && !mixed_gate_active) {
@@ -4828,6 +4898,7 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
             (planner_speed_ref_ - estimate_.speed) / std::max(dt, 1e-3),
             -geometry_.max_decel,
             geometry_.max_accel);
+        update_tracked_yaw_reference();
         return;
     }
 
@@ -4838,6 +4909,7 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
             chosen_gate_index_ >= static_cast<int>(gate_specs_.size())) {
             planner_accel_ref_ = 0.0;
             planner_speed_ref_ = 0.0;
+            update_tracked_yaw_reference();
             return;
         }
 
@@ -4868,6 +4940,7 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
             (planner_speed_ref_ - estimate_.speed) / std::max(dt, 1e-3),
             -geometry_.max_decel,
             geometry_.max_accel);
+        update_tracked_yaw_reference();
         return;
     }
 
@@ -4878,6 +4951,7 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
         goal_speed_cap = std::min(goal_speed_cap, 0.10);
     }
     planner_speed_ref_ = std::min(planner_speed_ref_, goal_speed_cap);
+    update_tracked_yaw_reference();
 }
 
 void HardwarePlannerRunner::update_selected_trajectory() {
@@ -5118,6 +5192,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool following_dynamic_gate =
         world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
         mixed_gate_active;
+    const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
     bool allow_unlocked_recovery_motion = false;
 
     auto apply_strict_scan_escape = [&]() {
@@ -5248,13 +5323,69 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             commanded_speed_ = following_dynamic_gate
                 ? mpc_target_speed
                 : clamp_value(0.45 * predicted_speed + 0.55 * mpc_target_speed, 0.0, speed_limit);
-            commanded_steer_angle_ = clamp_value(
-                0.65 * integrated_steer + 0.35 * mpc_command.target_steer_angle,
-                -geometry_.max_steer_angle,
-                geometry_.max_steer_angle);
             last_command_.target_speed = commanded_speed_;
-            last_command_.target_curvature =
-                curvature_from_steer(geometry_, commanded_steer_angle_);
+            if (tracked_vehicle) {
+                const bool tracked_tiny_structured =
+                    world_has_structured_reference(world_) &&
+                    !mixed_gate_active &&
+                    tiny_indoor_structured_loop(world_);
+                if (tracked_tiny_structured && !reference_trajectory_.empty()) {
+                    const int lookahead_index = std::clamp(
+                        mpc_command.anchor_index + 6,
+                        0,
+                        static_cast<int>(reference_trajectory_.size()) - 1);
+                    const ReferenceWaypoint& target =
+                        reference_trajectory_[static_cast<size_t>(lookahead_index)];
+                    const double target_heading_error =
+                        wrap_angle(angle_to(estimate_.position, target.position) - estimate_.yaw);
+                    const double alignment_scale = clamp_value(
+                        1.0 - 0.55 * std::abs(target_heading_error) / deg_to_rad(100.0),
+                        0.32,
+                        1.0);
+                    const double tiny_floor =
+                        std::max(structured_tracking_speed_floor(world_, speed_limit), 0.026);
+                    commanded_speed_ = clamp_value(
+                        std::max(mpc_target_speed, tiny_floor) * alignment_scale,
+                        0.012,
+                        std::min(speed_limit, 0.050));
+                    last_command_.target_speed = commanded_speed_;
+                    const double yaw_rate_limit = 0.78 * geometry_.max_yaw_rate;
+                    direct_yaw_rate_command = clamp_value(
+                        1.75 * target_heading_error,
+                        -yaw_rate_limit,
+                        yaw_rate_limit);
+                    if (std::abs(direct_yaw_rate_command) < 0.10 &&
+                        std::abs(target_heading_error) > deg_to_rad(6.0)) {
+                        direct_yaw_rate_command =
+                            signum(target_heading_error) * 0.10;
+                    }
+                } else {
+                    const double tank_native_yaw_rate =
+                        planner_yaw_rate_ref_ -
+                        1.15 * mpc_command.heading_error -
+                        0.20 * mpc_command.cross_track_error;
+                    direct_yaw_rate_command = clamp_value(
+                        tank_native_yaw_rate,
+                        -geometry_.max_yaw_rate,
+                        geometry_.max_yaw_rate);
+                }
+                use_direct_yaw_rate_command = true;
+                commanded_steer_angle_ = 0.0;
+                last_command_.target_curvature =
+                    std::abs(last_command_.target_speed) > 1e-4
+                        ? clamp_value(
+                              direct_yaw_rate_command / last_command_.target_speed,
+                              -geometry_.max_curvature,
+                              geometry_.max_curvature)
+                        : 0.0;
+            } else {
+                commanded_steer_angle_ = clamp_value(
+                    0.65 * integrated_steer + 0.35 * mpc_command.target_steer_angle,
+                    -geometry_.max_steer_angle,
+                    geometry_.max_steer_angle);
+                last_command_.target_curvature =
+                    curvature_from_steer(geometry_, commanded_steer_angle_);
+            }
             tracker_cross_track_error_ = std::abs(mpc_command.cross_track_error);
             tracker_heading_error_deg_ =
                 std::abs(mpc_command.heading_error) * 180.0 / kPi;
@@ -5671,6 +5802,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const double active_distance = structured_goal_active_distance(world_, config_.goal_tolerance_m);
         const bool keep_tracking = !goal_reached_ && distance_to_goal_ > active_distance;
         if (compact_structured_world(world_) &&
+            !(tracked_vehicle && tiny_indoor_loop) &&
             keep_tracking &&
             have_reference_trajectory &&
             last_mpc_command_.has_value()) {
@@ -5726,9 +5858,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                                                                                     : direct_yaw_rate_command) *
                                               min_turn_yaw_rate;
                 }
-                commanded_speed_ = 0.0;
+                const double tracked_acquire_speed =
+                    tracked_vehicle
+                        ? clamp_value(
+                              structured_tracking_speed_floor(world_, speed_limit) *
+                                  (heading_error_abs > deg_to_rad(105.0) ? 0.35 : 0.70),
+                              0.0,
+                              tiny_indoor_loop ? 0.018 : 0.035)
+                        : 0.0;
+                commanded_speed_ = tracked_acquire_speed;
                 commanded_steer_angle_ = 0.0;
-                last_command_.target_speed = 0.0;
+                last_command_.target_speed = tracked_acquire_speed;
                 last_command_.target_curvature = 0.0;
             }
         }

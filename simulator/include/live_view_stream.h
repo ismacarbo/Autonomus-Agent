@@ -121,7 +121,9 @@ class LiveViewStreamClient {
   public:
     struct PollResult {
         bool world_received = false;
+        bool robot_profile_received = false;
         std::optional<WorldMap> world;
+        std::optional<VehicleModelKind> robot_profile;
     };
 
     LiveViewStreamClient() = default;
@@ -172,8 +174,11 @@ class LiveViewStreamServer {
     const std::string& remote_endpoint() const { return remote_endpoint_; }
     const std::string& last_error() const { return last_error_; }
     bool has_pending_world() const { return pending_world_.has_value(); }
+    bool has_pending_robot_profile() const { return pending_robot_profile_.has_value(); }
     bool queue_world(const WorldMap& world);
     void clear_pending_world();
+    bool queue_robot_profile(VehicleModelKind vehicle_model);
+    void clear_pending_robot_profile();
 
   private:
     void close_client();
@@ -182,6 +187,7 @@ class LiveViewStreamServer {
     bool parse_next_packet(PollResult* result);
     bool send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload);
     void flush_pending_world();
+    void flush_pending_robot_profile();
 
     int listen_fd_ = -1;
     int client_fd_ = -1;
@@ -190,6 +196,7 @@ class LiveViewStreamServer {
     std::string last_error_;
     std::vector<std::uint8_t> recv_buffer_;
     std::optional<WorldMap> pending_world_;
+    std::optional<VehicleModelKind> pending_robot_profile_;
 };
 
 }  // namespace thesis_sim

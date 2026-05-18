@@ -3,7 +3,6 @@
 #include <array>
 #include <cstdint>
 #include <deque>
-#include <fstream>
 #include <memory>
 #include <limits>
 #include <optional>
@@ -208,6 +207,7 @@ class PlannerDrivenVehicleSim {
     double navigation_xy_error() const { return navigation_xy_error_; }
     double navigation_yaw_error_deg() const { return navigation_yaw_error_deg_; }
     double planner_speed_reference() const { return planner_speed_ref_; }
+    double planner_yaw_rate_reference() const { return planner_yaw_rate_ref_; }
     double tracker_cross_track_error() const { return tracker_cross_track_error_; }
     double tracker_heading_error_deg() const { return tracker_heading_error_deg_; }
     const std::optional<MpcCommand>& last_mpc_command() const { return last_mpc_command_; }
@@ -289,7 +289,7 @@ class PlannerDrivenVehicleSim {
 
     VehicleSnapshot vehicle_{};
 
-    std::ofstream null_stream_;
+    long_lat_traj planner_traj_{};
 
     int step_count_ = 0;
     double sim_time_ = 0.0;
@@ -307,6 +307,10 @@ class PlannerDrivenVehicleSim {
     double navigation_yaw_error_deg_ = 0.0;
     double planner_speed_ref_ = 0.0;
     double planner_accel_ref_ = 0.0;
+    double planner_yaw_rate_ref_ = 0.0;
+    double planner_yaw_accel_ref_ = 0.0;
+    double planner_initial_yaw_rate_ = 0.0;
+    int last_planner_command_step_ = 0;
     double tracker_cross_track_error_ = 0.0;
     double tracker_heading_error_deg_ = 0.0;
     double planning_compute_ms_ = 0.0;

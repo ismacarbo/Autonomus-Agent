@@ -103,6 +103,8 @@ add_library(sabrina_planner STATIC
   ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/state_update.cpp
   ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/behaviours.cpp
   ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/action_selection.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/ang/opt_ang_U_uni.cpp
+  ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/ang/ang_salience.cpp
   ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/lat/opt_lat_U.cpp
   ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/lat/lat_salience.cpp
   ${CMAKE_SOURCE_DIR}/third_party/progettotesi/src/lib/long/opt_long_U.cpp

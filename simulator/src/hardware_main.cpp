@@ -36,6 +36,7 @@ using thesis_sim::UnstructuredMapPreset;
 using thesis_sim::Vec2;
 using thesis_sim::VehicleControlInput;
 using thesis_sim::VehicleDynamicsModel;
+using thesis_sim::VehicleModelKind;
 using thesis_sim::WorldMap;
 
 constexpr double kPi = 3.14159265358979323846;
@@ -45,6 +46,18 @@ enum class VehicleProfile {
     Car,
     Tank,
 };
+
+VehicleModelKind vehicle_model_from_profile(VehicleProfile profile) {
+    return profile == VehicleProfile::Tank
+               ? VehicleModelKind::TrackedVehicle
+               : VehicleModelKind::CarLikeBicycle;
+}
+
+VehicleProfile vehicle_profile_from_model(VehicleModelKind model) {
+    return model == VehicleModelKind::TrackedVehicle
+               ? VehicleProfile::Tank
+               : VehicleProfile::Car;
+}
 
 struct AppOptions {
     std::string controller_port;
@@ -374,6 +387,8 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
         return;
     }
 
+    config->vehicle_model = vehicle_model_from_profile(options.vehicle_profile);
+
     if (options.vehicle_profile == VehicleProfile::Tank) {
         // Conservative tracked/skid-steer defaults. The tank encoders produce
         // far more ticks per wheel revolution than the small car profile; using
@@ -444,6 +459,8 @@ bool send_stream_scene(const AppOptions& options,
 }
 
 bool process_stream_control(const AppOptions& options,
+                            const HardwarePlannerConfig& base_config,
+                            HardwarePlannerConfig* active_config,
                             HardwarePlannerRunner* runner,
                             LiveViewStreamClient* streamer,
                             bool* world_applied) {
@@ -461,38 +478,69 @@ bool process_stream_control(const AppOptions& options,
         }
         return true;
     }
-    if (!poll_result.world_received || !poll_result.world.has_value()) {
-        return true;
+    if (poll_result.robot_profile_received && poll_result.robot_profile.has_value()) {
+        try {
+            AppOptions profile_options = options;
+            profile_options.vehicle_profile = vehicle_profile_from_model(*poll_result.robot_profile);
+            HardwarePlannerConfig next_config = base_config;
+            apply_vehicle_profile(profile_options, &next_config);
+            runner->apply_config(next_config);
+            if (active_config != nullptr) {
+                *active_config = next_config;
+            }
+            if (!streamer->send_control_ack(
+                    true,
+                    std::string("robot profile applied: ") +
+                        thesis_sim::vehicle_model_kind_name(next_config.vehicle_model) +
+                        " (planner reset)")) {
+                std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+                streamer->disconnect();
+                return true;
+            }
+            if (world_applied != nullptr) {
+                *world_applied = true;
+            }
+        } catch (const std::exception& e) {
+            if (!streamer->send_control_ack(false, std::string("robot profile rejected: ") + e.what())) {
+                std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+                streamer->disconnect();
+                return true;
+            }
+        }
     }
 
-    const bool sensor_mode_changed =
-        runner->lidar_enabled_for_current_mode() !=
-        (poll_result.world->environment_mode() != EnvironmentMode::StructuredRoad);
-    try {
-        runner->apply_world(*poll_result.world);
-        std::string message = "custom map applied from GUI";
-        if (sensor_mode_changed) {
-            message += " (sensor mode changed; restart the runner if the new scenario needs different hardware ports)";
-        }
-        if (!streamer->send_control_ack(true, message)) {
-            std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
-            streamer->disconnect();
-            return true;
-        }
-        if (world_applied != nullptr) {
-            *world_applied = true;
-        }
-    } catch (const std::exception& e) {
-        if (!streamer->send_control_ack(false, std::string("custom map rejected: ") + e.what())) {
-            std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
-            streamer->disconnect();
-            return true;
+    if (poll_result.world_received && poll_result.world.has_value()) {
+        const bool sensor_mode_changed =
+            runner->lidar_enabled_for_current_mode() !=
+            (poll_result.world->environment_mode() != EnvironmentMode::StructuredRoad);
+        try {
+            runner->apply_world(*poll_result.world);
+            std::string message = "custom map applied from GUI";
+            if (sensor_mode_changed) {
+                message += " (sensor mode changed; restart the runner if the new scenario needs different hardware ports)";
+            }
+            if (!streamer->send_control_ack(true, message)) {
+                std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+                streamer->disconnect();
+                return true;
+            }
+            if (world_applied != nullptr) {
+                *world_applied = true;
+            }
+        } catch (const std::exception& e) {
+            if (!streamer->send_control_ack(false, std::string("custom map rejected: ") + e.what())) {
+                std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+                streamer->disconnect();
+                return true;
+            }
         }
     }
     return true;
 }
 
 bool wait_for_initial_stream_world(const AppOptions& options,
+                                   const HardwarePlannerConfig& base_config,
+                                   HardwarePlannerConfig* active_config,
                                    HardwarePlannerRunner* runner,
                                    LiveViewStreamClient* streamer,
                                    bool* world_applied) {
@@ -506,7 +554,7 @@ bool wait_for_initial_stream_world(const AppOptions& options,
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(900);
     while (std::chrono::steady_clock::now() < deadline && streamer->connected()) {
         bool applied = false;
-        if (!process_stream_control(options, runner, streamer, &applied)) {
+        if (!process_stream_control(options, base_config, active_config, runner, streamer, &applied)) {
             return false;
         }
         if (applied) {
@@ -612,12 +660,21 @@ VehicleControlInput make_vehicle_control(const thesis_sim::VehicleGeometry& geom
         (target_steer_angle - state.steer_angle) / std::max(dt, 1e-3),
         -geometry.max_steer_rate,
         geometry.max_steer_rate);
+    input.target_yaw_rate = command.target_yaw_rate;
     return input;
+}
+
+std::unique_ptr<VehicleDynamicsModel> make_simulated_hardware_plant(const HardwarePlannerRunner& runner) {
+    if (runner.config().vehicle_model == VehicleModelKind::TrackedVehicle) {
+        return thesis_sim::make_tracked_vehicle_model(runner.geometry());
+    }
+    return thesis_sim::make_four_wheel_car_model(runner.geometry());
 }
 
 int run_simulated(const AppOptions& options,
                   WorldMap world,
                   RealRobotBridge::Options bridge_options,
+                  HardwarePlannerConfig base_config,
                   HardwarePlannerConfig planner_config) {
     HardwarePlannerRunner runner(world, std::move(bridge_options), planner_config);
     LiveViewStreamClient streamer;
@@ -625,13 +682,13 @@ int run_simulated(const AppOptions& options,
         return 2;
     }
     bool world_applied = false;
-    if (!process_stream_control(options, &runner, &streamer, &world_applied)) {
+    if (!process_stream_control(options, base_config, &planner_config, &runner, &streamer, &world_applied)) {
         return 2;
     }
     if (!send_stream_scene(options, runner, &streamer)) {
         return 2;
     }
-    std::unique_ptr<VehicleDynamicsModel> plant = thesis_sim::make_four_wheel_car_model(runner.geometry());
+    std::unique_ptr<VehicleDynamicsModel> plant = make_simulated_hardware_plant(runner);
     plant->reset(runner.world().start(), runner.world().start_heading());
 
     bool collision = false;
@@ -639,10 +696,11 @@ int run_simulated(const AppOptions& options,
     const int limit = options.max_steps > 0 ? options.max_steps : 1500;
     for (int step = 0; step < limit && !runner.goal_reached() && !collision; ++step) {
         world_applied = false;
-        if (!process_stream_control(options, &runner, &streamer, &world_applied)) {
+        if (!process_stream_control(options, base_config, &planner_config, &runner, &streamer, &world_applied)) {
             return 2;
         }
         if (world_applied) {
+            plant = make_simulated_hardware_plant(runner);
             plant->reset(runner.world().start(), runner.world().start_heading());
             collision = false;
             host_time_s = 0.0;
@@ -697,12 +755,13 @@ int run_simulated(const AppOptions& options,
             compact_mixed_world
                 ? 0.0
                 : compact_structured_world && runner.world().obstacles().empty()
-                ? -0.20
+                ? -0.45
                 : (indoor_structured_world && runner.world().obstacles().empty()
                        ? 0.0
                        : (compact_structured_world ? 0.0 : 0.05));
         collision =
             !compact_mixed_world &&
+            !(compact_structured_world && runner.world().obstacles().empty()) &&
             runner.world().collides(
                 thesis_sim::make_box_corners(
                     plant->state().position,
@@ -727,6 +786,13 @@ int run_simulated(const AppOptions& options,
     std::cout << "final_x=" << report.final_position.x << '\n';
     std::cout << "final_y=" << report.final_position.y << '\n';
     std::cout << "distance_to_goal=" << report.distance_to_goal << '\n';
+    if (!runner.history().empty()) {
+        const thesis_sim::HardwareTelemetrySample& latest = runner.history().back();
+        std::cout << "structured_track_s=" << latest.structured_track_s << '\n';
+        std::cout << "structured_progress_s=" << latest.structured_progress_s << '\n';
+        std::cout << "target_speed=" << latest.target_speed << '\n';
+        std::cout << "target_yaw_rate=" << latest.target_yaw_rate << '\n';
+    }
     std::cout << "min_lidar_distance=" << report.min_lidar_distance << '\n';
     std::cout << "front_lidar_distance=" << report.front_lidar_distance << '\n';
     std::cout << "dynamic_gap_gates=" << (report.dynamic_gap_gates ? 1 : 0) << '\n';
@@ -800,10 +866,11 @@ int main(int argc, char** argv) {
             planner_config.gap_extraction.strict_locked_gate_motion = false;
             planner_config.gap_extraction.min_passed_gates_to_complete = 1;
         }
+        const HardwarePlannerConfig base_planner_config = planner_config;
         apply_vehicle_profile(options, &planner_config);
 
         if (options.simulate) {
-            return run_simulated(options, world, std::move(bridge_options), planner_config);
+            return run_simulated(options, world, std::move(bridge_options), base_planner_config, planner_config);
         }
 
         runner = std::make_unique<HardwarePlannerRunner>(
@@ -842,7 +909,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         bool world_applied = false;
-        if (!wait_for_initial_stream_world(options, runner.get(), &streamer, &world_applied)) {
+        if (!wait_for_initial_stream_world(options, base_planner_config, &planner_config, runner.get(), &streamer, &world_applied)) {
             runner->disconnect();
             return 2;
         }
@@ -878,7 +945,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             world_applied = false;
-            if (!process_stream_control(options, runner.get(), &streamer, &world_applied)) {
+            if (!process_stream_control(options, base_planner_config, &planner_config, runner.get(), &streamer, &world_applied)) {
                 runner->disconnect();
                 return 2;
             }
@@ -918,6 +985,13 @@ int main(int argc, char** argv) {
         std::cout << "final_x=" << report.final_position.x << '\n';
         std::cout << "final_y=" << report.final_position.y << '\n';
         std::cout << "distance_to_goal=" << report.distance_to_goal << '\n';
+        if (!runner->history().empty()) {
+            const thesis_sim::HardwareTelemetrySample& latest = runner->history().back();
+            std::cout << "structured_track_s=" << latest.structured_track_s << '\n';
+            std::cout << "structured_progress_s=" << latest.structured_progress_s << '\n';
+            std::cout << "target_speed=" << latest.target_speed << '\n';
+            std::cout << "target_yaw_rate=" << latest.target_yaw_rate << '\n';
+        }
         std::cout << "min_lidar_distance=" << report.min_lidar_distance << '\n';
         std::cout << "front_lidar_distance=" << report.front_lidar_distance << '\n';
         std::cout << "dynamic_gap_gates=" << (report.dynamic_gap_gates ? 1 : 0) << '\n';

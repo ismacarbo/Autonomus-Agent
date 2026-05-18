@@ -31,6 +31,37 @@ bool is_finite_pair(double a, double b) {
     return std::isfinite(a) && std::isfinite(b);
 }
 
+double primitive_control_at(const traj_info& trajectory, double t, double fallback) {
+    if (!std::isfinite(trajectory.c3) ||
+        !std::isfinite(trajectory.c4) ||
+        !std::isfinite(trajectory.c5)) {
+        return fallback;
+    }
+    return trajectory.c3 + trajectory.c4 * t + 0.5 * trajectory.c5 * t * t;
+}
+
+double primitive_integral(const traj_info& trajectory, double t, double fallback_control) {
+    if (!std::isfinite(trajectory.c3) ||
+        !std::isfinite(trajectory.c4) ||
+        !std::isfinite(trajectory.c5)) {
+        return fallback_control * t;
+    }
+    return trajectory.c3 * t +
+           0.5 * trajectory.c4 * t * t +
+           (trajectory.c5 * t * t * t) / 6.0;
+}
+
+double primitive_sample_time(const traj_info& trajectory, double elapsed) {
+    if (std::isfinite(trajectory.Tf) && trajectory.Tf > 1e-6) {
+        return clamp_value(elapsed, 0.0, trajectory.Tf);
+    }
+    return std::max(0.0, elapsed);
+}
+
+double tracked_planner_yaw_accel_limit(const VehicleGeometry& geometry) {
+    return clamp_value(2.0 * geometry.max_yaw_rate, 1.4, 5.0);
+}
+
 double elapsed_ms(std::chrono::steady_clock::time_point start,
                   std::chrono::steady_clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
@@ -664,8 +695,7 @@ const char* PlannerDrivenVehicleSim::localization_mode_name() const {
 
 PlannerDrivenVehicleSim::PlannerDrivenVehicleSim(WorldMap world, SimConfig config)
     : world_(std::move(world)),
-      config_(config),
-      null_stream_("/dev/null") {
+      config_(config) {
     reset();
 }
 
@@ -730,6 +760,10 @@ void PlannerDrivenVehicleSim::reset() {
     sim_time_ = 0.0;
     last_j_ = 0.0;
     last_r_ = 0.0;
+    planner_yaw_rate_ref_ = 0.0;
+    planner_yaw_accel_ref_ = 0.0;
+    planner_initial_yaw_rate_ = 0.0;
+    last_planner_command_step_ = 0;
     chosen_gate_index_ = -1;
     dynamic_lidar_passed_gates_ = 0;
     dynamic_lidar_candidate_count_ = 0;
@@ -824,6 +858,7 @@ void PlannerDrivenVehicleSim::reset() {
     g_x0_.y_fix = world_.start().y;
     g_x0_.theta = world_.start_heading();
     g_x0_.kappa_veh = 0.0;
+    g_x0_.omega = 0.0;
     g_x0_.v_fix = 0.0;
     g_x0_.a_fix = 0.0;
 
@@ -919,6 +954,7 @@ void PlannerDrivenVehicleSim::sync_planner_from_vehicle(bool reset_relative_stat
     g_x0_.y_fix = navigation_position_.y;
     g_x0_.theta = navigation_yaw_;
     g_x0_.kappa_veh = navigation_curvature_;
+    g_x0_.omega = navigation_yaw_rate_;
     g_x0_.v_fix = navigation_speed_;
     g_x0_.a_fix = navigation_accel_;
 
@@ -1106,6 +1142,27 @@ void PlannerDrivenVehicleSim::update_planner_references(double dt) {
             -geometry_.max_decel,
             0.0);
     }
+
+    if (config_.vehicle_model == VehicleModelKind::TrackedVehicle) {
+        const double elapsed =
+            std::max(1, step_count_ - last_planner_command_step_ + 1) *
+            std::max(dt, 1e-3);
+        const double t = primitive_sample_time(planner_traj_.lat_traj, elapsed);
+        const double yaw_accel_limit = tracked_planner_yaw_accel_limit(geometry_);
+        planner_yaw_accel_ref_ = clamp_value(
+            primitive_control_at(planner_traj_.lat_traj, t, last_r_),
+            -yaw_accel_limit,
+            yaw_accel_limit);
+        planner_yaw_rate_ref_ = clamp_value(
+            planner_initial_yaw_rate_ +
+                primitive_integral(planner_traj_.lat_traj, t, last_r_),
+            -geometry_.max_yaw_rate,
+            geometry_.max_yaw_rate);
+    } else {
+        planner_yaw_accel_ref_ = 0.0;
+        planner_yaw_rate_ref_ = 0.0;
+        planner_initial_yaw_rate_ = navigation_yaw_rate_;
+    }
 }
 
 void PlannerDrivenVehicleSim::refresh_gate_diagnostics() {
@@ -1216,10 +1273,16 @@ double PlannerDrivenVehicleSim::compute_mixed_gate_score() const {
         return 0.0;
     }
 
+    const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+    const double compact_mixed_gate_padding =
+        tracked_vehicle
+            ? 0.5 * geometry_.body_width + 0.04
+            : 0.035;
     const double line_padding =
         compact_mixed_open_world
-            ? 0.035
-            : 0.5 * geometry_.body_width + (compact_world ? 0.025 : (mixed_closed_loop ? 0.0 : 0.12));
+            ? compact_mixed_gate_padding
+            : 0.5 * geometry_.body_width + (compact_world ? (tracked_vehicle ? 0.06 : 0.025)
+                                                          : (mixed_closed_loop ? 0.0 : 0.12));
     const bool clear_line = world_.line_of_sight(navigation_position_, target, line_padding);
     if (!clear_line) {
         return 0.0;
@@ -1401,7 +1464,12 @@ void PlannerDrivenVehicleSim::leave_mixed_gate_mode(bool aborted) {
         ++mixed_abort_count_;
     }
     mixed_gate_mode_active_ = false;
-    mixed_gate_rejoin_cooldown_steps_ = aborted ? 28 : 14;
+    const bool tracked_mixed_dynamic =
+        config_.vehicle_model == VehicleModelKind::TrackedVehicle &&
+        use_dynamic_lidar_gates();
+    mixed_gate_rejoin_cooldown_steps_ =
+        aborted ? (tracked_mixed_dynamic ? 18 : 28)
+                : (tracked_mixed_dynamic ? 2 : 14);
     for (gate& candidate : gates_) {
         candidate.choose = false;
     }
@@ -1494,6 +1562,11 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
         mixed_mode_enabled() && structured_road_is_closed_loop(world_);
     const bool compact_mixed_open_world =
         world_span_m(world_) <= 1.20 && mixed_mode_enabled() && !mixed_closed_loop;
+    const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+    const double tracked_gate_padding =
+        tracked_vehicle && mixed_mode_enabled()
+            ? 0.5 * geometry_.body_width + (compact_mixed_open_world ? 0.04 : 0.06)
+            : 0.0;
     const double free_threshold =
         compact_mixed_open_world
             ? 0.30
@@ -1590,10 +1663,14 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
                 if (progress < (compact_world ? 0.04 : 0.65)) {
                     continue;
                 }
+                const double static_gate_padding =
+                    tracked_gate_padding > 0.0
+                        ? tracked_gate_padding
+                        : (compact_world ? 0.035 : (mixed_closed_loop ? 0.12 : 0.18));
                 if (!world_.line_of_sight(
                         navigation_position_,
                         spec.position,
-                        compact_world ? 0.035 : (mixed_closed_loop ? 0.12 : 0.18))) {
+                        static_gate_padding)) {
                     continue;
                 }
 
@@ -1666,11 +1743,13 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
         if (already_passed_dynamic_gate(target)) {
             continue;
         }
-        if (!world_.line_of_sight(navigation_position_,
-                                  target,
-                                  compact_mixed_open_world ? 0.025
-                                                           : (compact_world ? 0.04
-                                                                            : (mixed_closed_loop ? 0.14 : 0.22)))) {
+        const double lidar_gate_padding =
+            tracked_gate_padding > 0.0
+                ? tracked_gate_padding
+                : (compact_mixed_open_world ? 0.025
+                                            : (compact_world ? 0.04
+                                                             : (mixed_closed_loop ? 0.14 : 0.22)));
+        if (!world_.line_of_sight(navigation_position_, target, lidar_gate_padding)) {
             continue;
         }
 
@@ -2013,6 +2092,16 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
     }
 
     sim_.V_max = planner_speed_limit(config_.cruise_speed_limit, cl_.kappa);
+    const double planner_r_limit =
+        config_.vehicle_model == VehicleModelKind::TrackedVehicle
+            ? tracked_planner_yaw_accel_limit(geometry_)
+            : 1.4;
+    auto commit_planner_command = [&](double next_j, double next_r) {
+        last_j_ = clamp_value(next_j, -3.5, 2.5);
+        last_r_ = clamp_value(next_r, -planner_r_limit, planner_r_limit);
+        planner_initial_yaw_rate_ = navigation_yaw_rate_;
+        last_planner_command_step_ = step_count_;
+    };
 
     if (mixed_mode_enabled() && mixed_gate_mode_active_ && active_gate_indices().empty()) {
         leave_mixed_gate_mode(true);
@@ -2032,9 +2121,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
             x0_,
             g_x0_,
             cl_,
-            null_stream_,
-            null_stream_,
-            null_stream_);
+            planner_traj_);
 
         double next_j = commands.size() > 0 ? commands[0] : 0.0;
         double next_r = commands.size() > 1 ? commands[1] : 0.0;
@@ -2045,8 +2132,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
 
         visible_gate_indices_.clear();
         chosen_gate_index_ = -1;
-        last_j_ = clamp_value(next_j, -3.5, 2.5);
-        last_r_ = clamp_value(next_r, -1.4, 1.4);
+        commit_planner_command(next_j, next_r);
         update_selected_trajectory();
         return;
     }
@@ -2074,9 +2160,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
             x0_,
             g_x0_,
             cl_,
-            null_stream_,
-            null_stream_,
-            null_stream_);
+            planner_traj_);
 
         double next_j = commands.size() > 0 ? commands[0] : 0.0;
         double next_r = commands.size() > 1 ? commands[1] : 0.0;
@@ -2092,8 +2176,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
             gates_[static_cast<size_t>(active_indices[i])] = active_gates[i];
         }
 
-        last_j_ = clamp_value(next_j, -3.5, 2.5);
-        last_r_ = clamp_value(next_r, -1.4, 1.4);
+        commit_planner_command(next_j, next_r);
 
         const bool compact_mixed_open_world =
             world_span_m(world_) <= 1.20 &&
@@ -2106,6 +2189,8 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
                 mixed_gate_mode_active_ = true;
                 last_j_ = std::max(last_j_, 0.0);
                 last_r_ = 0.0;
+                planner_initial_yaw_rate_ = navigation_yaw_rate_;
+                last_planner_command_step_ = step_count_;
                 update_selected_trajectory();
                 return;
             }
@@ -2131,6 +2216,8 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
     if (gates_.empty() || active_indices.empty()) {
         last_j_ = 0.0;
         last_r_ = 0.0;
+        planner_initial_yaw_rate_ = navigation_yaw_rate_;
+        last_planner_command_step_ = step_count_;
         chosen_gate_index_ = -1;
         planned_trajectory_.clear();
         reference_trajectory_.clear();
@@ -2155,9 +2242,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
         x0_,
         g_x0_,
         cl_,
-        null_stream_,
-        null_stream_,
-        null_stream_);
+        planner_traj_);
 
     double next_j = commands.size() > 0 ? commands[0] : 0.0;
     double next_r = commands.size() > 1 ? commands[1] : 0.0;
@@ -2178,8 +2263,7 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
         chosen_gate_global = active_indices[static_cast<size_t>(chosen_gate)];
     }
 
-    last_j_ = clamp_value(next_j, -3.5, 2.5);
-    last_r_ = clamp_value(next_r, -1.4, 1.4);
+    commit_planner_command(next_j, next_r);
     refresh_gate_diagnostics();
     if (chosen_gate_global >= 0 && chosen_gate_global < static_cast<int>(gates_.size())) {
         chosen_gate_index_ = chosen_gate_global;
@@ -2707,6 +2791,8 @@ void PlannerDrivenVehicleSim::step() {
         mixed_gate_mode_active_ &&
         chosen_gate_index_ >= 0 &&
         chosen_gate_index_ < static_cast<int>(gates_.size());
+    const bool tracked_mixed_structured_rejoin =
+        tracked_vehicle && mixed_mode_enabled() && !mixed_gate_mode_active_;
     double tracking_desired_speed = planner_speed_ref_;
     if ((world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
          (mixed_mode_enabled() && mixed_gate_mode_active_)) &&
@@ -2725,12 +2811,17 @@ void PlannerDrivenVehicleSim::step() {
     } else if (mixed_mode_enabled() && reference_trajectory_.size() >= 2) {
         tracking_desired_speed = std::max(
             tracking_desired_speed,
-            std::min(0.12, config_.cruise_speed_limit));
+            std::min(tracked_mixed_structured_rejoin ? 0.085 : 0.12,
+                     config_.cruise_speed_limit));
     }
     if (tracked_vehicle && reference_trajectory_.size() >= 2) {
+        const double speed_floor =
+            tracked_mixed_structured_rejoin
+                ? std::min(geometry_.max_linear_speed, 0.085)
+                : tracked_vehicle_speed_floor(world_, geometry_);
         tracking_desired_speed = std::max(
             tracking_desired_speed,
-            tracked_vehicle_speed_floor(world_, geometry_));
+            speed_floor);
     }
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
@@ -2757,21 +2848,46 @@ void PlannerDrivenVehicleSim::step() {
             if (mpc_command.valid) {
                 control.accel_cmd = mpc_command.accel_cmd;
                 control.target_speed = mpc_command.target_speed;
-                const double target_curvature = clamp_value(
+                const double mpc_target_curvature = clamp_value(
                     std::tan(mpc_command.target_steer_angle) / std::max(geometry_.wheelbase, 1e-6),
                     -geometry_.max_curvature,
                     geometry_.max_curvature);
-                control.target_curvature = target_curvature;
                 if (tracked_vehicle) {
+                    const bool mixed_structured_rejoin = tracked_mixed_structured_rejoin;
+                    const double rejoin_lookahead =
+                        compact_mixed_open_step ? 0.20 : 0.55;
+                    const double rejoin_heading_error =
+                        mixed_structured_rejoin
+                            ? wrap_angle(
+                                  mpc_command.heading_error -
+                                  clamp_value(
+                                      std::atan2(-mpc_command.cross_track_error, rejoin_lookahead),
+                                      -0.80,
+                                      0.80))
+                            : mpc_command.heading_error;
+                    const double heading_gain = mixed_structured_rejoin ? 1.55 : 1.15;
+                    constexpr double kCrossTrackGain = 0.20;
+                    const double planner_yaw_feedforward =
+                        mixed_structured_rejoin ? 0.0
+                                                : planner_yaw_rate_ref_;
+                    const double tank_native_yaw_rate =
+                        planner_yaw_feedforward -
+                        heading_gain * rejoin_heading_error -
+                        kCrossTrackGain * mpc_command.cross_track_error;
                     control.target_yaw_rate = clamp_value(
-                        mpc_command.target_speed * target_curvature -
-                            1.15 * mpc_command.heading_error -
-                            0.20 * mpc_command.cross_track_error,
+                        tank_native_yaw_rate,
                         -geometry_.max_yaw_rate,
                         geometry_.max_yaw_rate);
+                    control.target_curvature =
+                        std::abs(control.target_speed) > 1e-4
+                            ? clamp_value(control.target_yaw_rate / control.target_speed,
+                                          -geometry_.max_curvature,
+                                          geometry_.max_curvature)
+                            : 0.0;
                     control.target_steer_angle = 0.0;
                     control.steer_rate_cmd = 0.0;
                 } else {
+                    control.target_curvature = mpc_target_curvature;
                     control.steer_rate_cmd = mpc_command.steer_rate_cmd;
                     control.target_steer_angle = mpc_command.target_steer_angle;
                     control.target_yaw_rate = control.target_speed * control.target_curvature;
@@ -2816,9 +2932,15 @@ void PlannerDrivenVehicleSim::step() {
                 geometry_.max_curvature);
             if (tracked_vehicle) {
                 control.target_yaw_rate = clamp_value(
-                    tracking_desired_speed * control.target_curvature,
+                    planner_yaw_rate_ref_,
                     -geometry_.max_yaw_rate,
                     geometry_.max_yaw_rate);
+                control.target_curvature =
+                    std::abs(control.target_speed) > 1e-4
+                        ? clamp_value(control.target_yaw_rate / control.target_speed,
+                                      -geometry_.max_curvature,
+                                      geometry_.max_curvature)
+                        : 0.0;
                 control.target_steer_angle = 0.0;
                 control.steer_rate_cmd = 0.0;
             } else {

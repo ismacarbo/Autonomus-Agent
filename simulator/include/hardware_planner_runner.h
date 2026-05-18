@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -163,6 +162,7 @@ struct HardwarePlannerConfig {
     bool auto_gyro_zero = true;
     bool use_encoder_odometry = true;
     bool planner_safety_stop_enabled = false;
+    VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     DifferentialDriveGeometry drive{};
     MotorPwmMapperConfig pwm{};
     LidarLocalizationConfig localization{};
@@ -304,6 +304,7 @@ class HardwarePlannerRunner {
     void disconnect();
 
     void apply_world(WorldMap world);
+    void apply_config(HardwarePlannerConfig config);
     void reset();
     void reset_pose(const Vec2& position, double heading);
     void step();
@@ -450,7 +451,7 @@ class HardwarePlannerRunner {
     std::optional<MpcCommand> last_mpc_command_;
     int structured_anchor_hint_index_ = 0;
 
-    std::ofstream null_stream_;
+    long_lat_traj planner_traj_{};
 
     int step_count_ = 0;
     double sim_time_ = 0.0;
@@ -458,6 +459,10 @@ class HardwarePlannerRunner {
     double last_r_ = 0.0;
     double planner_speed_ref_ = 0.0;
     double planner_accel_ref_ = 0.0;
+    double planner_yaw_rate_ref_ = 0.0;
+    double planner_yaw_accel_ref_ = 0.0;
+    double planner_initial_yaw_rate_ = 0.0;
+    int last_planner_command_step_ = 0;
     double tracker_cross_track_error_ = 0.0;
     double tracker_heading_error_deg_ = 0.0;
     double planning_compute_ms_ = 0.0;

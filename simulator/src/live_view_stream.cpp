@@ -22,7 +22,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 7U;
+constexpr std::uint16_t kPacketVersion = 8U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 1U;
 constexpr std::uint16_t kPacketHello = 0U;
@@ -30,6 +30,7 @@ constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
 constexpr std::uint16_t kPacketWorld = 3U;
 constexpr std::uint16_t kPacketControlAck = 4U;
+constexpr std::uint16_t kPacketRobotProfile = 5U;
 constexpr std::size_t kPacketHeaderSize = sizeof(std::uint32_t) + sizeof(std::uint16_t) + sizeof(std::uint16_t) + sizeof(std::uint32_t);
 constexpr std::uint32_t kMaxPacketBytes = 32U * 1024U * 1024U;
 constexpr std::uint32_t kMaxVectorElements = 200000U;
@@ -786,6 +787,35 @@ std::vector<std::uint8_t> make_packet(std::uint16_t type, const std::vector<std:
     return packet;
 }
 
+std::vector<std::uint8_t> serialize_robot_profile(VehicleModelKind vehicle_model) {
+    std::vector<std::uint8_t> payload;
+    const std::uint8_t value =
+        vehicle_model == VehicleModelKind::TrackedVehicle ? 1U : 0U;
+    write_pod(&payload, value);
+    return payload;
+}
+
+bool deserialize_robot_profile(const std::vector<std::uint8_t>& payload,
+                               VehicleModelKind* vehicle_model) {
+    if (vehicle_model == nullptr) {
+        return false;
+    }
+    std::size_t offset = 0;
+    std::uint8_t value = 0U;
+    if (!read_pod(payload, &offset, &value) || offset != payload.size()) {
+        return false;
+    }
+    if (value == 0U) {
+        *vehicle_model = VehicleModelKind::CarLikeBicycle;
+        return true;
+    }
+    if (value == 1U) {
+        *vehicle_model = VehicleModelKind::TrackedVehicle;
+        return true;
+    }
+    return false;
+}
+
 bool recv_all_with_timeout(int fd, std::uint8_t* data, std::size_t size, int timeout_ms) {
     if (fd < 0 || data == nullptr) {
         return false;
@@ -1203,7 +1233,7 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
         runner.world().environment_mode() == EnvironmentMode::UnstructuredGates
             ? "RPLidar A1 (perception-driven)"
             : (lidar_enabled ? "RPLidar A1" : "LiDAR disabled for structured planner");
-    scene.vehicle_model_name = "Car-like bicycle";
+    scene.vehicle_model_name = vehicle_model_kind_name(runner.config().vehicle_model);
     scene.tracking_controller_name = "MPC path follower";
     scene.active_lidar_beams = lidar_enabled ? 360 : 0;
     scene.active_lidar_fov_rad = lidar_enabled ? kTwoPi : 0.0;
@@ -1487,6 +1517,17 @@ bool LiveViewStreamClient::parse_next_packet(PollResult* result) {
         result->world = std::move(world);
         return true;
     }
+    if (type == kPacketRobotProfile) {
+        VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
+        if (!deserialize_robot_profile(payload, &vehicle_model)) {
+            last_error_ = "failed to decode live robot profile command";
+            disconnect();
+            return false;
+        }
+        result->robot_profile_received = true;
+        result->robot_profile = vehicle_model;
+        return true;
+    }
 
     last_error_ = "unknown live stream packet type";
     disconnect();
@@ -1624,6 +1665,19 @@ void LiveViewStreamServer::clear_pending_world() {
     pending_world_.reset();
 }
 
+bool LiveViewStreamServer::queue_robot_profile(VehicleModelKind vehicle_model) {
+    pending_robot_profile_ = vehicle_model;
+    if (client_fd_ >= 0) {
+        flush_pending_robot_profile();
+        return client_fd_ >= 0;
+    }
+    return true;
+}
+
+void LiveViewStreamServer::clear_pending_robot_profile() {
+    pending_robot_profile_.reset();
+}
+
 void LiveViewStreamServer::flush_pending_world() {
     if (client_fd_ < 0 || !pending_world_.has_value()) {
         return;
@@ -1632,6 +1686,16 @@ void LiveViewStreamServer::flush_pending_world() {
         return;
     }
     pending_world_.reset();
+}
+
+void LiveViewStreamServer::flush_pending_robot_profile() {
+    if (client_fd_ < 0 || !pending_robot_profile_.has_value()) {
+        return;
+    }
+    if (!send_packet(kPacketRobotProfile, serialize_robot_profile(*pending_robot_profile_))) {
+        return;
+    }
+    pending_robot_profile_.reset();
 }
 
 void LiveViewStreamServer::read_client_data() {
@@ -1752,6 +1816,7 @@ LiveViewStreamServer::PollResult LiveViewStreamServer::poll() {
         accept_client();
     }
     flush_pending_world();
+    flush_pending_robot_profile();
     read_client_data();
     while (parse_next_packet(&result)) {
     }
