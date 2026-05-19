@@ -20,6 +20,7 @@
 namespace {
 
 using thesis_sim::ControllerTelemetry;
+using thesis_sim::ControllerMode;
 using thesis_sim::EnvironmentMode;
 using thesis_sim::GateSpec;
 using thesis_sim::GateBehaviorMode;
@@ -32,8 +33,10 @@ using thesis_sim::MotorControlMode;
 using thesis_sim::RealRobotBridge;
 using thesis_sim::RealRobotObservation;
 using thesis_sim::RPLidarA1;
+using thesis_sim::RSPSerialBridge;
 using thesis_sim::Rect;
 using thesis_sim::StructuredMapPreset;
+using thesis_sim::StopReason;
 using thesis_sim::UnstructuredMapPreset;
 using thesis_sim::Vec2;
 using thesis_sim::VehicleControlInput;
@@ -85,6 +88,10 @@ struct AppOptions {
     bool controller_reset_on_connect = false;
     bool simulate = false;
     bool stop_on_stream_loss = false;
+    bool motor_test = false;
+    int motor_test_pwm_left = 0;
+    int motor_test_pwm_right = 0;
+    double motor_test_duration_s = 1.0;
     VehicleProfile vehicle_profile = VehicleProfile::Car;
     int encoder_ticks_per_revolution = 0;
     double wheel_radius_m = 0.0;
@@ -293,6 +300,8 @@ void print_usage(const char* argv0) {
         << "  --stream-port N           send live view snapshots to TCP port N\n"
         << "  --stream-every N          send one frame every N planner steps (default 1)\n"
         << "  --stop-on-stream-loss     stop the robot if a previously connected GUI stream drops\n"
+        << "  --motor-test L R          send direct PWM to left/right tracks, then stop\n"
+        << "  --motor-test-duration SEC duration for --motor-test (default 1.0)\n"
         << "  --vehicle-model NAME      car | tank (tracked/skid-steer profile)\n"
         << "  --ticks-per-rev N         override encoder ticks per wheel revolution\n"
         << "  --wheel-radius M          override wheel/track effective radius in meters\n"
@@ -350,6 +359,15 @@ AppOptions parse_args(int argc, char** argv) {
             options.stream_every_n_steps = std::atoi(argv[++i]);
         } else if (arg == "--stop-on-stream-loss") {
             options.stop_on_stream_loss = true;
+        } else if (arg == "--motor-test" && i + 2 < argc) {
+            options.motor_test = true;
+            options.motor_test_pwm_left = std::atoi(argv[++i]);
+            options.motor_test_pwm_right = std::atoi(argv[++i]);
+        } else if (arg == "--motor-test-duration" && i + 1 < argc) {
+            options.motor_test_duration_s = std::atof(argv[++i]);
+        } else if (arg.rfind("--motor-test-duration=", 0) == 0) {
+            options.motor_test_duration_s =
+                std::atof(arg.substr(std::strlen("--motor-test-duration=")).c_str());
         } else if (arg == "--vehicle-model" && i + 1 < argc) {
             const std::string value = argv[++i];
             if (value == "tank" || value == "tracked" || value == "tracked_vehicle" ||
@@ -402,6 +420,9 @@ AppOptions parse_args(int argc, char** argv) {
         }
     }
     options.stream_every_n_steps = std::max(options.stream_every_n_steps, 1);
+    options.motor_test_duration_s = clamp_value(options.motor_test_duration_s, 0.15, 5.0);
+    options.motor_test_pwm_left = static_cast<int>(clamp_value(options.motor_test_pwm_left, -255, 255));
+    options.motor_test_pwm_right = static_cast<int>(clamp_value(options.motor_test_pwm_right, -255, 255));
     return options;
 }
 
@@ -856,6 +877,99 @@ int run_simulated(const AppOptions& options,
     return runner.goal_reached() ? 0 : 1;
 }
 
+int run_motor_test(const AppOptions& options,
+                   RealRobotBridge::Options bridge_options) {
+    RSPSerialBridge controller(bridge_options.controller);
+    bool connected = false;
+    auto stop_controller = [&]() {
+        if (!connected) {
+            return;
+        }
+        try {
+            controller.send_pwm(0, 0, true);
+            controller.poll(0.05);
+            controller.stop(StopReason::UserRequest, true, 0.8);
+            controller.poll(0.05);
+            controller.set_mode(ControllerMode::Idle, 0.8);
+        } catch (const std::exception&) {
+            try {
+                controller.send_pwm(0, 0, true);
+            } catch (const std::exception&) {
+            }
+        }
+        controller.disconnect();
+        connected = false;
+    };
+
+    try {
+        controller.connect();
+        connected = true;
+        controller.ping();
+        controller.set_mode(ControllerMode::Autonomous, 1.0);
+        controller.send_pwm(0, 0, true);
+        controller.poll(0.20);
+
+        const ControllerTelemetry before = controller.telemetry_snapshot();
+        const auto start = std::chrono::steady_clock::now();
+        auto next_log = start;
+        std::cout << "motor_test_status=running"
+                  << " pwm_left=" << options.motor_test_pwm_left
+                  << " pwm_right=" << options.motor_test_pwm_right
+                  << " duration=" << options.motor_test_duration_s << '\n';
+
+        while (!g_shutdown_requested.load()) {
+            const auto now = std::chrono::steady_clock::now();
+            const double elapsed =
+                std::chrono::duration<double>(now - start).count();
+            if (elapsed >= options.motor_test_duration_s) {
+                break;
+            }
+            controller.send_pwm(
+                static_cast<std::int16_t>(options.motor_test_pwm_left),
+                static_cast<std::int16_t>(options.motor_test_pwm_right),
+                true);
+            controller.poll(0.05);
+            if (now >= next_log) {
+                const ControllerTelemetry t = controller.telemetry_snapshot();
+                std::cout << "motor_test_sample"
+                          << " t=" << elapsed
+                          << " pwm_left=" << t.pwm_l
+                          << " pwm_right=" << t.pwm_r
+                          << " ticks_left=" << t.ticks_left
+                          << " ticks_right=" << t.ticks_right
+                          << " yaw_mrad=" << t.yaw_mrad
+                          << " yaw_rate_mrad_s=" << t.yaw_rate_mrad_s
+                          << " motor_flags=0x" << std::hex << t.motor_flags << std::dec
+                          << " status_flags=0x" << std::hex << t.status_flags << std::dec
+                          << '\n';
+                next_log = now + std::chrono::milliseconds(250);
+            }
+        }
+
+        controller.send_pwm(0, 0, true);
+        controller.poll(0.15);
+        const ControllerTelemetry after = controller.telemetry_snapshot();
+        controller.stop(StopReason::UserRequest, true, 0.8);
+        controller.set_mode(ControllerMode::Idle, 0.8);
+        controller.disconnect();
+        connected = false;
+
+        std::cout << "motor_test_status=completed\n"
+                  << "delta_ticks_left=" << (after.ticks_left - before.ticks_left) << '\n'
+                  << "delta_ticks_right=" << (after.ticks_right - before.ticks_right) << '\n'
+                  << "delta_yaw_mrad=" << (after.yaw_mrad - before.yaw_mrad) << '\n'
+                  << "final_pwm_left=" << after.pwm_l << '\n'
+                  << "final_pwm_right=" << after.pwm_r << '\n'
+                  << "fw_version=" << static_cast<int>(after.fw_major)
+                  << '.' << static_cast<int>(after.fw_minor) << '\n';
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "motor_test_error=" << e.what() << '\n';
+        stop_controller();
+        return 2;
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -869,7 +983,7 @@ int main(int argc, char** argv) {
             print_usage(argv[0]);
             return 2;
         }
-        if (!options.simulate && !structured_mode && options.lidar_port.empty()) {
+        if (!options.simulate && !options.motor_test && !structured_mode && options.lidar_port.empty()) {
             print_usage(argv[0]);
             return 2;
         }
@@ -884,6 +998,10 @@ int main(int argc, char** argv) {
         bridge_options.lidar_port = structured_mode ? std::string{} : options.lidar_port;
         bridge_options.lidar_baudrate = options.lidar_baudrate;
         bridge_options.lidar_timeout_s = 0.10;
+
+        if (options.motor_test) {
+            return run_motor_test(options, std::move(bridge_options));
+        }
 
         HardwarePlannerConfig planner_config;
         planner_config.nominal_dt = options.dt;
