@@ -1158,8 +1158,8 @@ void HardwarePlannerRunner::connect() {
         }
 
         const int desired_cmd_timeout_ms = std::max(
-            1200,
-            static_cast<int>(std::lround(std::max(config_.nominal_dt, 0.05) * 12.0 * 1000.0)));
+            650,
+            static_cast<int>(std::lround(std::max(config_.nominal_dt, 0.05) * 8.0 * 1000.0)));
         try {
             bridge_.config_set(
                 static_cast<std::uint8_t>(ConfigParamId::CmdTimeoutMs),
@@ -1197,9 +1197,18 @@ void HardwarePlannerRunner::disconnect() {
     try {
         if (bridge_.controller_connected()) {
             bridge_.send_pwm(0, 0, true);
-            bridge_.stop(StopReason::UserRequest, false);
+            bridge_.stop(StopReason::UserRequest, true, 0.25);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            bridge_.send_pwm(0, 0, true);
         }
     } catch (const std::exception&) {
+        try {
+            if (bridge_.controller_connected()) {
+                bridge_.send_pwm(0, 0, true);
+                bridge_.stop(StopReason::UserRequest, false);
+            }
+        } catch (const std::exception&) {
+        }
     }
 
     bridge_.disconnect();

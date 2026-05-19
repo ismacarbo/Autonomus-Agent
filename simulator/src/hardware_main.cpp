@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +40,17 @@ using thesis_sim::VehicleControlInput;
 using thesis_sim::VehicleDynamicsModel;
 using thesis_sim::VehicleModelKind;
 using thesis_sim::WorldMap;
+
+std::atomic<bool> g_shutdown_requested{false};
+
+void handle_shutdown_signal(int) {
+    g_shutdown_requested.store(true);
+}
+
+void install_shutdown_signal_handlers() {
+    std::signal(SIGINT, handle_shutdown_signal);
+    std::signal(SIGTERM, handle_shutdown_signal);
+}
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kStreamReconnectRetryMs = 1500;
@@ -694,7 +707,7 @@ int run_simulated(const AppOptions& options,
     bool collision = false;
     double host_time_s = 0.0;
     const int limit = options.max_steps > 0 ? options.max_steps : 1500;
-    for (int step = 0; step < limit && !runner.goal_reached() && !collision; ++step) {
+    for (int step = 0; step < limit && !runner.goal_reached() && !collision && !g_shutdown_requested.load(); ++step) {
         world_applied = false;
         if (!process_stream_control(options, base_config, &planner_config, &runner, &streamer, &world_applied)) {
             return 2;
@@ -822,6 +835,7 @@ int run_simulated(const AppOptions& options,
 }  // namespace
 
 int main(int argc, char** argv) {
+    install_shutdown_signal_handlers();
     const AppOptions options = parse_args(argc, argv);
     std::unique_ptr<HardwarePlannerRunner> runner;
     try {
@@ -936,7 +950,7 @@ int main(int argc, char** argv) {
         }
 
         const int limit = options.max_steps > 0 ? options.max_steps : 1500;
-        while (runner->step_count() < limit && !runner->goal_reached()) {
+        while (runner->step_count() < limit && !runner->goal_reached() && !g_shutdown_requested.load()) {
             if (!ensure_stream_client(true)) {
                 runner->disconnect();
                 return 2;

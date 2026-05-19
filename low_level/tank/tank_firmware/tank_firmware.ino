@@ -35,7 +35,7 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 2;
+const uint8_t FW_MINOR = 3;
 const bool BOOT_DIAG_ASCII = true;
 
 const float DEG_TO_RAD_F = 0.017453292519943295f;
@@ -53,6 +53,7 @@ const uint16_t DEFAULT_MOTOR_TELEMETRY_MS = 60U;
 const uint16_t DEFAULT_HEARTBEAT_MS = 500U;
 const uint16_t RX_IDLE_TIMEOUT_MS = 80U;
 const uint16_t IMU_SAMPLE_PERIOD_MS = 20U;
+const uint16_t IMU_STALE_TIMEOUT_MS = 250U;
 const uint16_t BATTERY_SAMPLE_PERIOD_MS = 250U;
 const uint8_t DEFAULT_SLEW_STEP = 16U;
 
@@ -143,10 +144,7 @@ const uint16_t ENC_FLAG_RIGHT_DIR_NEG = 1U << 3;
 const uint16_t RSP_MAX_PAYLOAD = 48U;
 const uint8_t RSP_HEADER_LEN = 6U;
 
-Adafruit_BNO055 bno_28 = Adafruit_BNO055(55, 0x28);
-Adafruit_BNO055 bno_29 = Adafruit_BNO055(55, 0x29);
-Adafruit_BNO055* bno = &bno_28;
-uint8_t bno_i2c_addr = 0x28U;
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 
 volatile int32_t enc_left_ticks = 0;
 volatile int32_t enc_right_ticks = 0;
@@ -412,6 +410,18 @@ void hard_stop_motors() {
   force_motor_pins_off();
 }
 
+void enable_runtime_watchdog() {
+#if defined(__AVR__)
+  wdt_enable(WDTO_1S);
+#endif
+}
+
+void feed_runtime_watchdog() {
+#if defined(__AVR__)
+  wdt_reset();
+#endif
+}
+
 void set_targets(int16_t pwm_l, int16_t pwm_r) {
   target_pwm_l = (int16_t)clampi((int)pwm_l, -255, 255);
   target_pwm_r = (int16_t)clampi((int)pwm_r, -255, 255);
@@ -421,7 +431,7 @@ void set_targets(int16_t pwm_l, int16_t pwm_r) {
 bool read_bno_yaw_deg(float* out_yaw_deg) {
   if (!imu_ready || out_yaw_deg == NULL) return false;
   sensors_event_t orientation_data;
-  bno->getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
+  bno.getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
   *out_yaw_deg = orientation_data.orientation.x;
   return true;
 }
@@ -443,13 +453,12 @@ void update_imu() {
   uint32_t now = millis();
   if ((uint32_t)(now - last_imu_sample_ms) < IMU_SAMPLE_PERIOD_MS) return;
   last_imu_sample_ms = now;
-  last_imu_ms = now;
 
   sensors_event_t orientation_data;
-  bno->getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
+  bno.getEvent(&orientation_data, Adafruit_BNO055::VECTOR_EULER);
 
-  imu::Vector<3> accel = bno->getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
-  imu::Vector<3> gyro = bno->getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+  imu::Vector<3> accel = bno.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
+  imu::Vector<3> gyro = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
 
   yaw_rad = wrap_pi((orientation_data.orientation.x - yaw_zero_deg) * DEG_TO_RAD_F);
   yaw_rate_rad_s = (float)YAW_RATE_SIGN * (float)gyro.z() * DEG_TO_RAD_F;
@@ -458,6 +467,7 @@ void update_imu() {
   acc_y_raw = clamp_i16_long(lroundf((float)accel.y() * 1000.0f));
   acc_z_raw = clamp_i16_long(lroundf((float)accel.z() * 1000.0f));
   gyro_z_raw = clamp_i16_long(lroundf(yaw_rate_rad_s * 1000.0f));
+  last_imu_ms = millis();
 }
 
 void update_battery() {
@@ -496,20 +506,6 @@ bool send_frame(uint8_t msg_type, uint8_t flags, const uint8_t* payload, uint16_
   Serial.write((uint8_t)(crc & 0xFFU));
   Serial.write((uint8_t)((crc >> 8) & 0xFFU));
   return true;
-}
-
-bool begin_bno055() {
-  if (i2c_device_present(0x28U)) {
-    bno = &bno_28;
-    bno_i2c_addr = 0x28U;
-    if (bno->begin()) return true;
-  }
-  if (i2c_device_present(0x29U)) {
-    bno = &bno_29;
-    bno_i2c_addr = 0x29U;
-    if (bno->begin()) return true;
-  }
-  return false;
 }
 
 void send_ack(uint8_t acked_seq, uint8_t acked_type, uint8_t status, uint8_t detail) {
@@ -651,7 +647,7 @@ void handle_mode_cmd(uint8_t seq, bool ack_req, const uint8_t* payload) {
 void handle_stop_cmd(uint8_t seq, bool ack_req, const uint8_t* payload) {
   last_stop_reason = payload[0];
   stop_requested = true;
-  set_targets(0, 0);
+  hard_stop_motors();
   if (ack_req) send_ack(seq, RSP_MSG_STOP_CMD, ACK_STATUS_COMPLETED, last_stop_reason);
 }
 
@@ -974,13 +970,17 @@ void send_heartbeat_state() {
 
 void update_motors() {
   bool timeout = command_timeout_active();
+  bool host_timeout = host_link_seen && !host_link_ok();
+  bool imu_stale = imu_ready && ((uint32_t)(millis() - last_imu_ms) > IMU_STALE_TIMEOUT_MS);
   bool allow_motion = motors_enabled_mode() && !calibrating && controller_mode != MODE_EMERGENCY_STOP;
 
-  if (timeout) {
-    target_pwm_l = 0;
-    target_pwm_r = 0;
+  if (timeout || host_timeout || imu_stale) {
     stop_requested = true;
-    last_stop_reason = STOP_REASON_HOST_TIMEOUT;
+    if (timeout || host_timeout) {
+      last_stop_reason = STOP_REASON_HOST_TIMEOUT;
+    }
+    hard_stop_motors();
+    return;
   }
 
   if (!allow_motion) {
@@ -1021,13 +1021,12 @@ void setup() {
   boot_log(F("wire-timeout"));
 #endif
 
-  if (begin_bno055()) {
+  if (i2c_device_present(0x28U) && bno.begin()) {
     delay(900);
-    bno->setExtCrystalUse(true);
+    bno.setExtCrystalUse(true);
     imu_ready = true;
     zero_bno_heading();
-    if (bno_i2c_addr == 0x29U) boot_log(F("bno055-ready-0x29"));
-    else boot_log(F("bno055-ready-0x28"));
+    boot_log(F("bno055-ready"));
   } else {
     imu_ready = false;
     last_error_code = ERR_IMU_NOT_READY;
@@ -1053,16 +1052,20 @@ void setup() {
   hard_stop_motors();
   reset_rx();
   boot_log(F("setup-done"));
+  enable_runtime_watchdog();
 }
 
 void loop() {
+  feed_runtime_watchdog();
   poll_serial();
-  update_imu();
-  update_battery();
   update_motors();
+  update_imu();
+  update_motors();
+  update_battery();
   send_imu_telemetry();
   send_safety_telemetry();
   send_encoder_telemetry();
   send_motor_state();
   send_heartbeat_state();
+  feed_runtime_watchdog();
 }

@@ -186,6 +186,7 @@ std::optional<AckPayload> RSPSerialBridge::stop(StopReason reason, bool wait_ack
     const std::uint8_t seq = write_frame(static_cast<std::uint8_t>(MsgType::StopCmd),
                                          payload,
                                          static_cast<std::uint8_t>(FrameFlag::AckReq));
+    serial_.flush();
     last_sent_pwm_ = {0, 0};
     if (!wait_ack) {
         return std::nullopt;
