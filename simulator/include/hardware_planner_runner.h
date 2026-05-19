@@ -43,8 +43,6 @@ struct MotorPwmMapperConfig {
     double wheel_speed_to_pwm_bias = 28.0;
     double left_scale = 1.00;
     double right_scale = 1.00;
-    double linear_command_sign = 1.0;
-    double yaw_command_sign = 1.0;
     double wheel_speed_kp = 95.0;
     double wheel_speed_ki = 30.0;
     double wheel_speed_integral_limit = 0.35;

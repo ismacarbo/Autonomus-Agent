@@ -362,8 +362,10 @@ bool encoder_flag_set(std::uint16_t flags, EncoderFlag flag) {
     return (flags & static_cast<std::uint16_t>(flag)) != 0U;
 }
 
-double signed_encoder_distance(std::int32_t delta_ticks, double ticks_to_distance) {
-    return static_cast<double>(delta_ticks) * ticks_to_distance;
+double signed_encoder_distance(std::int32_t delta_ticks, bool dir_negative, double ticks_to_distance) {
+    const double tick_magnitude = static_cast<double>(std::abs(delta_ticks));
+    const double signed_tick_magnitude = dir_negative ? -tick_magnitude : tick_magnitude;
+    return signed_tick_magnitude * ticks_to_distance;
 }
 
 double wheel_speed_from_pwm_estimate(int pwm, double scale, const VehicleGeometry& geometry) {
@@ -382,25 +384,6 @@ std::pair<double, double> wheel_speeds_from_body(double speed, double yaw_rate, 
     return {
         speed - yaw_rate * half_track,
         speed + yaw_rate * half_track,
-    };
-}
-
-std::pair<double, double> command_wheel_speeds_from_body(double speed,
-                                                         double yaw_rate,
-                                                         double half_track,
-                                                         const MotorPwmMapperConfig& pwm_config) {
-    return wheel_speeds_from_body(
-        speed * pwm_config.linear_command_sign,
-        yaw_rate * pwm_config.yaw_command_sign,
-        half_track);
-}
-
-std::pair<double, double> command_pwm_components(double linear_pwm,
-                                                 double yaw_pwm,
-                                                 const MotorPwmMapperConfig& pwm_config) {
-    return {
-        pwm_config.linear_command_sign * linear_pwm - pwm_config.yaw_command_sign * yaw_pwm,
-        pwm_config.linear_command_sign * linear_pwm + pwm_config.yaw_command_sign * yaw_pwm,
     };
 }
 
@@ -2032,8 +2015,14 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
             static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-        const double left_dist = signed_encoder_distance(left_delta_ticks, ticks_to_distance);
-        const double right_dist = signed_encoder_distance(right_delta_ticks, ticks_to_distance);
+        const double left_dist = signed_encoder_distance(
+            left_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::LeftDirNeg),
+            ticks_to_distance);
+        const double right_dist = signed_encoder_distance(
+            right_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::RightDirNeg),
+            ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
         measured_left_wheel_speed_ = encoder_dt > 1e-6 ? left_dist / encoder_dt : 0.0;
@@ -2116,6 +2105,11 @@ bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerT
         return false;
     }
 
+    if (left_delta_ticks < 0 || right_delta_ticks < 0) {
+        encoder_ready_streak_ = 0;
+        return false;
+    }
+
     const double ticks_to_distance =
         (2.0 * kPi * geometry_.wheel_radius) /
         static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
@@ -2158,8 +2152,14 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
             static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-        const double left_dist = signed_encoder_distance(left_delta_ticks, ticks_to_distance);
-        const double right_dist = signed_encoder_distance(right_delta_ticks, ticks_to_distance);
+        const double left_dist = signed_encoder_distance(
+            left_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::LeftDirNeg),
+            ticks_to_distance);
+        const double right_dist = signed_encoder_distance(
+            right_delta_ticks,
+            encoder_flag_set(telemetry.enc_flags, EncoderFlag::RightDirNeg),
+            ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
         measured_left_wheel_speed_ = effective_dt > 1e-6 ? left_dist / effective_dt : 0.0;
@@ -6006,15 +6006,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
     const auto [left_wheel_speed, right_wheel_speed] =
         wheel_speeds_from_body(last_command_.target_speed, last_command_.target_yaw_rate, half_track);
-    const auto [command_left_wheel_speed, command_right_wheel_speed] =
-        command_wheel_speeds_from_body(
-            last_command_.target_speed,
-            last_command_.target_yaw_rate,
-            half_track,
-            config_.pwm);
 
-    const int ff_left = wheel_speed_to_pwm(command_left_wheel_speed, config_.pwm.left_scale);
-    const int ff_right = wheel_speed_to_pwm(command_right_wheel_speed, config_.pwm.right_scale);
+    const int ff_left = wheel_speed_to_pwm(left_wheel_speed, config_.pwm.left_scale);
+    const int ff_right = wheel_speed_to_pwm(right_wheel_speed, config_.pwm.right_scale);
     const bool commanding_motion =
         !safety_stop_active_ &&
         (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
@@ -6045,15 +6039,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             -config_.pwm.wheel_speed_integral_limit,
             config_.pwm.wheel_speed_integral_limit);
 
-        const double fb_left_logical =
+        const int fb_left = static_cast<int>(std::lround(
             config_.pwm.wheel_speed_kp * (left_wheel_speed - measured_left_wheel_speed) +
-            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_left_;
-        const double fb_right_logical =
+            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_left_));
+        const int fb_right = static_cast<int>(std::lround(
             config_.pwm.wheel_speed_kp * (right_wheel_speed - measured_right_wheel_speed) +
-            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_right_;
-        const double fb_linear = 0.5 * (fb_left_logical + fb_right_logical);
-        const double fb_yaw = 0.5 * (fb_right_logical - fb_left_logical);
-        const auto [fb_left, fb_right] = command_pwm_components(fb_linear, fb_yaw, config_.pwm);
+            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_right_));
 
         last_command_.pwm_left = static_cast<int>(clamp_value(
             static_cast<double>(ff_left + fb_left),
@@ -6081,14 +6072,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.pwm.linear_feedback_gain * (last_command_.target_speed - measured_speed_for_feedback)));
         const int fb_yaw = static_cast<int>(std::lround(
             config_.pwm.yaw_feedback_gain * (last_command_.target_yaw_rate - measured_yaw_rate_for_feedback)));
-        const auto [fb_left, fb_right] = command_pwm_components(fb_linear, fb_yaw, config_.pwm);
 
         last_command_.pwm_left = static_cast<int>(clamp_value(
-            static_cast<double>(ff_left + fb_left),
+            static_cast<double>(ff_left + fb_linear - fb_yaw),
             -config_.pwm.max_pwm,
             config_.pwm.max_pwm));
         last_command_.pwm_right = static_cast<int>(clamp_value(
-            static_cast<double>(ff_right + fb_right),
+            static_cast<double>(ff_right + fb_linear + fb_yaw),
             -config_.pwm.max_pwm,
             config_.pwm.max_pwm));
     }
