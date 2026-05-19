@@ -363,9 +363,17 @@ bool encoder_flag_set(std::uint16_t flags, EncoderFlag flag) {
 }
 
 double signed_encoder_distance(std::int32_t delta_ticks, bool dir_negative, double ticks_to_distance) {
-    const double tick_magnitude = static_cast<double>(std::abs(delta_ticks));
-    const double signed_tick_magnitude = dir_negative ? -tick_magnitude : tick_magnitude;
-    return signed_tick_magnitude * ticks_to_distance;
+    // Current tank firmware sends monotonic tick counters plus direction flags.
+    // Some intermediate test firmware sent signed counters; negative deltas are
+    // already directional, so do not apply the flag a second time.
+    if (delta_ticks < 0) {
+        return static_cast<double>(delta_ticks) * ticks_to_distance;
+    }
+
+    const double signed_delta = dir_negative
+        ? -static_cast<double>(delta_ticks)
+        : static_cast<double>(delta_ticks);
+    return signed_delta * ticks_to_distance;
 }
 
 double wheel_speed_from_pwm_estimate(int pwm, double scale, const VehicleGeometry& geometry) {
@@ -2101,11 +2109,6 @@ bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerT
     const bool raw_encoder_ready = config_.use_encoder_odometry && controller_encoders_ready(telemetry);
     const bool overflow_warn = encoder_flag_set(telemetry.enc_flags, EncoderFlag::OverflowWarn);
     if (!raw_encoder_ready || overflow_warn || encoder_dt <= 1e-6) {
-        encoder_ready_streak_ = 0;
-        return false;
-    }
-
-    if (left_delta_ticks < 0 || right_delta_ticks < 0) {
         encoder_ready_streak_ = 0;
         return false;
     }

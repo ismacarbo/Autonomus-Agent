@@ -19,7 +19,7 @@ void disableWatchdogEarly(void) {
 // =========================
 // Tank hardware mapping
 // M1 is left track, M2 is right track.
-// Direction HIGH matches the working forward() test sketch.
+// RSP PWM is expressed in the logical robot frame: positive means forward.
 // =========================
 #define PIN_LEFT_DIR   7
 #define PIN_LEFT_PWM   9
@@ -40,8 +40,9 @@ const bool BOOT_DIAG_ASCII = true;
 
 const float DEG_TO_RAD_F = 0.017453292519943295f;
 
-// 041824 runner/odometry baseline, with only the physical motor polarity
-// flipped so positive planner PWM drives the tank forward on the floor.
+// This tank wiring needs the opposite TB6612 direction level from the old
+// forward() smoke sketch, so translate logical positive PWM to physical forward
+// here and keep the host/planner frame unchanged.
 const int LEFT_SIGN = -1;
 const int RIGHT_SIGN = -1;
 const int YAW_RATE_SIGN = 1;
@@ -353,6 +354,7 @@ bool encoders_ready() {
 
 void read_encoder_snapshot(int32_t* left_ticks, int32_t* right_ticks) {
   noInterrupts();
+  // Publish monotonic pulse counts; direction lives in ENC_FLAG_*_DIR_NEG.
   int32_t l = enc_left_ticks;
   int32_t r = enc_right_ticks;
   interrupts();
@@ -375,6 +377,7 @@ int32_t right_ticks_total() {
 uint16_t build_encoder_flags() {
   uint16_t flags = 0U;
   if (encoders_ready()) flags |= ENC_FLAG_LEFT_VALID | ENC_FLAG_RIGHT_VALID;
+  // Direction is reported in the same logical frame as the PWM command.
   if (current_pwm_l < 0) flags |= ENC_FLAG_LEFT_DIR_NEG;
   if (current_pwm_r < 0) flags |= ENC_FLAG_RIGHT_DIR_NEG;
   return flags;
