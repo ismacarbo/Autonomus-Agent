@@ -35,7 +35,7 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 4;
+const uint8_t FW_MINOR = 5;
 const bool BOOT_DIAG_ASCII = true;
 
 const float DEG_TO_RAD_F = 0.017453292519943295f;
@@ -45,12 +45,11 @@ const float DEG_TO_RAD_F = 0.017453292519943295f;
 const int LEFT_SIGN = 1;
 const int RIGHT_SIGN = 1;
 
-// The planner's vehicle frame uses the opposite end of the chassis as the
-// logical front. A 180 deg frame flip maps logical commands as:
-// left_hw = -right_logical, right_hw = -left_logical.
-const bool DRIVE_FRAME_REVERSED = true;
-const int ENC_LEFT_SIGN = 1;
-const int ENC_RIGHT_SIGN = 1;
+// Keep firmware commands transparent. The runner owns planner-frame motor
+// transforms so we can tune them without reflashing the controller.
+const bool DRIVE_FRAME_REVERSED = false;
+const int ENC_LEFT_SIGN = -1;
+const int ENC_RIGHT_SIGN = -1;
 const int YAW_RATE_SIGN = 1;
 
 const uint16_t HOST_LINK_TIMEOUT_MS = 1500U;

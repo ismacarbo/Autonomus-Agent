@@ -92,6 +92,8 @@ struct AppOptions {
     double max_linear_speed_mps = 0.0;
     double max_yaw_rate_rad_s = 0.0;
     double cruise_speed_limit_mps = 0.0;
+    int tank_linear_sign = 0;
+    int tank_yaw_sign = 0;
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
@@ -298,6 +300,8 @@ void print_usage(const char* argv0) {
         << "  --max-linear-speed MPS    override hardware max linear speed\n"
         << "  --max-yaw-rate RADS       override hardware max yaw rate\n"
         << "  --cruise-speed MPS        override planner cruise speed limit\n"
+        << "  --tank-linear-sign +/-1   override tank command linear polarity\n"
+        << "  --tank-yaw-sign +/-1      override tank command yaw polarity\n"
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
         << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n"
         << "  --enable-planner-safety   enable planner-side LiDAR safety stop logic\n"
@@ -374,6 +378,16 @@ AppOptions parse_args(int argc, char** argv) {
             options.max_yaw_rate_rad_s = std::atof(argv[++i]);
         } else if (arg == "--cruise-speed" && i + 1 < argc) {
             options.cruise_speed_limit_mps = std::atof(argv[++i]);
+        } else if (arg == "--tank-linear-sign" && i + 1 < argc) {
+            options.tank_linear_sign = std::atoi(argv[++i]) < 0 ? -1 : 1;
+        } else if (arg.rfind("--tank-linear-sign=", 0) == 0) {
+            options.tank_linear_sign =
+                std::atoi(arg.substr(std::strlen("--tank-linear-sign=")).c_str()) < 0 ? -1 : 1;
+        } else if (arg == "--tank-yaw-sign" && i + 1 < argc) {
+            options.tank_yaw_sign = std::atoi(argv[++i]) < 0 ? -1 : 1;
+        } else if (arg.rfind("--tank-yaw-sign=", 0) == 0) {
+            options.tank_yaw_sign =
+                std::atoi(arg.substr(std::strlen("--tank-yaw-sign=")).c_str()) < 0 ? -1 : 1;
         } else if (arg == "--no-auto-mode") {
             options.auto_mode = false;
         } else if (arg == "--no-gyro-zero") {
@@ -411,15 +425,25 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
         config->drive.wheel_radius = 0.032;
         config->drive.encoder_ticks_per_revolution = 2400;
         config->drive.max_linear_speed = 0.22;
-        config->drive.max_yaw_rate = 1.20;
-        config->drive.max_curvature = 3.60;
+        config->drive.max_yaw_rate = 0.80;
+        config->drive.max_curvature = 2.80;
         config->pwm.start_motion_pwm = 82;
         config->pwm.min_effective_pwm = 38;
-        config->pwm.linear_feedback_gain = 42.0;
-        config->pwm.yaw_feedback_gain = 18.0;
+        config->pwm.linear_command_sign = -1.0;
+        config->pwm.yaw_command_sign = -1.0;
+        config->pwm.wheel_speed_kp = 0.0;
+        config->pwm.wheel_speed_ki = 0.0;
+        config->pwm.linear_feedback_gain = 30.0;
+        config->pwm.yaw_feedback_gain = 12.0;
         config->pwm.stall_boost_after_cycles = 8;
         config->pwm.stall_target_speed_threshold_mps = 0.045;
-        config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.09);
+        config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.075);
+        if (options.tank_linear_sign != 0) {
+            config->pwm.linear_command_sign = options.tank_linear_sign < 0 ? -1.0 : 1.0;
+        }
+        if (options.tank_yaw_sign != 0) {
+            config->pwm.yaw_command_sign = options.tank_yaw_sign < 0 ? -1.0 : 1.0;
+        }
     }
 
     if (options.encoder_ticks_per_revolution > 0) {

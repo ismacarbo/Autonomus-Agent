@@ -385,6 +385,25 @@ std::pair<double, double> wheel_speeds_from_body(double speed, double yaw_rate, 
     };
 }
 
+std::pair<double, double> command_wheel_speeds_from_body(double speed,
+                                                         double yaw_rate,
+                                                         double half_track,
+                                                         const MotorPwmMapperConfig& pwm_config) {
+    return wheel_speeds_from_body(
+        speed * pwm_config.linear_command_sign,
+        yaw_rate * pwm_config.yaw_command_sign,
+        half_track);
+}
+
+std::pair<double, double> command_pwm_components(double linear_pwm,
+                                                 double yaw_pwm,
+                                                 const MotorPwmMapperConfig& pwm_config) {
+    return {
+        pwm_config.linear_command_sign * linear_pwm - pwm_config.yaw_command_sign * yaw_pwm,
+        pwm_config.linear_command_sign * linear_pwm + pwm_config.yaw_command_sign * yaw_pwm,
+    };
+}
+
 double forward_speed_from_pwm_estimate(const ControllerTelemetry& telemetry, const VehicleGeometry& geometry) {
     const double left_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_l, geometry.left_pwm_scale, geometry);
     const double right_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_r, geometry.right_pwm_scale, geometry);
@@ -5987,9 +6006,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
     const auto [left_wheel_speed, right_wheel_speed] =
         wheel_speeds_from_body(last_command_.target_speed, last_command_.target_yaw_rate, half_track);
+    const auto [command_left_wheel_speed, command_right_wheel_speed] =
+        command_wheel_speeds_from_body(
+            last_command_.target_speed,
+            last_command_.target_yaw_rate,
+            half_track,
+            config_.pwm);
 
-    const int ff_left = wheel_speed_to_pwm(left_wheel_speed, config_.pwm.left_scale);
-    const int ff_right = wheel_speed_to_pwm(right_wheel_speed, config_.pwm.right_scale);
+    const int ff_left = wheel_speed_to_pwm(command_left_wheel_speed, config_.pwm.left_scale);
+    const int ff_right = wheel_speed_to_pwm(command_right_wheel_speed, config_.pwm.right_scale);
     const bool commanding_motion =
         !safety_stop_active_ &&
         (std::abs(last_command_.target_speed) > 1e-4 || std::abs(last_command_.target_yaw_rate) > 1e-4);
@@ -6020,12 +6045,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             -config_.pwm.wheel_speed_integral_limit,
             config_.pwm.wheel_speed_integral_limit);
 
-        const int fb_left = static_cast<int>(std::lround(
+        const double fb_left_logical =
             config_.pwm.wheel_speed_kp * (left_wheel_speed - measured_left_wheel_speed) +
-            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_left_));
-        const int fb_right = static_cast<int>(std::lround(
+            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_left_;
+        const double fb_right_logical =
             config_.pwm.wheel_speed_kp * (right_wheel_speed - measured_right_wheel_speed) +
-            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_right_));
+            config_.pwm.wheel_speed_ki * wheel_speed_error_integral_right_;
+        const double fb_linear = 0.5 * (fb_left_logical + fb_right_logical);
+        const double fb_yaw = 0.5 * (fb_right_logical - fb_left_logical);
+        const auto [fb_left, fb_right] = command_pwm_components(fb_linear, fb_yaw, config_.pwm);
 
         last_command_.pwm_left = static_cast<int>(clamp_value(
             static_cast<double>(ff_left + fb_left),
@@ -6053,13 +6081,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.pwm.linear_feedback_gain * (last_command_.target_speed - measured_speed_for_feedback)));
         const int fb_yaw = static_cast<int>(std::lround(
             config_.pwm.yaw_feedback_gain * (last_command_.target_yaw_rate - measured_yaw_rate_for_feedback)));
+        const auto [fb_left, fb_right] = command_pwm_components(fb_linear, fb_yaw, config_.pwm);
 
         last_command_.pwm_left = static_cast<int>(clamp_value(
-            static_cast<double>(ff_left + fb_linear - fb_yaw),
+            static_cast<double>(ff_left + fb_left),
             -config_.pwm.max_pwm,
             config_.pwm.max_pwm));
         last_command_.pwm_right = static_cast<int>(clamp_value(
-            static_cast<double>(ff_right + fb_linear + fb_yaw),
+            static_cast<double>(ff_right + fb_right),
             -config_.pwm.max_pwm,
             config_.pwm.max_pwm));
     }
