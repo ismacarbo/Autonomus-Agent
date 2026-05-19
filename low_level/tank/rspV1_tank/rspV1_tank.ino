@@ -35,13 +35,22 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 3;
+const uint8_t FW_MINOR = 4;
 const bool BOOT_DIAG_ASCII = true;
 
 const float DEG_TO_RAD_F = 0.017453292519943295f;
 
+// Motor pin polarity for the physical left/right tracks.
+// Direction HIGH matches the working forward() test sketch.
 const int LEFT_SIGN = 1;
 const int RIGHT_SIGN = 1;
+
+// The planner's vehicle frame uses the opposite end of the chassis as the
+// logical front. A 180 deg frame flip maps logical commands as:
+// left_hw = -right_logical, right_hw = -left_logical.
+const bool DRIVE_FRAME_REVERSED = true;
+const int ENC_LEFT_SIGN = 1;
+const int ENC_RIGHT_SIGN = 1;
 const int YAW_RATE_SIGN = 1;
 
 const uint16_t HOST_LINK_TIMEOUT_MS = 1500U;
@@ -351,9 +360,15 @@ bool encoders_ready() {
 
 void read_encoder_snapshot(int32_t* left_ticks, int32_t* right_ticks) {
   noInterrupts();
-  int32_t l = enc_left_ticks;
-  int32_t r = enc_right_ticks;
+  int32_t physical_l = enc_left_signed_ticks * ENC_LEFT_SIGN;
+  int32_t physical_r = enc_right_signed_ticks * ENC_RIGHT_SIGN;
   interrupts();
+  int32_t l = physical_l;
+  int32_t r = physical_r;
+  if (DRIVE_FRAME_REVERSED) {
+    l = -physical_r;
+    r = -physical_l;
+  }
   if (left_ticks != NULL) *left_ticks = l;
   if (right_ticks != NULL) *right_ticks = r;
 }
@@ -373,8 +388,18 @@ int32_t right_ticks_total() {
 uint16_t build_encoder_flags() {
   uint16_t flags = 0U;
   if (encoders_ready()) flags |= ENC_FLAG_LEFT_VALID | ENC_FLAG_RIGHT_VALID;
-  if (current_pwm_l < 0) flags |= ENC_FLAG_LEFT_DIR_NEG;
-  if (current_pwm_r < 0) flags |= ENC_FLAG_RIGHT_DIR_NEG;
+  noInterrupts();
+  int8_t physical_l_dir = enc_left_last_dir * ENC_LEFT_SIGN;
+  int8_t physical_r_dir = enc_right_last_dir * ENC_RIGHT_SIGN;
+  interrupts();
+  int8_t logical_l_dir = physical_l_dir;
+  int8_t logical_r_dir = physical_r_dir;
+  if (DRIVE_FRAME_REVERSED) {
+    logical_l_dir = (int8_t)-physical_r_dir;
+    logical_r_dir = (int8_t)-physical_l_dir;
+  }
+  if (logical_l_dir < 0) flags |= ENC_FLAG_LEFT_DIR_NEG;
+  if (logical_r_dir < 0) flags |= ENC_FLAG_RIGHT_DIR_NEG;
   return flags;
 }
 
@@ -398,8 +423,14 @@ void set_one_motor(uint8_t dir_pin, uint8_t pwm_pin, int16_t pwm, int sign) {
 }
 
 void set_motor_hw(int16_t pwm_l, int16_t pwm_r) {
-  set_one_motor(PIN_LEFT_DIR, PIN_LEFT_PWM, pwm_l, LEFT_SIGN);
-  set_one_motor(PIN_RIGHT_DIR, PIN_RIGHT_PWM, pwm_r, RIGHT_SIGN);
+  int16_t hw_l = pwm_l;
+  int16_t hw_r = pwm_r;
+  if (DRIVE_FRAME_REVERSED) {
+    hw_l = (int16_t)-pwm_r;
+    hw_r = (int16_t)-pwm_l;
+  }
+  set_one_motor(PIN_LEFT_DIR, PIN_LEFT_PWM, hw_l, LEFT_SIGN);
+  set_one_motor(PIN_RIGHT_DIR, PIN_RIGHT_PWM, hw_r, RIGHT_SIGN);
 }
 
 void hard_stop_motors() {

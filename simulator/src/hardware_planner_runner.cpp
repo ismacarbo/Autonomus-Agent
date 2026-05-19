@@ -362,10 +362,8 @@ bool encoder_flag_set(std::uint16_t flags, EncoderFlag flag) {
     return (flags & static_cast<std::uint16_t>(flag)) != 0U;
 }
 
-double signed_encoder_distance(std::int32_t delta_ticks, bool dir_negative, double ticks_to_distance) {
-    const double tick_magnitude = static_cast<double>(std::abs(delta_ticks));
-    const double signed_tick_magnitude = dir_negative ? -tick_magnitude : tick_magnitude;
-    return signed_tick_magnitude * ticks_to_distance;
+double signed_encoder_distance(std::int32_t delta_ticks, double ticks_to_distance) {
+    return static_cast<double>(delta_ticks) * ticks_to_distance;
 }
 
 double wheel_speed_from_pwm_estimate(int pwm, double scale, const VehicleGeometry& geometry) {
@@ -2015,14 +2013,8 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
             static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-        const double left_dist = signed_encoder_distance(
-            left_delta_ticks,
-            encoder_flag_set(telemetry.enc_flags, EncoderFlag::LeftDirNeg),
-            ticks_to_distance);
-        const double right_dist = signed_encoder_distance(
-            right_delta_ticks,
-            encoder_flag_set(telemetry.enc_flags, EncoderFlag::RightDirNeg),
-            ticks_to_distance);
+        const double left_dist = signed_encoder_distance(left_delta_ticks, ticks_to_distance);
+        const double right_dist = signed_encoder_distance(right_delta_ticks, ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
         measured_left_wheel_speed_ = encoder_dt > 1e-6 ? left_dist / encoder_dt : 0.0;
@@ -2105,11 +2097,6 @@ bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerT
         return false;
     }
 
-    if (left_delta_ticks < 0 || right_delta_ticks < 0) {
-        encoder_ready_streak_ = 0;
-        return false;
-    }
-
     const double ticks_to_distance =
         (2.0 * kPi * geometry_.wheel_radius) /
         static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
@@ -2152,14 +2139,8 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         const double ticks_to_distance =
             (2.0 * kPi * geometry_.wheel_radius) /
             static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-        const double left_dist = signed_encoder_distance(
-            left_delta_ticks,
-            encoder_flag_set(telemetry.enc_flags, EncoderFlag::LeftDirNeg),
-            ticks_to_distance);
-        const double right_dist = signed_encoder_distance(
-            right_delta_ticks,
-            encoder_flag_set(telemetry.enc_flags, EncoderFlag::RightDirNeg),
-            ticks_to_distance);
+        const double left_dist = signed_encoder_distance(left_delta_ticks, ticks_to_distance);
+        const double right_dist = signed_encoder_distance(right_delta_ticks, ticks_to_distance);
         const double odom_delta_yaw =
             std::abs(geometry_.track) > 1e-6 ? (right_dist - left_dist) / geometry_.track : 0.0;
         measured_left_wheel_speed_ = effective_dt > 1e-6 ? left_dist / effective_dt : 0.0;
