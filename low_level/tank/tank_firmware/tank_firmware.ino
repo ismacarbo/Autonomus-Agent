@@ -35,21 +35,23 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 5;
+const uint8_t FW_MINOR = 6;
 const bool BOOT_DIAG_ASCII = true;
 
 const float DEG_TO_RAD_F = 0.017453292519943295f;
 
 // Motor pin polarity for the physical left/right tracks.
-// Direction HIGH matches the working forward() test sketch.
-const int LEFT_SIGN = 1;
-const int RIGHT_SIGN = 1;
+// On this tank the planner's logical forward direction corresponds to the
+// driver's LOW direction, so keep host-side positive PWM as "forward" and flip
+// the physical motor pins here.
+const int LEFT_SIGN = -1;
+const int RIGHT_SIGN = -1;
 
 // Keep firmware commands transparent. The runner owns planner-frame motor
 // transforms so we can tune them without reflashing the controller.
 const bool DRIVE_FRAME_REVERSED = false;
 const int ENC_LEFT_SIGN = -1;
-const int ENC_RIGHT_SIGN = -1;
+const int ENC_RIGHT_SIGN = 1;
 const int YAW_RATE_SIGN = 1;
 
 const uint16_t HOST_LINK_TIMEOUT_MS = 1500U;

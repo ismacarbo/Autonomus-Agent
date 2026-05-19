@@ -101,6 +101,10 @@ struct AppOptions {
     double cruise_speed_limit_mps = 0.0;
     int tank_linear_sign = 0;
     int tank_yaw_sign = 0;
+    int tank_min_pwm = 0;
+    int tank_start_pwm = 0;
+    double tank_left_scale = 0.0;
+    double tank_right_scale = 0.0;
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
@@ -311,6 +315,10 @@ void print_usage(const char* argv0) {
         << "  --cruise-speed MPS        override planner cruise speed limit\n"
         << "  --tank-linear-sign +/-1   override tank command linear polarity\n"
         << "  --tank-yaw-sign +/-1      override tank command yaw polarity\n"
+        << "  --tank-min-pwm N          override tank minimum moving PWM\n"
+        << "  --tank-start-pwm N        override tank stall/start boost PWM\n"
+        << "  --tank-left-scale X       override tank left PWM scale\n"
+        << "  --tank-right-scale X      override tank right PWM scale\n"
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
         << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n"
         << "  --enable-planner-safety   enable planner-side LiDAR safety stop logic\n"
@@ -406,6 +414,22 @@ AppOptions parse_args(int argc, char** argv) {
         } else if (arg.rfind("--tank-yaw-sign=", 0) == 0) {
             options.tank_yaw_sign =
                 std::atoi(arg.substr(std::strlen("--tank-yaw-sign=")).c_str()) < 0 ? -1 : 1;
+        } else if (arg == "--tank-min-pwm" && i + 1 < argc) {
+            options.tank_min_pwm = std::atoi(argv[++i]);
+        } else if (arg.rfind("--tank-min-pwm=", 0) == 0) {
+            options.tank_min_pwm = std::atoi(arg.substr(std::strlen("--tank-min-pwm=")).c_str());
+        } else if (arg == "--tank-start-pwm" && i + 1 < argc) {
+            options.tank_start_pwm = std::atoi(argv[++i]);
+        } else if (arg.rfind("--tank-start-pwm=", 0) == 0) {
+            options.tank_start_pwm = std::atoi(arg.substr(std::strlen("--tank-start-pwm=")).c_str());
+        } else if (arg == "--tank-left-scale" && i + 1 < argc) {
+            options.tank_left_scale = std::atof(argv[++i]);
+        } else if (arg.rfind("--tank-left-scale=", 0) == 0) {
+            options.tank_left_scale = std::atof(arg.substr(std::strlen("--tank-left-scale=")).c_str());
+        } else if (arg == "--tank-right-scale" && i + 1 < argc) {
+            options.tank_right_scale = std::atof(argv[++i]);
+        } else if (arg.rfind("--tank-right-scale=", 0) == 0) {
+            options.tank_right_scale = std::atof(arg.substr(std::strlen("--tank-right-scale=")).c_str());
         } else if (arg == "--no-auto-mode") {
             options.auto_mode = false;
         } else if (arg == "--no-gyro-zero") {
@@ -448,9 +472,10 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
         config->drive.max_linear_speed = 0.22;
         config->drive.max_yaw_rate = 0.80;
         config->drive.max_curvature = 2.80;
-        config->pwm.start_motion_pwm = 82;
-        config->pwm.min_effective_pwm = 38;
-        config->pwm.linear_command_sign = -1.0;
+        config->pwm.start_motion_pwm = 132;
+        config->pwm.min_effective_pwm = 92;
+        config->pwm.wheel_speed_to_pwm_bias = 18.0;
+        config->pwm.linear_command_sign = 1.0;
         config->pwm.yaw_command_sign = -1.0;
         config->pwm.wheel_speed_kp = 0.0;
         config->pwm.wheel_speed_ki = 0.0;
@@ -464,6 +489,20 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
         }
         if (options.tank_yaw_sign != 0) {
             config->pwm.yaw_command_sign = options.tank_yaw_sign < 0 ? -1.0 : 1.0;
+        }
+        if (options.tank_min_pwm > 0) {
+            config->pwm.min_effective_pwm = static_cast<int>(
+                clamp_value(static_cast<double>(options.tank_min_pwm), 1.0, 255.0));
+        }
+        if (options.tank_start_pwm > 0) {
+            config->pwm.start_motion_pwm = static_cast<int>(
+                clamp_value(static_cast<double>(options.tank_start_pwm), 1.0, 255.0));
+        }
+        if (options.tank_left_scale > 0.0) {
+            config->pwm.left_scale = clamp_value(options.tank_left_scale, 0.25, 4.0);
+        }
+        if (options.tank_right_scale > 0.0) {
+            config->pwm.right_scale = clamp_value(options.tank_right_scale, 0.25, 4.0);
         }
     }
 
