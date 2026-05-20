@@ -501,6 +501,30 @@ void apply_start_motion_boost(int min_pwm, int* pwm_left, int* pwm_right) {
     }
 }
 
+void enforce_forward_tracked_turn_authority(double target_yaw_rate,
+                                            int outer_min_pwm,
+                                            int inner_max_pwm,
+                                            int* pwm_left,
+                                            int* pwm_right) {
+    if (pwm_left == nullptr || pwm_right == nullptr || outer_min_pwm <= 0) {
+        return;
+    }
+    constexpr double kTurnYawRateThreshold = 0.018;
+    if (std::abs(target_yaw_rate) < kTurnYawRateThreshold) {
+        return;
+    }
+
+    const int outer_floor = std::clamp(outer_min_pwm, 0, 255);
+    const int inner_cap = std::clamp(inner_max_pwm, 0, std::max(0, outer_floor - 1));
+    if (target_yaw_rate > 0.0) {
+        *pwm_right = std::max(*pwm_right, outer_floor);
+        *pwm_left = std::min(std::max(*pwm_left, 0), inner_cap);
+    } else {
+        *pwm_left = std::max(*pwm_left, outer_floor);
+        *pwm_right = std::min(std::max(*pwm_right, 0), inner_cap);
+    }
+}
+
 VehicleGeometry make_vehicle_geometry(const HardwarePlannerConfig& config) {
     VehicleGeometry geometry{};
     geometry.wheelbase = config.drive.wheelbase;
@@ -6010,7 +6034,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
         const double forward_yaw_limit =
-            0.82 * last_command_.target_speed / std::max(half_track, 1e-3);
+            0.98 * last_command_.target_speed / std::max(half_track, 1e-3);
         last_command_.target_yaw_rate = clamp_value(
             last_command_.target_yaw_rate,
             -forward_yaw_limit,
@@ -6136,6 +6160,21 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
         last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
+        const int turn_outer_pwm =
+            std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm);
+        const bool hard_turn_needed =
+            robot_is_still ||
+            no_motion_command_cycles_ >= stall_boost_cycles_required ||
+            tracker_heading_error_deg_ > 35.0;
+        const int turn_inner_cap = hard_turn_needed
+            ? 0
+            : std::max(0, turn_outer_pwm - 70);
+        enforce_forward_tracked_turn_authority(
+            last_command_.target_yaw_rate,
+            hard_turn_needed ? std::min(255, turn_outer_pwm + 8) : turn_outer_pwm,
+            turn_inner_cap,
+            &last_command_.pwm_left,
+            &last_command_.pwm_right);
     }
 
     const int pwm_slew_limit =
