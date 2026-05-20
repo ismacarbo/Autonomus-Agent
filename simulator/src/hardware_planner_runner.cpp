@@ -6101,7 +6101,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         std::max(std::abs(measured_left_wheel_speed), std::abs(measured_right_wheel_speed));
     const bool demanding_motion =
         !safety_stop_active_ &&
-        max_target_wheel_speed >= std::max(config_.pwm.stall_target_speed_threshold_mps * 0.45, 0.03);
+        (max_target_wheel_speed >= std::max(config_.pwm.stall_target_speed_threshold_mps * 0.45, 0.03) ||
+         (forward_only_tracked_tracks && last_command_.target_speed > 1e-4));
     const bool robot_is_still =
         max_measured_wheel_speed <= config_.pwm.stall_speed_threshold_mps;
     if (demanding_motion && robot_is_still) {
@@ -6113,7 +6114,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const int stall_boost_cycles_required =
         use_dynamic_gap_gates_ ? std::max(1, config_.pwm.stall_boost_after_cycles - 1)
                                : config_.pwm.stall_boost_after_cycles;
-    if (no_motion_command_cycles_ >= stall_boost_cycles_required) {
+    if (no_motion_command_cycles_ >= stall_boost_cycles_required ||
+        (forward_only_tracked_tracks && commanding_motion && robot_is_still)) {
         apply_start_motion_boost(
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
             &last_command_.pwm_left,
