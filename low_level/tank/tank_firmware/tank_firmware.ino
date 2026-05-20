@@ -35,17 +35,22 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 7;
+const uint8_t FW_MINOR = 10;
 const bool BOOT_DIAG_ASCII = true;
 
 const float DEG_TO_RAD_F = 0.017453292519943295f;
 
-// This tank wiring needs the opposite TB6612 direction level from the old
-// forward() smoke sketch, so translate logical positive PWM to physical forward
-// here and keep the host/planner frame unchanged.
+// The low-level smoke test confirmed DIR LOW is physical forward for this tank.
+// Keep the RSP frame logical: positive PWM means robot-forward.
 const int LEFT_SIGN = -1;
 const int RIGHT_SIGN = -1;
 const int YAW_RATE_SIGN = 1;
+
+// Raw encoder phase from the low-level smoke test:
+// physical forward makes left signed ticks decrease and right signed ticks increase.
+// Publish encoder counts in the same logical frame as the planner.
+const int ENC_LEFT_FORWARD_SIGN = -1;
+const int ENC_RIGHT_FORWARD_SIGN = 1;
 
 const uint16_t HOST_LINK_TIMEOUT_MS = 1500U;
 const uint16_t DEFAULT_CMD_TIMEOUT_MS = 450U;
@@ -354,9 +359,8 @@ bool encoders_ready() {
 
 void read_encoder_snapshot(int32_t* left_ticks, int32_t* right_ticks) {
   noInterrupts();
-  // Publish monotonic pulse counts; direction lives in ENC_FLAG_*_DIR_NEG.
-  int32_t l = enc_left_ticks;
-  int32_t r = enc_right_ticks;
+  int32_t l = (int32_t)ENC_LEFT_FORWARD_SIGN * enc_left_signed_ticks;
+  int32_t r = (int32_t)ENC_RIGHT_FORWARD_SIGN * enc_right_signed_ticks;
   interrupts();
   if (left_ticks != NULL) *left_ticks = l;
   if (right_ticks != NULL) *right_ticks = r;
@@ -377,9 +381,7 @@ int32_t right_ticks_total() {
 uint16_t build_encoder_flags() {
   uint16_t flags = 0U;
   if (encoders_ready()) flags |= ENC_FLAG_LEFT_VALID | ENC_FLAG_RIGHT_VALID;
-  // Direction is reported in the same logical frame as the PWM command.
-  if (current_pwm_l < 0) flags |= ENC_FLAG_LEFT_DIR_NEG;
-  if (current_pwm_r < 0) flags |= ENC_FLAG_RIGHT_DIR_NEG;
+  // Signed logical tick counters carry direction; do not infer it from PWM.
   return flags;
 }
 

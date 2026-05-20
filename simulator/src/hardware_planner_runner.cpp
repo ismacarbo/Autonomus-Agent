@@ -5205,6 +5205,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
         mixed_gate_active;
     const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+    const bool forward_only_tracked_tracks =
+        tracked_vehicle && world_has_structured_reference(world_) && !mixed_gate_active;
     bool allow_unlocked_recovery_motion = false;
 
     auto apply_strict_scan_escape = [&]() {
@@ -6006,6 +6008,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 forward_yaw_limit);
         }
     }
+    if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
+        const double forward_yaw_limit =
+            0.82 * last_command_.target_speed / std::max(half_track, 1e-3);
+        last_command_.target_yaw_rate = clamp_value(
+            last_command_.target_yaw_rate,
+            -forward_yaw_limit,
+            forward_yaw_limit);
+    }
 
     const auto [left_wheel_speed, right_wheel_speed] =
         wheel_speeds_from_body(last_command_.target_speed, last_command_.target_yaw_rate, half_track);
@@ -6121,6 +6131,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.pwm.min_effective_pwm,
             config_.pwm.max_pwm);
     }
+    if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
+        last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
+        last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
+    }
 
     const int pwm_slew_limit =
         commanding_motion
@@ -6128,6 +6142,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             : 110;
     last_command_.pwm_left = slew_limit_pwm(previous_pwm_left, last_command_.pwm_left, pwm_slew_limit);
     last_command_.pwm_right = slew_limit_pwm(previous_pwm_right, last_command_.pwm_right, pwm_slew_limit);
+    if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
+        last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
+        last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
+    }
     if (!commanding_motion && std::abs(last_command_.pwm_left) < 4) {
         last_command_.pwm_left = 0;
     }
