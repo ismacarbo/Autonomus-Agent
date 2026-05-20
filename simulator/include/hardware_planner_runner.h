@@ -369,9 +369,13 @@ class HardwarePlannerRunner {
                                             std::int32_t left_delta_ticks,
                                             std::int32_t right_delta_ticks,
                                             double encoder_dt);
+    bool controller_encoder_delta_plausible(std::int32_t left_delta_ticks,
+                                            std::int32_t right_delta_ticks,
+                                            double encoder_dt) const;
     void update_controller_encoder_snapshot(const ControllerTelemetry& telemetry,
                                            std::int32_t* left_delta_ticks,
                                            std::int32_t* right_delta_ticks);
+    bool rearm_controller_if_needed(const ControllerTelemetry& telemetry);
     double stabilize_structured_track_s(double candidate_s,
                                         double max_forward_step,
                                         bool closed_loop,
@@ -511,6 +515,7 @@ class HardwarePlannerRunner {
     int encoder_ready_streak_ = 0;
     bool measured_wheel_speeds_valid_ = false;
     int no_motion_command_cycles_ = 0;
+    double last_controller_rearm_time_s_ = -1.0;
     bool use_dynamic_gap_gates_ = false;
     bool gap_recovery_turn_active_ = false;
     int locked_gap_invalid_streak_ = 0;

@@ -211,6 +211,12 @@ double monotonic_seconds() {
     return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
 }
 
+int desired_controller_cmd_timeout_ms(double nominal_dt) {
+    return std::max(
+        900,
+        static_cast<int>(std::lround(std::max(nominal_dt, 0.05) * 10.0 * 1000.0)));
+}
+
 double elapsed_ms(std::chrono::steady_clock::time_point start,
                   std::chrono::steady_clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
@@ -1189,9 +1195,7 @@ void HardwarePlannerRunner::connect() {
             }
         }
 
-        const int desired_cmd_timeout_ms = std::max(
-            650,
-            static_cast<int>(std::lround(std::max(config_.nominal_dt, 0.05) * 8.0 * 1000.0)));
+        const int desired_cmd_timeout_ms = desired_controller_cmd_timeout_ms(config_.nominal_dt);
         try {
             bridge_.config_set(
                 static_cast<std::uint8_t>(ConfigParamId::CmdTimeoutMs),
@@ -1374,6 +1378,7 @@ void HardwarePlannerRunner::reset() {
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
     no_motion_command_cycles_ = 0;
+    last_controller_rearm_time_s_ = -1.0;
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
     gap_recovery_turn_active_ = false;
     stall_boost_active_ = false;
@@ -2107,10 +2112,20 @@ void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerT
         encoder_ticks_initialized_ = true;
     }
 
-    const std::int32_t left_delta = telemetry.ticks_left - last_left_encoder_ticks_;
-    const std::int32_t right_delta = telemetry.ticks_right - last_right_encoder_ticks_;
+    std::int32_t left_delta = telemetry.ticks_left - last_left_encoder_ticks_;
+    std::int32_t right_delta = telemetry.ticks_right - last_right_encoder_ticks_;
     last_left_encoder_ticks_ = telemetry.ticks_left;
     last_right_encoder_ticks_ = telemetry.ticks_right;
+
+    const double encoder_dt =
+        telemetry.enc_dt_ms > 0U
+            ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
+            : std::max(config_.nominal_dt, 0.01);
+    if (!controller_encoder_delta_plausible(left_delta, right_delta, encoder_dt)) {
+        left_delta = 0;
+        right_delta = 0;
+        encoder_ready_streak_ = 0;
+    }
 
     latest_controller_left_encoder_ticks_ = telemetry.ticks_left;
     latest_controller_right_encoder_ticks_ = telemetry.ticks_right;
@@ -2124,6 +2139,30 @@ void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerT
     if (right_delta_ticks != nullptr) {
         *right_delta_ticks = right_delta;
     }
+}
+
+bool HardwarePlannerRunner::controller_encoder_delta_plausible(std::int32_t left_delta_ticks,
+                                                               std::int32_t right_delta_ticks,
+                                                               double encoder_dt) const {
+    if (encoder_dt <= 1e-6) {
+        return false;
+    }
+
+    const double ticks_to_distance =
+        (2.0 * kPi * geometry_.wheel_radius) /
+        static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
+    if (!(ticks_to_distance > 1e-9)) {
+        return false;
+    }
+
+    const double max_wheel_speed =
+        geometry_.max_linear_speed + 0.5 * std::abs(geometry_.track) * geometry_.max_yaw_rate;
+    const double allowed_wheel_speed =
+        std::max(max_wheel_speed * 2.5, max_wheel_speed + 0.20);
+    const double allowed_ticks =
+        std::max(120.0, allowed_wheel_speed * encoder_dt / ticks_to_distance);
+    return std::abs(static_cast<double>(left_delta_ticks)) <= allowed_ticks &&
+           std::abs(static_cast<double>(right_delta_ticks)) <= allowed_ticks;
 }
 
 bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerTelemetry& telemetry,
@@ -2155,6 +2194,69 @@ bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerT
 
     ++encoder_ready_streak_;
     return encoder_ready_streak_ >= kStableEncoderReadyFrames;
+}
+
+bool HardwarePlannerRunner::rearm_controller_if_needed(const ControllerTelemetry& telemetry) {
+    if (!config_.auto_set_autonomous_mode ||
+        !connected_ ||
+        !bridge_.controller_connected() ||
+        !telemetry.have_motor) {
+        return false;
+    }
+
+    const bool command_active =
+        std::abs(last_command_.pwm_left) >= 4 ||
+        std::abs(last_command_.pwm_right) >= 4 ||
+        std::abs(last_command_.target_speed) > 1e-4 ||
+        std::abs(last_command_.target_yaw_rate) > 1e-4;
+    if (!command_active) {
+        return false;
+    }
+
+    const bool fault_latched =
+        (telemetry.status_flags & static_cast<std::uint16_t>(StatusFlag::FaultLatched)) != 0U ||
+        (telemetry.safety_flags & static_cast<std::uint16_t>(SafetyFlag::EmergencyStop)) != 0U;
+    if (fault_latched) {
+        return false;
+    }
+
+    const bool motor_enabled =
+        (telemetry.motor_flags & static_cast<std::uint16_t>(MotorFlag::Enabled)) != 0U;
+    const bool command_timeout =
+        (telemetry.motor_flags & static_cast<std::uint16_t>(MotorFlag::CmdTimeout)) != 0U ||
+        (telemetry.safety_flags & static_cast<std::uint16_t>(SafetyFlag::CmdTimeout)) != 0U;
+    if (motor_enabled && !command_timeout) {
+        return false;
+    }
+
+    const double now_s = monotonic_seconds();
+    if (last_controller_rearm_time_s_ > 0.0 &&
+        (now_s - last_controller_rearm_time_s_) < 0.35) {
+        return false;
+    }
+    last_controller_rearm_time_s_ = now_s;
+
+    try {
+        bridge_.set_mode(ControllerMode::Autonomous, 0.25);
+        try {
+            bridge_.config_set(
+                static_cast<std::uint8_t>(ConfigParamId::CmdTimeoutMs),
+                ConfigValueType::Uint16,
+                desired_controller_cmd_timeout_ms(config_.nominal_dt),
+                0.20);
+        } catch (const std::exception&) {
+        }
+        bridge_.send_pwm(
+            static_cast<std::int16_t>(last_command_.pwm_left),
+            static_cast<std::int16_t>(last_command_.pwm_right),
+            true,
+            MotorControlMode::SafeDirectPwm);
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "hardware_runner_warning=controller autonomous rearm failed: "
+                  << e.what() << '\n';
+        return false;
+    }
 }
 
 void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
@@ -6527,6 +6629,10 @@ void HardwarePlannerRunner::step() {
     }
 
     if (bridge_.controller_connected()) {
+        const RealRobotObservation& previous_observation = bridge_.observation();
+        if (previous_observation.have_controller_telemetry) {
+            rearm_controller_if_needed(previous_observation.controller);
+        }
         bridge_.send_pwm(
             static_cast<std::int16_t>(last_command_.pwm_left),
             static_cast<std::int16_t>(last_command_.pwm_right),
@@ -6546,6 +6652,7 @@ void HardwarePlannerRunner::step() {
     }
 
     const RealRobotObservation& observation = bridge_.observation();
+    rearm_controller_if_needed(observation.controller);
     const double now = observation.host_timestamp_s;
     const double dt = last_observation_time_ > 0.0
                           ? clamp_value(now - last_observation_time_, 0.02, 0.25)

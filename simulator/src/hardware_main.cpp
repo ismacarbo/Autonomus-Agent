@@ -416,8 +416,8 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
         config->drive.max_linear_speed = 0.22;
         config->drive.max_yaw_rate = 1.20;
         config->drive.max_curvature = 3.60;
-        config->pwm.start_motion_pwm = 120;
-        config->pwm.min_effective_pwm = 38;
+        config->pwm.start_motion_pwm = 138;
+        config->pwm.min_effective_pwm = 48;
         config->pwm.linear_feedback_gain = 42.0;
         config->pwm.yaw_feedback_gain = 18.0;
         config->pwm.stall_boost_after_cycles = 2;
