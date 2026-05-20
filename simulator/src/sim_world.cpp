@@ -289,6 +289,24 @@ std::vector<Vec2> make_hardware_road_track() {
     return resample_closed_polyline(track, 0.015);
 }
 
+std::vector<Vec2> make_tank_practice_circuit() {
+    std::vector<Vec2> track{
+        {0.050, 0.145},
+        {0.125, 0.145},
+        {0.205, 0.148},
+        {0.285, 0.164},
+        {0.346, 0.216},
+        {0.362, 0.282},
+        {0.326, 0.340},
+        {0.245, 0.360},
+        {0.160, 0.330},
+        {0.090, 0.270},
+        {0.052, 0.205},
+    };
+    track = close_polyline_loop(std::move(track), 0.02);
+    return resample_closed_polyline(track, 0.012);
+}
+
 std::vector<Vec2> make_hardware_figure_eight_track() {
     constexpr int kSamples = 96;
     constexpr double kStartPhase = 0.5 * kPi;
@@ -720,6 +738,8 @@ const char* structured_map_preset_name(StructuredMapPreset preset) {
             return "Figure Eight";
         case StructuredMapPreset::IdealCircle:
             return "Ideal Validation Road";
+        case StructuredMapPreset::TankCircuit:
+            return "Tank Circuit";
         default:
             return "Unknown";
     }
@@ -930,6 +950,14 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.bounds_ = {0.0, 0.0, 0.30, 0.30};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_figure_eight_track();
+            world.start_ = world.road_centerline_.front();
+            world.goal_ = world.start_;
+            world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+            break;
+        case StructuredMapPreset::TankCircuit:
+            world.bounds_ = {0.0, 0.0, 0.40, 0.40};
+            world.obstacles_.clear();
+            world.road_centerline_ = make_tank_practice_circuit();
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);

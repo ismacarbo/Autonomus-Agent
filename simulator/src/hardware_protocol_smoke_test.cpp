@@ -101,6 +101,8 @@ const char* structured_map_cli_name(StructuredMapPreset preset) {
             return "hardware_track";
         case StructuredMapPreset::FigureEight:
             return "figure_eight";
+        case StructuredMapPreset::TankCircuit:
+            return "tank_circuit";
         case StructuredMapPreset::Custom:
             return "custom";
         case StructuredMapPreset::ValidationRoad:
@@ -145,6 +147,9 @@ StructuredMapPreset parse_structured_preset(const std::string& value) {
     }
     if (value == "figure_eight" || value == "figure8" || value == "eight") {
         return StructuredMapPreset::FigureEight;
+    }
+    if (value == "tank_circuit" || value == "circuit" || value == "practice_circuit") {
+        return StructuredMapPreset::TankCircuit;
     }
     if (value == "custom") {
         return StructuredMapPreset::Custom;
@@ -1191,7 +1196,7 @@ void print_usage(const char* argv0) {
         << "  --stream-every N          send one live frame every N cycles (default 1)\n"
         << "  --stream-world-size M     default 8.0\n"
         << "  --scenario MODE           structured | unstructured\n"
-        << "  --structured-map NAME     validation | circle | zigzag | hardware_track | figure_eight\n"
+        << "  --structured-map NAME     validation | circle | zigzag | hardware_track | figure_eight | tank_circuit\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
         << "  --world-file PATH         load a custom exported `.thmap` world file\n"
         << "  --infinite                keep the SLAM session online and loop the motion script forever\n"

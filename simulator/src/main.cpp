@@ -83,10 +83,10 @@ enum WorkspaceView {
     kWorkspaceViewExport = 4,
 };
 
-constexpr double kHardwareStructuredMaxSpanM = 0.30;
+constexpr double kHardwareStructuredMaxSpanM = 0.40;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.70f;
-constexpr float kHardwareTrackMaxScale = 1.00f;
+constexpr float kHardwareTrackMaxScale = 1.20f;
 
 enum class MapEditorHandleType {
     None = 0,
@@ -2446,6 +2446,8 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::HardwareTrack;
             } else if (value == "figure_eight" || value == "figure8" || value == "eight") {
                 options.structured_preset = StructuredMapPreset::FigureEight;
+            } else if (value == "tank_circuit" || value == "circuit" || value == "practice_circuit") {
+                options.structured_preset = StructuredMapPreset::TankCircuit;
             } else if (value == "ideal" || value == "perfect" || value == "ideal_circle" ||
                        value == "perfect_circle") {
                 options.structured_preset = StructuredMapPreset::IdealCircle;
@@ -2481,6 +2483,8 @@ AppOptions parse_args(int argc, char** argv) {
                 options.structured_preset = StructuredMapPreset::HardwareTrack;
             } else if (value == "figure_eight" || value == "figure8" || value == "eight") {
                 options.structured_preset = StructuredMapPreset::FigureEight;
+            } else if (value == "tank_circuit" || value == "circuit" || value == "practice_circuit") {
+                options.structured_preset = StructuredMapPreset::TankCircuit;
             } else if (value == "ideal" || value == "perfect" || value == "ideal_circle" ||
                        value == "perfect_circle") {
                 options.structured_preset = StructuredMapPreset::IdealCircle;
@@ -3068,6 +3072,8 @@ const char* structured_map_cli_name(StructuredMapPreset preset) {
             return "hardware_track";
         case StructuredMapPreset::FigureEight:
             return "figure_eight";
+        case StructuredMapPreset::TankCircuit:
+            return "tank_circuit";
         case StructuredMapPreset::Custom:
             return "custom";
         case StructuredMapPreset::ValidationRoad:
@@ -5610,6 +5616,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::FigureEight),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::TankCircuit),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::Custom),
             };
             int selection = 0;
@@ -5629,8 +5636,11 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 case StructuredMapPreset::FigureEight:
                     selection = 4;
                     break;
-                case StructuredMapPreset::Custom:
+                case StructuredMapPreset::TankCircuit:
                     selection = 5;
+                    break;
+                case StructuredMapPreset::Custom:
+                    selection = 6;
                     break;
                 default:
                     selection = 0;
@@ -5655,6 +5665,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                         next_preset = StructuredMapPreset::FigureEight;
                         break;
                     case 5:
+                        next_preset = StructuredMapPreset::TankCircuit;
+                        break;
+                    case 6:
                         next_preset = StructuredMapPreset::Custom;
                         break;
                     default:
@@ -6424,6 +6437,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::ZigZag),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::HardwareTrack),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::FigureEight),
+                thesis_sim::structured_map_preset_name(StructuredMapPreset::TankCircuit),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::IdealCircle),
             };
             StructuredMapPreset previous_structured_preset =
@@ -6445,8 +6459,11 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 case StructuredMapPreset::FigureEight:
                     structured_selection = 4;
                     break;
-                case StructuredMapPreset::IdealCircle:
+                case StructuredMapPreset::TankCircuit:
                     structured_selection = 5;
+                    break;
+                case StructuredMapPreset::IdealCircle:
+                    structured_selection = 6;
                     break;
                 case StructuredMapPreset::Custom:
                 default:
@@ -6469,6 +6486,9 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                         next_structured_preset = StructuredMapPreset::FigureEight;
                         break;
                     case 5:
+                        next_structured_preset = StructuredMapPreset::TankCircuit;
+                        break;
+                    case 6:
                         next_structured_preset = StructuredMapPreset::IdealCircle;
                         break;
                     case 0:

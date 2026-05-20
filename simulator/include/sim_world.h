@@ -43,6 +43,7 @@ enum class StructuredMapPreset {
     HardwareTrack = 4,
     FigureEight = 5,
     IdealCircle = 6,
+    TankCircuit = 7,
 };
 
 const char* structured_map_preset_name(StructuredMapPreset preset);
