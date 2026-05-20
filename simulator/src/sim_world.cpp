@@ -233,13 +233,12 @@ std::vector<Vec2> make_zigzag_road() {
 }
 
 std::vector<Vec2> make_validation_loop() {
-    constexpr int kSamples = 28;
-    // Keep the same oval shape as the original 40 cm validation loop, but
-    // shrink it uniformly to a 50%-scale indoor loop so hardware captures
-    // can run in tighter rooms without manual repositioning.
-    const Vec2 center{0.15, 0.15};
-    const double radius_x = 0.0650;  // 0.13 * 0.50
-    const double radius_y = 0.0550;  // 0.11 * 0.50
+    constexpr int kSamples = 32;
+    // Tank validation uses a larger indoor oval so the tracked footprint is
+    // small relative to the road and the follower is not forced into pivots.
+    const Vec2 center{0.25, 0.25};
+    const double radius_x = 0.145;
+    const double radius_y = 0.120;
     std::vector<Vec2> loop;
     loop.reserve(kSamples);
     for (int i = 0; i < kSamples; ++i) {
@@ -249,8 +248,8 @@ std::vector<Vec2> make_validation_loop() {
             center.y + radius_y * std::sin(theta),
         });
     }
-    loop = close_polyline_loop(std::move(loop), 0.015);
-    return resample_closed_polyline(loop, 0.010);
+    loop = close_polyline_loop(std::move(loop), 0.02);
+    return resample_closed_polyline(loop, 0.012);
 }
 
 std::vector<Vec2> make_indoor_circle_loop() {
@@ -310,9 +309,9 @@ std::vector<Vec2> make_tank_practice_circuit() {
 std::vector<Vec2> make_hardware_figure_eight_track() {
     constexpr int kSamples = 96;
     constexpr double kStartPhase = 0.5 * kPi;
-    const Vec2 center{0.150, 0.150};
-    const double radius_x = 0.140;
-    const double radius_y = 0.085;
+    const Vec2 center{0.250, 0.250};
+    const double radius_x = 0.200;
+    const double radius_y = 0.130;
 
     std::vector<Vec2> track;
     track.reserve(kSamples);
@@ -329,8 +328,8 @@ std::vector<Vec2> make_hardware_figure_eight_track() {
         });
     }
 
-    track = close_polyline_loop(std::move(track), 0.01);
-    return resample_closed_polyline(track, 0.008);
+    track = close_polyline_loop(std::move(track), 0.02);
+    return resample_closed_polyline(track, 0.012);
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
@@ -914,7 +913,7 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
         case StructuredMapPreset::ValidationRoad:
         case StructuredMapPreset::Custom:
         case StructuredMapPreset::IdealCircle:
-            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
+            world.bounds_ = {0.0, 0.0, 0.50, 0.50};
             world.road_centerline_ = close_polyline_loop(make_validation_loop(), 0.45);
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
@@ -945,9 +944,9 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
             break;
         case StructuredMapPreset::FigureEight:
-            // Stress test for structured tracking: two small lobes in a figure
-            // eight, still bounded by the same 30 cm indoor workspace.
-            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
+            // Stress test for structured tracking: two lobes in a figure eight,
+            // scaled for the tracked robot's wider footprint.
+            world.bounds_ = {0.0, 0.0, 0.50, 0.50};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_figure_eight_track();
             world.start_ = world.road_centerline_.front();

@@ -2387,19 +2387,38 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
     double progress_delta = 0.0;
     const double constrained_s =
         stabilize_structured_track_s(projected_s, max_forward_step, closed_structured_loop, &progress_delta);
+    const bool tracked_structured_loop =
+        config_.vehicle_model == VehicleModelKind::TrackedVehicle && closed_structured_loop;
+    const double odom_progress_delta = clamp_value(
+        std::max(odom_speed, 0.0) * effective_dt,
+        0.0,
+        max_forward_step);
+    double fused_progress_delta = progress_delta;
+    double fused_constrained_s = constrained_s;
+    if (tracked_structured_loop && odom_progress_delta > 1e-4) {
+        const double odom_floor_delta = 0.65 * odom_progress_delta;
+        if (fused_progress_delta < odom_floor_delta) {
+            const double previous_s =
+                std::isfinite(structured_last_s_)
+                    ? wrap_arc_length(structured_last_s_, cl_.end_point_s)
+                    : wrap_arc_length(constrained_s, cl_.end_point_s);
+            fused_progress_delta = std::min(odom_floor_delta, max_forward_step);
+            fused_constrained_s = wrap_arc_length(previous_s + fused_progress_delta, cl_.end_point_s);
+        }
+    }
 
     double x_on_path = 0.0;
     double y_on_path = 0.0;
-    cl_.prev_road.eval(constrained_s, x_on_path, y_on_path);
+    cl_.prev_road.eval(fused_constrained_s, x_on_path, y_on_path);
     estimator_.update_lidar_pose({x_on_path, y_on_path}, measured_yaw, false);
     sync_estimate_from_ekf_state();
 
     double constrained_n = 0.0;
-    double confirmed_s = constrained_s;
+    double confirmed_s = fused_constrained_s;
     if (project_curvilinear_state(
             cl_,
             estimate_.position,
-            constrained_s,
+            fused_constrained_s,
             closed_structured_loop,
             prefer_hinted_loop_projection,
             &confirmed_s,
@@ -2410,9 +2429,9 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
     }
     estimate_.localized = true;
 
-    structured_last_s_ = constrained_s;
-    structured_progress_s_ = std::max(0.0, structured_progress_s_ + progress_delta);
-    x0_.x = constrained_s;
+    structured_last_s_ = fused_constrained_s;
+    structured_progress_s_ = std::max(0.0, structured_progress_s_ + fused_progress_delta);
+    x0_.x = fused_constrained_s;
     x0_.b = 0.0;
 }
 
@@ -6022,6 +6041,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.target_curvature,
             geometry_);
         last_command_.target_speed *= speed_scale;
+        if (tracked_vehicle && use_direct_yaw_rate_command && keep_tracking) {
+            const double direct_crawl_floor =
+                tiny_indoor_loop ? 0.012 : (micro_structured_world(world_) ? 0.018 : 0.020);
+            const double direct_crawl_ceiling =
+                tiny_indoor_loop ? 0.022 : (micro_structured_world(world_) ? 0.035 : 0.045);
+            last_command_.target_speed = std::min(
+                std::max(last_command_.target_speed, direct_crawl_floor),
+                direct_crawl_ceiling);
+        }
         if (compact_structured_world(world_) &&
             have_reference_trajectory &&
             keep_tracking &&
@@ -6042,7 +6070,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 last_command_.target_speed =
                     tiny_indoor_loop ? std::min(std::max(last_command_.target_speed, 0.012), 0.018)
                                      : (compact_mixed_loop ? std::min(std::max(last_command_.target_speed, 0.012), 0.020)
-                                                           : 0.0);
+                                                           : (tracked_vehicle && micro_structured_world(world_)
+                                                                  ? std::min(std::max(last_command_.target_speed, 0.018), 0.032)
+                                                                  : 0.0));
             } else if (tracker_heading_error_deg_ > heading_slow_deg ||
                        tracker_cross_track_error_ > cross_slow_m) {
                 const double slow_floor =
@@ -6066,6 +6096,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 tracker_heading_error_deg_ < (compact_mixed_loop ? 50.0 : 42.0) &&
                 tracker_cross_track_error_ < (compact_mixed_loop ? 0.12 : 0.025)) {
                 last_command_.target_speed = std::max(last_command_.target_speed, 0.018);
+            }
+            if (tracked_vehicle &&
+                micro_structured_world(world_) &&
+                tracker_heading_error_deg_ < 140.0 &&
+                tracker_cross_track_error_ < 0.10) {
+                last_command_.target_speed = std::max(last_command_.target_speed, 0.020);
             }
             if (tracker_heading_error_deg_ < heading_floor_deg &&
                 tracker_cross_track_error_ < cross_floor_m) {
@@ -6264,19 +6300,30 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
         const int turn_outer_pwm =
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm);
-        const bool hard_turn_needed =
+        const bool stalled_turn_needed =
             robot_is_still ||
-            no_motion_command_cycles_ >= stall_boost_cycles_required ||
-            tracker_heading_error_deg_ > 35.0;
-        const int turn_inner_cap = hard_turn_needed
+            no_motion_command_cycles_ >= stall_boost_cycles_required;
+        const bool hard_turn_needed =
+            stalled_turn_needed || tracker_heading_error_deg_ > 35.0;
+        const int moving_turn_inner_cap =
+            std::max(config_.pwm.min_effective_pwm, turn_outer_pwm - 70);
+        const int turn_inner_cap = stalled_turn_needed
             ? 0
-            : std::max(0, turn_outer_pwm - 70);
+            : moving_turn_inner_cap;
         enforce_forward_tracked_turn_authority(
             last_command_.target_yaw_rate,
             hard_turn_needed ? std::min(255, turn_outer_pwm + 8) : turn_outer_pwm,
             turn_inner_cap,
             &last_command_.pwm_left,
             &last_command_.pwm_right);
+        if (world_has_structured_reference(world_) &&
+            !mixed_gate_active &&
+            !goal_reached_ &&
+            !safety_stop_active_) {
+            const int crawl_pwm = std::clamp(config_.pwm.min_effective_pwm, 0, config_.pwm.max_pwm);
+            last_command_.pwm_left = std::max(last_command_.pwm_left, crawl_pwm);
+            last_command_.pwm_right = std::max(last_command_.pwm_right, crawl_pwm);
+        }
     }
 
     const int pwm_slew_limit =
