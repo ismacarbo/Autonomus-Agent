@@ -531,30 +531,6 @@ void enforce_forward_tracked_turn_authority(double target_yaw_rate,
     }
 }
 
-void enforce_micro_tracked_pivot_turn_authority(double target_yaw_rate,
-                                                int outer_min_pwm,
-                                                int inner_reverse_pwm,
-                                                int* pwm_left,
-                                                int* pwm_right) {
-    if (pwm_left == nullptr || pwm_right == nullptr || outer_min_pwm <= 0 || inner_reverse_pwm <= 0) {
-        return;
-    }
-    constexpr double kTurnYawRateThreshold = 0.060;
-    if (std::abs(target_yaw_rate) < kTurnYawRateThreshold) {
-        return;
-    }
-
-    const int outer_floor = std::clamp(outer_min_pwm, 0, 255);
-    const int inner_reverse = std::clamp(inner_reverse_pwm, 0, 255);
-    if (target_yaw_rate > 0.0) {
-        *pwm_right = std::max(*pwm_right, outer_floor);
-        *pwm_left = std::min(*pwm_left, -inner_reverse);
-    } else {
-        *pwm_left = std::max(*pwm_left, outer_floor);
-        *pwm_right = std::min(*pwm_right, -inner_reverse);
-    }
-}
-
 VehicleGeometry make_vehicle_geometry(const HardwarePlannerConfig& config) {
     VehicleGeometry geometry{};
     geometry.wheelbase = config.drive.wheelbase;
@@ -865,18 +841,6 @@ bool tiny_indoor_structured_loop(const WorldMap& world) {
            micro_structured_world(world) &&
            (structured_course_span_m(world) <= 0.32 ||
             structured_road_length_m(world) <= 0.95);
-}
-
-bool structured_preset_allows_micro_pivot_assist(StructuredMapPreset preset) {
-    switch (preset) {
-        case StructuredMapPreset::ValidationRoad:
-        case StructuredMapPreset::Custom:
-        case StructuredMapPreset::IdealCircle:
-        case StructuredMapPreset::HardwareTrack:
-            return true;
-        default:
-            return false;
-    }
 }
 
 bool compact_mixed_structured_loop(const WorldMap& world) {
@@ -5388,7 +5352,6 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
     const bool forward_only_tracked_tracks =
         tracked_vehicle && world_has_structured_reference(world_) && !mixed_gate_active;
-    bool allow_reverse_inner_tracked_turn = false;
     bool allow_unlocked_recovery_motion = false;
 
     auto apply_strict_scan_escape = [&]() {
@@ -6020,6 +5983,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const double active_distance = structured_goal_active_distance(world_, config_.goal_tolerance_m);
         const bool keep_tracking = !goal_reached_ && distance_to_goal_ > active_distance;
         if (compact_structured_world(world_) &&
+            !(tracked_vehicle && tiny_indoor_loop) &&
             keep_tracking &&
             have_reference_trajectory &&
             last_mpc_command_.has_value()) {
@@ -6042,12 +6006,6 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             bool allow_direct_yaw_acquire =
                 !closed_structured_loop ||
                 (tiny_indoor_loop ? early_progress : (early_progress || std::abs(estimate_.speed) < 0.02));
-            if (tracked_vehicle &&
-                tiny_indoor_loop &&
-                closed_structured_loop &&
-                structured_preset_allows_micro_pivot_assist(world_.structured_preset())) {
-                allow_direct_yaw_acquire = true;
-            }
             if (!closed_structured_loop && micro_structured_world(world_)) {
                 allow_direct_yaw_acquire = early_progress && std::abs(estimate_.speed) < 0.012;
             }
@@ -6236,15 +6194,6 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         }
     }
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
-        allow_reverse_inner_tracked_turn =
-            tiny_indoor_structured_loop(world_) &&
-            structured_preset_allows_micro_pivot_assist(world_.structured_preset()) &&
-            use_direct_yaw_rate_command &&
-            std::abs(last_command_.target_yaw_rate) > 0.18;
-    }
-    if (forward_only_tracked_tracks &&
-        last_command_.target_speed > 1e-4 &&
-        !allow_reverse_inner_tracked_turn) {
         const double forward_yaw_limit =
             0.98 * last_command_.target_speed / std::max(half_track, 1e-3);
         last_command_.target_yaw_rate = clamp_value(
@@ -6370,6 +6319,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.pwm.max_pwm);
     }
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
+        last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
+        last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
         const int turn_outer_pwm =
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm);
         const bool stalled_turn_needed =
@@ -6377,37 +6328,21 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             no_motion_command_cycles_ >= stall_boost_cycles_required;
         const bool hard_turn_needed =
             stalled_turn_needed || tracker_heading_error_deg_ > 35.0;
-        if (allow_reverse_inner_tracked_turn) {
-            const int inner_reverse_ceiling =
-                std::max(config_.pwm.min_effective_pwm, turn_outer_pwm - 20);
-            const int inner_reverse_pwm =
-                std::clamp(turn_outer_pwm - 82, config_.pwm.min_effective_pwm, inner_reverse_ceiling);
-            enforce_micro_tracked_pivot_turn_authority(
-                last_command_.target_yaw_rate,
-                hard_turn_needed ? std::min(255, turn_outer_pwm + 8) : turn_outer_pwm,
-                inner_reverse_pwm,
-                &last_command_.pwm_left,
-                &last_command_.pwm_right);
-        } else {
-            last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
-            last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
-            const int moving_turn_inner_cap =
-                std::max(config_.pwm.min_effective_pwm, turn_outer_pwm - 70);
-            const int turn_inner_cap = stalled_turn_needed
-                ? 0
-                : moving_turn_inner_cap;
-            enforce_forward_tracked_turn_authority(
-                last_command_.target_yaw_rate,
-                hard_turn_needed ? std::min(255, turn_outer_pwm + 8) : turn_outer_pwm,
-                turn_inner_cap,
-                &last_command_.pwm_left,
-                &last_command_.pwm_right);
-        }
+        const int moving_turn_inner_cap =
+            std::max(config_.pwm.min_effective_pwm, turn_outer_pwm - 70);
+        const int turn_inner_cap = stalled_turn_needed
+            ? 0
+            : moving_turn_inner_cap;
+        enforce_forward_tracked_turn_authority(
+            last_command_.target_yaw_rate,
+            hard_turn_needed ? std::min(255, turn_outer_pwm + 8) : turn_outer_pwm,
+            turn_inner_cap,
+            &last_command_.pwm_left,
+            &last_command_.pwm_right);
         if (world_has_structured_reference(world_) &&
             !mixed_gate_active &&
             !goal_reached_ &&
-            !safety_stop_active_ &&
-            !allow_reverse_inner_tracked_turn) {
+            !safety_stop_active_) {
             const int crawl_pwm = std::clamp(config_.pwm.min_effective_pwm, 0, config_.pwm.max_pwm);
             last_command_.pwm_left = std::max(last_command_.pwm_left, crawl_pwm);
             last_command_.pwm_right = std::max(last_command_.pwm_right, crawl_pwm);
@@ -6415,16 +6350,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
 
     const int pwm_slew_limit =
-        allow_reverse_inner_tracked_turn
-            ? 76
-            : (commanding_motion
-                   ? (stall_boost_active_ ? 70 : 42)
-                   : 110);
+        commanding_motion
+            ? (stall_boost_active_ ? 70 : 42)
+            : 110;
     last_command_.pwm_left = slew_limit_pwm(previous_pwm_left, last_command_.pwm_left, pwm_slew_limit);
     last_command_.pwm_right = slew_limit_pwm(previous_pwm_right, last_command_.pwm_right, pwm_slew_limit);
-    if (forward_only_tracked_tracks &&
-        last_command_.target_speed > 1e-4 &&
-        !allow_reverse_inner_tracked_turn) {
+    if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
         last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
     }

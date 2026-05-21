@@ -234,11 +234,11 @@ std::vector<Vec2> make_zigzag_road() {
 
 std::vector<Vec2> make_validation_loop() {
     constexpr int kSamples = 32;
-    // Tank validation fits in a 30 cm indoor box while keeping enough radius
+    // Tank validation fits in a 40 cm indoor box while keeping enough radius
     // that the tracked base is not forced into point turns.
-    const Vec2 center{0.15, 0.15};
-    const double radius_x = 0.105;
-    const double radius_y = 0.085;
+    const Vec2 center{0.20, 0.20};
+    const double radius_x = 0.125;
+    const double radius_y = 0.105;
     std::vector<Vec2> loop;
     loop.reserve(kSamples);
     for (int i = 0; i < kSamples; ++i) {
@@ -271,9 +271,9 @@ std::vector<Vec2> make_indoor_circle_loop() {
 
 std::vector<Vec2> make_hardware_road_track() {
     constexpr int kSamples = 28;
-    const Vec2 center{0.150, 0.150};
-    const double radius_x = 0.095;
-    const double radius_y = 0.075;
+    const Vec2 center{0.200, 0.200};
+    const double radius_x = 0.115;
+    const double radius_y = 0.095;
     std::vector<Vec2> track;
     track.reserve(kSamples);
 
@@ -309,9 +309,9 @@ std::vector<Vec2> make_tank_practice_circuit() {
 std::vector<Vec2> make_hardware_figure_eight_track() {
     constexpr int kSamples = 96;
     constexpr double kStartPhase = 0.5 * kPi;
-    const Vec2 center{0.150, 0.150};
-    const double radius_x = 0.120;
-    const double radius_y = 0.075;
+    const Vec2 center{0.200, 0.200};
+    const double radius_x = 0.160;
+    const double radius_y = 0.100;
 
     std::vector<Vec2> track;
     track.reserve(kSamples);
@@ -913,7 +913,7 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
         case StructuredMapPreset::ValidationRoad:
         case StructuredMapPreset::Custom:
         case StructuredMapPreset::IdealCircle:
-            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
+            world.bounds_ = {0.0, 0.0, 0.40, 0.40};
             world.road_centerline_ = close_polyline_loop(make_validation_loop(), 0.45);
             world.start_ = world.road_centerline_.front();
             world.goal_ = world.start_;
@@ -934,9 +934,9 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             break;
         case StructuredMapPreset::HardwareTrack:
             // Minimal indoor road validation: a smooth oval loop inside a
-            // 30 cm workspace, conservative enough for the real robot's
+            // 40 cm workspace, conservative enough for the real robot's
             // indoor follower.
-            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
+            world.bounds_ = {0.0, 0.0, 0.40, 0.40};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_road_track();
             world.start_ = world.road_centerline_.front();
@@ -945,8 +945,8 @@ WorldMap WorldMap::structured_demo(StructuredMapPreset preset) {
             break;
         case StructuredMapPreset::FigureEight:
             // Stress test for structured tracking: two lobes in a figure eight,
-            // scaled for the tracked robot's indoor 30 cm validation box.
-            world.bounds_ = {0.0, 0.0, 0.30, 0.30};
+            // scaled for the tracked robot's indoor 40 cm validation box.
+            world.bounds_ = {0.0, 0.0, 0.40, 0.40};
             world.obstacles_.clear();
             world.road_centerline_ = make_hardware_figure_eight_track();
             world.start_ = world.road_centerline_.front();
