@@ -6816,7 +6816,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                                                    : compact_mixed_loop ? std::clamp(0.08 * std::max(cl_.end_point_s, 1.0), 0.12, 0.24)
                                                                         : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
         const double goal_position_acceptance =
-            tracked_closed_loop ? std::clamp(0.11 * structured_course_span_m(world_), 0.035, 0.055)
+            tracked_closed_loop ? std::clamp(0.06 * structured_course_span_m(world_), 0.018, 0.025)
                                 : tiny_indoor_loop ? std::clamp(0.28 * structured_course_span_m(world_), 0.09, 0.11)
                                                    : compact_mixed_loop ? std::clamp(0.24 * structured_course_span_m(world_), 0.11, 0.16)
                                                                         : std::max(config_.goal_tolerance_m * 2.0, 0.35);
@@ -6834,16 +6834,25 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         const bool full_loop_progress_complete =
             structured_goal_ready_ &&
             structured_progress_s_ + progress_margin >= structured_goal_progress_target_;
+        const bool precise_tracked_goal =
+            tracked_closed_loop &&
+            full_loop_progress_complete &&
+            returned_to_start &&
+            goal_position_distance < goal_position_acceptance;
         if (compact_mixed_loop) {
             const double minimum_mixed_progress =
                 0.65 * structured_goal_progress_target_;
             const bool active_dynamic_gate = locked_gap_goal_.has_value();
-            goal_reached_ =
-                !active_dynamic_gate &&
-                structured_goal_ready_ &&
-                structured_progress_s_ >= minimum_mixed_progress &&
-                returned_to_start &&
-                goal_position_distance < goal_position_acceptance;
+            if (tracked_closed_loop) {
+                goal_reached_ = !active_dynamic_gate && precise_tracked_goal;
+            } else {
+                goal_reached_ =
+                    !active_dynamic_gate &&
+                    structured_goal_ready_ &&
+                    structured_progress_s_ >= minimum_mixed_progress &&
+                    returned_to_start &&
+                    goal_position_distance < goal_position_acceptance;
+            }
             if (!goal_reached_ &&
                 distance_to_goal_ <= structured_goal_active_distance(world_, config_.goal_tolerance_m) &&
                 (!returned_to_start || goal_position_distance >= goal_position_acceptance)) {
@@ -6852,10 +6861,19 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                     structured_goal_active_distance(world_, config_.goal_tolerance_m));
             }
         } else {
-            goal_reached_ =
-                tiny_loop_neighborhood_complete ||
-                (full_loop_progress_complete &&
-                 (returned_to_start || goal_position_distance < goal_position_acceptance));
+            if (tracked_closed_loop) {
+                goal_reached_ = precise_tracked_goal;
+            } else {
+                goal_reached_ =
+                    tiny_loop_neighborhood_complete ||
+                    (full_loop_progress_complete &&
+                     (returned_to_start || goal_position_distance < goal_position_acceptance));
+            }
+        }
+        if (!goal_reached_ &&
+            tracked_closed_loop &&
+            (full_loop_progress_complete || returned_to_start)) {
+            distance_to_goal_ = std::max(goal_position_distance, goal_position_acceptance);
         }
         if (goal_reached_) {
             distance_to_goal_ = 0.0;
