@@ -83,7 +83,7 @@ enum WorkspaceView {
     kWorkspaceViewExport = 4,
 };
 
-constexpr double kHardwareStructuredMaxSpanM = 0.50;
+constexpr double kHardwareStructuredMaxSpanM = 0.30;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.70f;
 constexpr float kHardwareTrackMaxScale = 1.20f;

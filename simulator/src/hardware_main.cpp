@@ -147,7 +147,7 @@ Rect structured_content_bounds(const WorldMap& world) {
 }
 
 WorldMap fit_structured_hardware_world(WorldMap world) {
-    constexpr double kStructuredMaxSpanM = 0.50;
+    constexpr double kStructuredMaxSpanM = 0.30;
     constexpr double kRoadEdgeMarginM = 0.04;
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;
@@ -155,7 +155,7 @@ WorldMap fit_structured_hardware_world(WorldMap world) {
 
     const Rect content = structured_content_bounds(world);
     const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-    const double target_content_span = std::max(0.28, kStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
+    const double target_content_span = std::max(0.18, kStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
     const Vec2 center{
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,
