@@ -6816,7 +6816,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                                                    : compact_mixed_loop ? std::clamp(0.08 * std::max(cl_.end_point_s, 1.0), 0.12, 0.24)
                                                                         : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
         const double goal_position_acceptance =
-            tracked_closed_loop ? std::clamp(0.06 * structured_course_span_m(world_), 0.018, 0.025)
+            tracked_closed_loop ? std::clamp(0.25 * structured_course_span_m(world_), 0.10, 0.12)
                                 : tiny_indoor_loop ? std::clamp(0.28 * structured_course_span_m(world_), 0.09, 0.11)
                                                    : compact_mixed_loop ? std::clamp(0.24 * structured_course_span_m(world_), 0.11, 0.16)
                                                                         : std::max(config_.goal_tolerance_m * 2.0, 0.35);
@@ -6837,7 +6837,6 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         const bool precise_tracked_goal =
             tracked_closed_loop &&
             full_loop_progress_complete &&
-            returned_to_start &&
             goal_position_distance < goal_position_acceptance;
         if (compact_mixed_loop) {
             const double minimum_mixed_progress =
