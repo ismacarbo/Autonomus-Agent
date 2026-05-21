@@ -5487,16 +5487,23 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 const bool tracked_tiny_structured =
                     world_has_structured_reference(world_) &&
                     !mixed_gate_active &&
-                    tiny_indoor_structured_loop(world_);
+                    tiny_indoor_structured_loop(world_) &&
+                    cl_.prev_road.num_segments() > 0 &&
+                    cl_.end_point_s > 1e-6;
                 if (tracked_tiny_structured && !reference_trajectory_.empty()) {
-                    const int lookahead_index = std::clamp(
-                        mpc_command.anchor_index + 6,
-                        0,
-                        static_cast<int>(reference_trajectory_.size()) - 1);
-                    const ReferenceWaypoint& target =
-                        reference_trajectory_[static_cast<size_t>(lookahead_index)];
+                    const double road_length = std::max(cl_.end_point_s, 1e-6);
+                    const double base_s =
+                        std::isfinite(structured_last_s_)
+                            ? wrap_arc_length(structured_last_s_, road_length)
+                            : wrap_arc_length(std::isfinite(x0_.x) ? x0_.x : 0.0, road_length);
+                    const double path_lookahead =
+                        std::clamp(0.12 * road_length, 0.08, 0.13);
+                    const double target_s = wrap_arc_length(base_s + path_lookahead, road_length);
+                    const double path_heading = wrap_angle(cl_.prev_road.theta(target_s));
+                    const double path_curvature = cl_.prev_road.kappa(target_s);
+                    const double lateral_correction = clamp_value(-2.0 * x0_.n, -0.45, 0.45);
                     const double target_heading_error =
-                        wrap_angle(angle_to(estimate_.position, target.position) - estimate_.yaw);
+                        wrap_angle(path_heading + lateral_correction - estimate_.yaw);
                     const double alignment_scale = clamp_value(
                         1.0 - 0.55 * std::abs(target_heading_error) / deg_to_rad(100.0),
                         0.32,
@@ -5510,13 +5517,28 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                     last_command_.target_speed = commanded_speed_;
                     const double yaw_rate_limit = 0.78 * geometry_.max_yaw_rate;
                     direct_yaw_rate_command = clamp_value(
-                        1.75 * target_heading_error,
+                        last_command_.target_speed * path_curvature +
+                            1.35 * target_heading_error,
                         -yaw_rate_limit,
                         yaw_rate_limit);
+                    const bool single_turn_loop =
+                        world_.structured_preset() != StructuredMapPreset::FigureEight &&
+                        world_.structured_preset() != StructuredMapPreset::TankCircuit &&
+                        world_.structured_preset() != StructuredMapPreset::ZigZag;
+                    if (single_turn_loop &&
+                        std::abs(path_curvature) > 0.10 &&
+                        structured_goal_ready_ &&
+                        structured_progress_s_ < 0.92 * structured_goal_progress_target_ &&
+                        direct_yaw_rate_command * path_curvature < 0.0) {
+                        direct_yaw_rate_command =
+                            std::copysign(
+                                std::max(std::abs(last_command_.target_speed * path_curvature), 0.10),
+                                path_curvature);
+                    }
                     if (std::abs(direct_yaw_rate_command) < 0.10 &&
                         std::abs(target_heading_error) > deg_to_rad(6.0)) {
                         direct_yaw_rate_command =
-                            signum(target_heading_error) * 0.10;
+                            std::copysign(0.10, target_heading_error);
                     }
                 } else {
                     const double tank_native_yaw_rate =
@@ -6013,9 +6035,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                     -yaw_rate_limit,
                     yaw_rate_limit);
                 if (std::abs(direct_yaw_rate_command) < min_turn_yaw_rate) {
-                    direct_yaw_rate_command = signum(direct_yaw_rate_command == 0.0 ? -heading_error
-                                                                                    : direct_yaw_rate_command) *
-                                              min_turn_yaw_rate;
+                    direct_yaw_rate_command =
+                        std::copysign(
+                            min_turn_yaw_rate,
+                            direct_yaw_rate_command == 0.0 ? -heading_error : direct_yaw_rate_command);
                 }
                 const double tracked_acquire_speed =
                     tracked_vehicle
@@ -6783,17 +6806,17 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         const double goal_position_distance =
             distance(estimate_.position, structured_goal_ready_ ? structured_goal_position_ : world_.start());
         const double progress_margin =
-            tracked_closed_loop ? std::clamp(0.035 * cl_.end_point_s, 0.025, 0.055)
+            tracked_closed_loop ? std::clamp(0.025 * cl_.end_point_s, 0.018, 0.040)
                                 : tiny_indoor_loop ? std::clamp(0.11 * cl_.end_point_s, 0.065, 0.10)
                                                    : compact_mixed_loop ? std::clamp(0.10 * std::max(cl_.end_point_s, 1.0), 0.14, 0.22)
                                                                         : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.05, 0.20);
         const double start_window =
-            tracked_closed_loop ? std::clamp(0.045 * cl_.end_point_s, 0.030, 0.060)
+            tracked_closed_loop ? std::clamp(0.030 * cl_.end_point_s, 0.022, 0.045)
                                 : tiny_indoor_loop ? std::clamp(0.10 * cl_.end_point_s, 0.065, 0.10)
                                                    : compact_mixed_loop ? std::clamp(0.08 * std::max(cl_.end_point_s, 1.0), 0.12, 0.24)
                                                                         : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
         const double goal_position_acceptance =
-            tracked_closed_loop ? std::clamp(0.16 * structured_course_span_m(world_), 0.055, 0.085)
+            tracked_closed_loop ? std::clamp(0.11 * structured_course_span_m(world_), 0.035, 0.055)
                                 : tiny_indoor_loop ? std::clamp(0.28 * structured_course_span_m(world_), 0.09, 0.11)
                                                    : compact_mixed_loop ? std::clamp(0.24 * structured_course_span_m(world_), 0.11, 0.16)
                                                                         : std::max(config_.goal_tolerance_m * 2.0, 0.35);
