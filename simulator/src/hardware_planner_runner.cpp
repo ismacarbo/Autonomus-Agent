@@ -6776,24 +6776,30 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     if (structured_road_is_closed_loop(world_)) {
         const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const bool compact_mixed_loop = compact_mixed_structured_loop(world_);
+        const bool tracked_closed_loop =
+            config_.vehicle_model == VehicleModelKind::TrackedVehicle;
         const double wrapped_track_s =
             std::isfinite(x0_.x) ? wrap_arc_length(x0_.x, cl_.end_point_s) : 0.0;
         const double goal_position_distance =
             distance(estimate_.position, structured_goal_ready_ ? structured_goal_position_ : world_.start());
         const double progress_margin =
-            tiny_indoor_loop ? std::clamp(0.11 * cl_.end_point_s, 0.065, 0.10)
-                             : compact_mixed_loop ? std::clamp(0.10 * std::max(cl_.end_point_s, 1.0), 0.14, 0.22)
-                             : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.05, 0.20);
+            tracked_closed_loop ? std::clamp(0.035 * cl_.end_point_s, 0.025, 0.055)
+                                : tiny_indoor_loop ? std::clamp(0.11 * cl_.end_point_s, 0.065, 0.10)
+                                                   : compact_mixed_loop ? std::clamp(0.10 * std::max(cl_.end_point_s, 1.0), 0.14, 0.22)
+                                                                        : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.05, 0.20);
         const double start_window =
-            tiny_indoor_loop ? std::clamp(0.10 * cl_.end_point_s, 0.065, 0.10)
-                             : compact_mixed_loop ? std::clamp(0.08 * std::max(cl_.end_point_s, 1.0), 0.12, 0.24)
-                             : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
+            tracked_closed_loop ? std::clamp(0.045 * cl_.end_point_s, 0.030, 0.060)
+                                : tiny_indoor_loop ? std::clamp(0.10 * cl_.end_point_s, 0.065, 0.10)
+                                                   : compact_mixed_loop ? std::clamp(0.08 * std::max(cl_.end_point_s, 1.0), 0.12, 0.24)
+                                                                        : std::clamp(0.04 * std::max(cl_.end_point_s, 1.0), 0.10, 0.35);
         const double goal_position_acceptance =
-            tiny_indoor_loop ? std::clamp(0.28 * structured_course_span_m(world_), 0.09, 0.11)
-                             : compact_mixed_loop ? std::clamp(0.24 * structured_course_span_m(world_), 0.11, 0.16)
-                             : std::max(config_.goal_tolerance_m * 2.0, 0.35);
+            tracked_closed_loop ? std::clamp(0.16 * structured_course_span_m(world_), 0.055, 0.085)
+                                : tiny_indoor_loop ? std::clamp(0.28 * structured_course_span_m(world_), 0.09, 0.11)
+                                                   : compact_mixed_loop ? std::clamp(0.24 * structured_course_span_m(world_), 0.11, 0.16)
+                                                                        : std::max(config_.goal_tolerance_m * 2.0, 0.35);
         const bool tiny_loop_neighborhood_complete =
             tiny_indoor_loop &&
+            !tracked_closed_loop &&
             structured_goal_ready_ &&
             structured_progress_s_ >= 0.50 * structured_goal_progress_target_ &&
             goal_position_distance < goal_position_acceptance;
