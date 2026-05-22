@@ -146,16 +146,19 @@ Rect structured_content_bounds(const WorldMap& world) {
     return bounds;
 }
 
-WorldMap fit_structured_hardware_world(WorldMap world) {
-    constexpr double kStructuredMaxSpanM = 0.40;
-    constexpr double kRoadEdgeMarginM = 0.04;
+WorldMap fit_structured_hardware_world(WorldMap world, VehicleProfile vehicle_profile) {
+    const bool tank_profile = vehicle_profile == VehicleProfile::Tank;
+    const double structured_max_span_m = tank_profile ? 0.20 : 0.40;
+    const double road_edge_margin_m = tank_profile ? 0.02 : 0.04;
+    const double min_content_span_m = tank_profile ? 0.16 : 0.18;
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;
     }
 
     const Rect content = structured_content_bounds(world);
     const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-    const double target_content_span = std::max(0.18, kStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
+    const double target_content_span =
+        std::max(min_content_span_m, structured_max_span_m - 2.0 * road_edge_margin_m);
     const Vec2 center{
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,
@@ -177,7 +180,7 @@ WorldMap fit_structured_hardware_world(WorldMap world) {
             point = scale_point_about(point, center, scale);
         }
     }
-    const double half_span = 0.5 * kStructuredMaxSpanM;
+    const double half_span = 0.5 * structured_max_span_m;
     world.set_bounds({
         center.x - half_span,
         center.y - half_span,
@@ -258,7 +261,9 @@ WorldMap make_world_from_options(const AppOptions& options) {
         return world;
     }
     if (options.environment_mode == EnvironmentMode::StructuredRoad) {
-        return fit_structured_hardware_world(WorldMap::structured_demo(options.structured_preset));
+        return fit_structured_hardware_world(
+            WorldMap::structured_demo(options.structured_preset),
+            options.vehicle_profile);
     }
     if (options.environment_mode == EnvironmentMode::MixedRoadGates) {
         return WorldMap::mixed_hardware_demo();
