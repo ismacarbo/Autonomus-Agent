@@ -7015,12 +7015,19 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             full_loop_progress_complete &&
             goal_position_distance < goal_position_acceptance &&
             tracked_goal_pose_aligned;
+        const bool legacy_large_tank_loop_goal =
+            tracked_closed_loop &&
+            tiny_indoor_loop &&
+            world_span_m(world_) >= 0.45 &&
+            full_loop_progress_complete &&
+            returned_to_start &&
+            tracker_cross_track_error_ <= std::clamp(0.35 * structured_course_span_m(world_), 0.070, 0.110);
         if (compact_mixed_loop) {
             const double minimum_mixed_progress =
                 0.65 * structured_goal_progress_target_;
             const bool active_dynamic_gate = locked_gap_goal_.has_value();
             if (tracked_closed_loop) {
-                goal_reached_ = !active_dynamic_gate && precise_tracked_goal;
+                goal_reached_ = !active_dynamic_gate && (precise_tracked_goal || legacy_large_tank_loop_goal);
             } else {
                 goal_reached_ =
                     !active_dynamic_gate &&
@@ -7038,7 +7045,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             }
         } else {
             if (tracked_closed_loop) {
-                goal_reached_ = precise_tracked_goal;
+                goal_reached_ = precise_tracked_goal || legacy_large_tank_loop_goal;
             } else {
                 goal_reached_ =
                     tiny_loop_neighborhood_complete ||

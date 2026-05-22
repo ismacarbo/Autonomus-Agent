@@ -84,7 +84,7 @@ enum WorkspaceView {
 };
 
 constexpr double kHardwareStructuredMaxSpanM = 0.40;
-constexpr double kTankHardwareStructuredMaxSpanM = 0.20;
+constexpr double kTankHardwareStructuredMaxSpanM = 0.50;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.70f;
 constexpr float kHardwareTrackMaxScale = 1.20f;
@@ -229,9 +229,27 @@ Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
     };
 }
 
+Vec2 transform_point_about(const Vec2& point, const Vec2& source_center, const Vec2& target_center, double scale) {
+    return {
+        target_center.x + (point.x - source_center.x) * scale,
+        target_center.y + (point.y - source_center.y) * scale,
+    };
+}
+
 Rect scale_rect_about(const Rect& rect, const Vec2& center, double scale) {
     const Vec2 min_point = scale_point_about({rect.min_x, rect.min_y}, center, scale);
     const Vec2 max_point = scale_point_about({rect.max_x, rect.max_y}, center, scale);
+    return {
+        std::min(min_point.x, max_point.x),
+        std::min(min_point.y, max_point.y),
+        std::max(min_point.x, max_point.x),
+        std::max(min_point.y, max_point.y),
+    };
+}
+
+Rect transform_rect_about(const Rect& rect, const Vec2& source_center, const Vec2& target_center, double scale) {
+    const Vec2 min_point = transform_point_about({rect.min_x, rect.min_y}, source_center, target_center, scale);
+    const Vec2 max_point = transform_point_about({rect.max_x, rect.max_y}, source_center, target_center, scale);
     return {
         std::min(min_point.x, max_point.x),
         std::min(min_point.y, max_point.y),
@@ -291,6 +309,37 @@ WorldMap scale_world_map_about(const WorldMap& source, const Vec2& center, doubl
     return scaled;
 }
 
+WorldMap transform_world_map_about(const WorldMap& source,
+                                   const Vec2& source_center,
+                                   const Vec2& target_center,
+                                   double scale) {
+    if (scale <= 0.0) {
+        return source;
+    }
+
+    WorldMap transformed = source;
+    const Rect bounds = source.bounds();
+
+    transformed.set_bounds(transform_rect_about(bounds, source_center, target_center, scale));
+    transformed.set_start(transform_point_about(source.start(), source_center, target_center, scale));
+    transformed.set_goal(transform_point_about(source.goal(), source_center, target_center, scale));
+
+    for (Rect& obstacle : transformed.editable_obstacles()) {
+        obstacle = transform_rect_about(obstacle, source_center, target_center, scale);
+    }
+    for (GateSpec& gate : transformed.editable_gates()) {
+        gate.position = transform_point_about(gate.position, source_center, target_center, scale);
+        gate.anchor_position = transform_point_about(gate.anchor_position, source_center, target_center, scale);
+        gate.motion_amplitude.x *= scale;
+        gate.motion_amplitude.y *= scale;
+    }
+    for (Vec2& point : transformed.editable_road_centerline()) {
+        point = transform_point_about(point, source_center, target_center, scale);
+    }
+
+    return transformed;
+}
+
 WorldMap scale_world_map(const WorldMap& source, double scale) {
     const Rect bounds = source.bounds();
     const Vec2 center{
@@ -308,22 +357,30 @@ WorldMap fit_hardware_structured_world(WorldMap world, VehicleModelKind vehicle_
     const bool tank_model = vehicle_model == VehicleModelKind::TrackedVehicle;
     const double structured_max_span_m =
         tank_model ? kTankHardwareStructuredMaxSpanM : kHardwareStructuredMaxSpanM;
-    const double road_edge_margin_m = tank_model ? 0.02 : 0.04;
+    const double road_edge_margin_m = 0.04;
     const Rect content = structured_content_bounds(world);
     const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-    const double target_content_span = std::max(0.14, structured_max_span_m - 2.0 * road_edge_margin_m);
+    const double target_content_span =
+        std::max(tank_model ? 0.29 : 0.14, structured_max_span_m - 2.0 * road_edge_margin_m);
     const Vec2 center{
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,
     };
-    const double scale = content_span > target_content_span ? target_content_span / content_span : 1.0;
-    WorldMap fitted = scale_world_map_about(world, center, scale);
+    const Vec2 target_center =
+        tank_model ? Vec2{0.5 * structured_max_span_m, 0.5 * structured_max_span_m} : center;
+    double scale = 1.0;
+    if (content_span > target_content_span) {
+        scale = target_content_span / content_span;
+    } else if (tank_model && content_span < 0.29) {
+        scale = 0.29 / std::max(content_span, 1e-6);
+    }
+    WorldMap fitted = transform_world_map_about(world, center, target_center, scale);
     const double half_span = 0.5 * structured_max_span_m;
     fitted.set_bounds({
-        center.x - half_span,
-        center.y - half_span,
-        center.x + half_span,
-        center.y + half_span,
+        target_center.x - half_span,
+        target_center.y - half_span,
+        target_center.x + half_span,
+        target_center.y + half_span,
     });
     return fitted;
 }

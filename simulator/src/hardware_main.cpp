@@ -112,9 +112,27 @@ Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
     };
 }
 
+Vec2 transform_point_about(const Vec2& point, const Vec2& source_center, const Vec2& target_center, double scale) {
+    return {
+        target_center.x + (point.x - source_center.x) * scale,
+        target_center.y + (point.y - source_center.y) * scale,
+    };
+}
+
 Rect scale_rect_about(const Rect& rect, const Vec2& center, double scale) {
     const Vec2 min_point = scale_point_about({rect.min_x, rect.min_y}, center, scale);
     const Vec2 max_point = scale_point_about({rect.max_x, rect.max_y}, center, scale);
+    return {
+        std::min(min_point.x, max_point.x),
+        std::min(min_point.y, max_point.y),
+        std::max(min_point.x, max_point.x),
+        std::max(min_point.y, max_point.y),
+    };
+}
+
+Rect transform_rect_about(const Rect& rect, const Vec2& source_center, const Vec2& target_center, double scale) {
+    const Vec2 min_point = transform_point_about({rect.min_x, rect.min_y}, source_center, target_center, scale);
+    const Vec2 max_point = transform_point_about({rect.max_x, rect.max_y}, source_center, target_center, scale);
     return {
         std::min(min_point.x, max_point.x),
         std::min(min_point.y, max_point.y),
@@ -148,9 +166,9 @@ Rect structured_content_bounds(const WorldMap& world) {
 
 WorldMap fit_structured_hardware_world(WorldMap world, VehicleProfile vehicle_profile) {
     const bool tank_profile = vehicle_profile == VehicleProfile::Tank;
-    const double structured_max_span_m = tank_profile ? 0.20 : 0.40;
-    const double road_edge_margin_m = tank_profile ? 0.02 : 0.04;
-    const double min_content_span_m = tank_profile ? 0.16 : 0.18;
+    const double structured_max_span_m = tank_profile ? 0.50 : 0.40;
+    const double road_edge_margin_m = 0.04;
+    const double min_content_span_m = tank_profile ? 0.29 : 0.18;
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;
     }
@@ -163,29 +181,38 @@ WorldMap fit_structured_hardware_world(WorldMap world, VehicleProfile vehicle_pr
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,
     };
-    const double scale = content_span > target_content_span ? target_content_span / content_span : 1.0;
-    if (std::abs(scale - 1.0) > 1e-6) {
-        world.set_start(scale_point_about(world.start(), center, scale));
-        world.set_goal(scale_point_about(world.goal(), center, scale));
+    const Vec2 target_center =
+        tank_profile ? Vec2{0.5 * structured_max_span_m, 0.5 * structured_max_span_m} : center;
+    double scale = 1.0;
+    if (content_span > target_content_span) {
+        scale = target_content_span / content_span;
+    } else if (tank_profile && content_span < min_content_span_m) {
+        scale = min_content_span_m / std::max(content_span, 1e-6);
+    }
+    const double center_dx = center.x - target_center.x;
+    const double center_dy = center.y - target_center.y;
+    if (std::abs(scale - 1.0) > 1e-6 || center_dx * center_dx + center_dy * center_dy > 1e-12) {
+        world.set_start(transform_point_about(world.start(), center, target_center, scale));
+        world.set_goal(transform_point_about(world.goal(), center, target_center, scale));
         for (Rect& obstacle : world.editable_obstacles()) {
-            obstacle = scale_rect_about(obstacle, center, scale);
+            obstacle = transform_rect_about(obstacle, center, target_center, scale);
         }
         for (GateSpec& gate : world.editable_gates()) {
-            gate.position = scale_point_about(gate.position, center, scale);
-            gate.anchor_position = scale_point_about(gate.anchor_position, center, scale);
+            gate.position = transform_point_about(gate.position, center, target_center, scale);
+            gate.anchor_position = transform_point_about(gate.anchor_position, center, target_center, scale);
             gate.motion_amplitude.x *= scale;
             gate.motion_amplitude.y *= scale;
         }
         for (Vec2& point : world.editable_road_centerline()) {
-            point = scale_point_about(point, center, scale);
+            point = transform_point_about(point, center, target_center, scale);
         }
     }
     const double half_span = 0.5 * structured_max_span_m;
     world.set_bounds({
-        center.x - half_span,
-        center.y - half_span,
-        center.x + half_span,
-        center.y + half_span,
+        target_center.x - half_span,
+        target_center.y - half_span,
+        target_center.x + half_span,
+        target_center.y + half_span,
     });
     return world;
 }
