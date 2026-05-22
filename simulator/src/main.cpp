@@ -84,6 +84,7 @@ enum WorkspaceView {
 };
 
 constexpr double kHardwareStructuredMaxSpanM = 0.40;
+constexpr double kTankHardwareStructuredMaxSpanM = 0.20;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.70f;
 constexpr float kHardwareTrackMaxScale = 1.20f;
@@ -299,22 +300,25 @@ WorldMap scale_world_map(const WorldMap& source, double scale) {
     return scale_world_map_about(source, center, scale);
 }
 
-WorldMap fit_hardware_structured_world(WorldMap world) {
+WorldMap fit_hardware_structured_world(WorldMap world, VehicleModelKind vehicle_model) {
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;
     }
 
-    constexpr double kRoadEdgeMarginM = 0.04;
+    const bool tank_model = vehicle_model == VehicleModelKind::TrackedVehicle;
+    const double structured_max_span_m =
+        tank_model ? kTankHardwareStructuredMaxSpanM : kHardwareStructuredMaxSpanM;
+    const double road_edge_margin_m = tank_model ? 0.02 : 0.04;
     const Rect content = structured_content_bounds(world);
     const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
-    const double target_content_span = std::max(0.14, kHardwareStructuredMaxSpanM - 2.0 * kRoadEdgeMarginM);
+    const double target_content_span = std::max(0.14, structured_max_span_m - 2.0 * road_edge_margin_m);
     const Vec2 center{
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,
     };
     const double scale = content_span > target_content_span ? target_content_span / content_span : 1.0;
     WorldMap fitted = scale_world_map_about(world, center, scale);
-    const double half_span = 0.5 * kHardwareStructuredMaxSpanM;
+    const double half_span = 0.5 * structured_max_span_m;
     fitted.set_bounds({
         center.x - half_span,
         center.y - half_span,
@@ -328,15 +332,17 @@ WorldMap apply_hardware_track_scale(const UiState& ui_state, WorldMap world) {
     const EnvironmentMode selected_mode = static_cast<EnvironmentMode>(ui_state.hardware_environment_mode);
     const StructuredMapPreset selected_structured_preset =
         static_cast<StructuredMapPreset>(ui_state.hardware_structured_preset);
+    const VehicleModelKind selected_vehicle_model =
+        static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model);
     if (selected_mode == EnvironmentMode::StructuredRoad &&
         selected_structured_preset == StructuredMapPreset::HardwareTrack) {
         const double scale = std::clamp(
             static_cast<double>(ui_state.hardware_track_scale),
             static_cast<double>(kHardwareTrackMinScale),
             static_cast<double>(kHardwareTrackMaxScale));
-        return fit_hardware_structured_world(scale_world_map(world, scale));
+        return fit_hardware_structured_world(scale_world_map(world, scale), selected_vehicle_model);
     }
-    return fit_hardware_structured_world(std::move(world));
+    return fit_hardware_structured_world(std::move(world), selected_vehicle_model);
 }
 
 bool validate_hardware_structured_world(const WorldMap& world, std::string* error_message) {
@@ -783,7 +789,9 @@ WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
         ui_state.hardware_editor_world.environment_mode() == EnvironmentMode::StructuredRoad) {
         WorldMap custom = ui_state.hardware_editor_world;
         custom.finalize_editor_changes();
-        return fit_hardware_structured_world(std::move(custom));
+        return fit_hardware_structured_world(
+            std::move(custom),
+            static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model));
     }
     WorldMap world = make_world_from_mode(selected_mode, selected_preset, selected_structured_preset, GateBehaviorMode::Static, 0);
     world = apply_hardware_track_scale(ui_state, std::move(world));
@@ -5582,6 +5590,14 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                     ? "Robot support sent to the connected Raspberry runner. Waiting for runner ack."
                     : "Robot support queued in the GUI. It will be sent automatically to the next Raspberry runner that connects.",
                 "Could not queue the robot support profile for Raspberry sync.");
+            if (static_cast<EnvironmentMode>(ui_state->hardware_environment_mode) == EnvironmentMode::StructuredRoad) {
+                load_hardware_editor_from_selection(ui_state);
+                queue_current_hardware_world(
+                    ui_state,
+                    hardware_server,
+                    "Structured map rescaled for the selected robot and queued for the Raspberry runner.",
+                    "Robot support changed locally, but the rescaled structured map could not be queued.");
+            }
         }
         if (static_cast<VehicleModelKind>(ui_state->hardware_vehicle_model) == VehicleModelKind::TrackedVehicle) {
             ImGui::TextWrapped("Tank support uses Sabrina's angular primitive as the tracked yaw-rate reference while keeping the MPC speed layer active.");
@@ -5900,7 +5916,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             WorldMap applied_world = ui_state->hardware_editor_world;
             applied_world.finalize_editor_changes();
             applied_world = sanitize_hardware_unstructured_world(std::move(applied_world));
-            applied_world = fit_hardware_structured_world(std::move(applied_world));
+            applied_world = fit_hardware_structured_world(
+                std::move(applied_world),
+                static_cast<VehicleModelKind>(ui_state->hardware_vehicle_model));
             std::string validation_error;
             if (!validate_hardware_world(applied_world, &validation_error)) {
                 ui_state->hardware_editor_world = previous_world;
