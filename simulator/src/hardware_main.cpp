@@ -617,6 +617,17 @@ ControllerTelemetry make_controller_telemetry(const thesis_sim::VehicleModelStat
     telemetry.ticks_left = state.left_encoder_ticks;
     telemetry.ticks_right = state.right_encoder_ticks;
     telemetry.enc_dt_ms = static_cast<std::uint16_t>(std::lround(state.encoder_dt_ms));
+    telemetry.motor_flags =
+        static_cast<std::uint16_t>(thesis_sim::MotorFlag::Enabled) |
+        static_cast<std::uint16_t>(thesis_sim::MotorFlag::StbyHigh);
+    telemetry.status_flags =
+        static_cast<std::uint16_t>(thesis_sim::StatusFlag::ImuReady) |
+        static_cast<std::uint16_t>(thesis_sim::StatusFlag::EncodersReady) |
+        static_cast<std::uint16_t>(thesis_sim::StatusFlag::MotorsReady) |
+        static_cast<std::uint16_t>(thesis_sim::StatusFlag::HostLinkOk);
+    telemetry.enc_flags =
+        static_cast<std::uint16_t>(thesis_sim::EncoderFlag::LeftValid) |
+        static_cast<std::uint16_t>(thesis_sim::EncoderFlag::RightValid);
     telemetry.have_imu = true;
     telemetry.have_motor = true;
     telemetry.have_encoder = true;
