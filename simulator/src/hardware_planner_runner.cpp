@@ -6441,9 +6441,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const int arc_outer_pwm =
             simple_tiny_tracked_loop
                 ? std::clamp(
-                      config_.pwm.min_effective_pwm + 56,
-                      config_.pwm.min_effective_pwm + 18,
-                      turn_start_pwm)
+                      turn_start_pwm + 8,
+                      config_.pwm.min_effective_pwm + 70,
+                      config_.pwm.max_pwm)
                 : turn_start_pwm;
         const bool positive_turn_command = last_command_.target_yaw_rate > 0.0;
         const double measured_inner_track_speed =
@@ -6457,10 +6457,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             measured_wheel_speeds_valid_ &&
             measured_outer_track_speed > 0.045 &&
             measured_inner_track_speed < 0.006;
+        const bool inner_needs_loaded_pwm =
+            inner_track_lagging || robot_is_still;
         const int arc_inner_pwm =
             simple_tiny_tracked_loop
                 ? std::clamp(
-                      config_.pwm.min_effective_pwm + (inner_track_lagging ? 10 : 6),
+                      config_.pwm.min_effective_pwm + (inner_needs_loaded_pwm ? 48 : 30),
                       config_.pwm.min_effective_pwm,
                       std::max(config_.pwm.min_effective_pwm, arc_outer_pwm - 1))
                 : 0;
@@ -6482,7 +6484,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             stalled_turn_needed
                 ? std::min(255, turn_start_pwm + 8)
                 : (simple_tiny_tracked_loop && tracker_heading_error_deg_ > 35.0
-                       ? std::min(turn_start_pwm, arc_outer_pwm + 10)
+                       ? std::min(config_.pwm.max_pwm, arc_outer_pwm + 8)
                        : (hard_turn_needed ? std::min(255, turn_start_pwm + 8) : arc_outer_pwm));
         enforce_forward_tracked_turn_authority(
             last_command_.target_yaw_rate,
