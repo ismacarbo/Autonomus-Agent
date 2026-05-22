@@ -4790,6 +4790,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                                                       lab_scale_mixed_world ? 0.15 : 0.26,
                                                       lab_scale_mixed_world ? 0.17 : 0.32)
                                         : 0.46);
+                const double target_bounds_margin =
+                    lab_scale_mixed_world ? 0.10 : 0.18;
                 if (road_projection.valid && !rejoin_stage) {
                     const auto side_score = [&](double candidate_side) {
                         const Vec2 road_target = point_at_road_s(road_projection.s + target_ahead);
@@ -4798,10 +4800,10 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                             road_target.x + candidate_side * road_offset * normal.x,
                             road_target.y + candidate_side * road_offset * normal.y,
                         };
-                        if (!is_inside_bounds(world_, candidate_target, -0.18)) {
-                            return -1000.0;
-                        }
                         double score = 0.0;
+                        if (!is_inside_bounds(world_, candidate_target, -target_bounds_margin)) {
+                            score -= 4.0;
+                        }
                         const double padding = 0.5 * geometry_.body_width + 0.08;
                         for (const Rect& obstacle : world_.obstacles()) {
                             if (point_in_expanded_rect(candidate_target, obstacle, padding)) {
@@ -4815,43 +4817,80 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                     const double lower_score = side_score(-1.0);
                     side = upper_score >= lower_score ? 1.0 : -1.0;
                 }
-                Vec2 mixed_target{};
-                if (road_projection.valid) {
-                    const Vec2 road_target = point_at_road_s(road_projection.s + target_ahead);
-                    const Vec2 normal{-road_projection.tangent.y, road_projection.tangent.x};
-                    mixed_target = {
-                        road_target.x + side * road_offset * normal.x,
-                        road_target.y + side * road_offset * normal.y,
-                    };
-                } else {
-                    const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
-                    const Vec2 lateral{-forward.y, forward.x};
-                    mixed_target = {
-                        estimate_.position.x + target_ahead * forward.x + side * road_offset * lateral.x,
-                        estimate_.position.y + target_ahead * forward.y + side * road_offset * lateral.y,
-                    };
-                }
-                mixed_target = clamp_point_to_bounds(world_, mixed_target, 0.18);
-                bool repeats_recent_compact_target = false;
-                if (compact_mixed_world) {
+                const auto build_mixed_target = [&](double candidate_side,
+                                                    double candidate_ahead,
+                                                    double candidate_offset) {
+                    Vec2 target{};
+                    if (road_projection.valid) {
+                        const Vec2 road_target = point_at_road_s(road_projection.s + candidate_ahead);
+                        const Vec2 normal{-road_projection.tangent.y, road_projection.tangent.x};
+                        target = {
+                            road_target.x + candidate_side * candidate_offset * normal.x,
+                            road_target.y + candidate_side * candidate_offset * normal.y,
+                        };
+                    } else {
+                        const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
+                        const Vec2 lateral{-forward.y, forward.x};
+                        target = {
+                            estimate_.position.x + candidate_ahead * forward.x + candidate_side * candidate_offset * lateral.x,
+                            estimate_.position.y + candidate_ahead * forward.y + candidate_side * candidate_offset * lateral.y,
+                        };
+                    }
+                    return clamp_point_to_bounds(world_, target, target_bounds_margin);
+                };
+                const auto repeats_recent_compact_target = [&](const Vec2& target) {
+                    if (!compact_mixed_world) {
+                        return false;
+                    }
                     for (const Vec2& passed_target : passed_unstructured_gap_positions_) {
-                        if (distance(passed_target, mixed_target) <= 0.16) {
-                            repeats_recent_compact_target = true;
-                            break;
+                        if (distance(passed_target, target) <= 0.16) {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+
+                std::vector<Vec2> target_options;
+                target_options.reserve(8);
+                const std::array<double, 2> candidate_sides{{side, -side}};
+                const std::array<double, 2> candidate_aheads{{
+                    target_ahead,
+                    std::max(0.08, 0.65 * target_ahead),
+                }};
+                const std::array<double, 2> candidate_offsets{{
+                    road_offset,
+                    std::max(rejoin_stage ? 0.035 : 0.08, 0.72 * road_offset),
+                }};
+                for (double candidate_side : candidate_sides) {
+                    if (rejoin_stage && candidate_side != side) {
+                        continue;
+                    }
+                    for (double candidate_ahead : candidate_aheads) {
+                        for (double candidate_offset : candidate_offsets) {
+                            target_options.push_back(
+                                build_mixed_target(candidate_side, candidate_ahead, candidate_offset));
                         }
                     }
                 }
-                if (repeats_recent_compact_target) {
-                    gates_.clear();
-                    gate_specs_.clear();
-                    visible_gate_indices_.clear();
-                    chosen_gate_index_ = -1;
-                    diagnostics_.candidate_gates = 0;
-                    diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+
+                std::optional<Vec2> fallback_repeated_target;
+                for (const Vec2& mixed_target : target_options) {
+                    if (!dynamic_gap_point_allowed(mixed_target)) {
+                        continue;
+                    }
+                    if (repeats_recent_compact_target(mixed_target)) {
+                        if (!fallback_repeated_target.has_value()) {
+                            fallback_repeated_target = mixed_target;
+                        }
+                        continue;
+                    }
+                    set_locked_gap_goal(mixed_target);
+                    publish_locked_gap_goal();
                     return;
                 }
-                if (dynamic_gap_point_allowed(mixed_target)) {
-                    set_locked_gap_goal(mixed_target);
+                if ((front_obstacle_pressure || compact_close_obstacle_recovery) &&
+                    fallback_repeated_target.has_value()) {
+                    set_locked_gap_goal(*fallback_repeated_target);
                     publish_locked_gap_goal();
                     return;
                 }
