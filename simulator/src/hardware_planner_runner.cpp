@@ -5435,6 +5435,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         forward_only_tracked_tracks &&
         tiny_indoor_structured_loop(world_) &&
         simple_single_turn_structured_loop(world_);
+    const bool large_single_turn_tracked_loop =
+        forward_only_tracked_tracks &&
+        !simple_tiny_tracked_loop &&
+        structured_road_is_closed_loop(world_) &&
+        simple_single_turn_structured_loop(world_) &&
+        world_span_m(world_) >= 0.90 &&
+        structured_course_span_m(world_) >= 0.50;
     bool allow_unlocked_recovery_motion = false;
 
     auto apply_strict_scan_escape = [&]() {
@@ -6457,14 +6464,33 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             measured_wheel_speeds_valid_ &&
             measured_outer_track_speed > 0.045 &&
             measured_inner_track_speed < 0.006;
+        const bool large_inner_track_lagging =
+            large_single_turn_tracked_loop &&
+            measured_wheel_speeds_valid_ &&
+            measured_outer_track_speed > 0.045 &&
+            measured_inner_track_speed < 0.012;
         const bool inner_needs_loaded_pwm =
-            inner_track_lagging || robot_is_still;
+            inner_track_lagging || large_inner_track_lagging || robot_is_still;
         const int arc_inner_pwm =
             simple_tiny_tracked_loop
                 ? std::clamp(
                       config_.pwm.min_effective_pwm + (inner_needs_loaded_pwm ? 48 : 30),
                       config_.pwm.min_effective_pwm,
                       std::max(config_.pwm.min_effective_pwm, arc_outer_pwm - 1))
+                : 0;
+        const int large_loop_loaded_inner_pwm =
+            large_single_turn_tracked_loop
+                ? std::clamp(
+                      config_.pwm.min_effective_pwm + 28,
+                      config_.pwm.min_effective_pwm,
+                      std::max(config_.pwm.min_effective_pwm, turn_start_pwm - 1))
+                : 0;
+        const int large_loop_loaded_inner_cap =
+            large_single_turn_tracked_loop
+                ? std::clamp(
+                      large_loop_loaded_inner_pwm + 10,
+                      large_loop_loaded_inner_pwm,
+                      std::max(large_loop_loaded_inner_pwm, turn_start_pwm - 1))
                 : 0;
         const bool stalled_turn_needed =
             robot_is_still ||
@@ -6474,12 +6500,20 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const int moving_turn_inner_cap =
             simple_tiny_tracked_loop
                 ? arc_inner_pwm
-                : std::max(config_.pwm.min_effective_pwm, turn_start_pwm - 70);
+                : (large_single_turn_tracked_loop && inner_needs_loaded_pwm
+                       ? large_loop_loaded_inner_cap
+                       : std::max(config_.pwm.min_effective_pwm, turn_start_pwm - 70));
         const int turn_inner_cap = stalled_turn_needed
-            ? (simple_tiny_tracked_loop ? arc_inner_pwm : 0)
+            ? (simple_tiny_tracked_loop
+                   ? arc_inner_pwm
+                   : (large_single_turn_tracked_loop ? large_loop_loaded_inner_cap : 0))
             : moving_turn_inner_cap;
         const int turn_inner_floor =
-            simple_tiny_tracked_loop ? arc_inner_pwm : 0;
+            simple_tiny_tracked_loop
+                ? arc_inner_pwm
+                : (large_single_turn_tracked_loop && inner_needs_loaded_pwm
+                       ? large_loop_loaded_inner_pwm
+                       : 0);
         const int turn_outer_floor =
             stalled_turn_needed
                 ? std::min(255, turn_start_pwm + 8)
@@ -7015,12 +7049,20 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             full_loop_progress_complete &&
             goal_position_distance < goal_position_acceptance &&
             tracked_goal_pose_aligned;
+        const bool large_tank_structured_loop =
+            tracked_closed_loop &&
+            simple_single_turn_structured_loop(world_) &&
+            world_span_m(world_) >= 0.90;
+        const double large_tank_goal_position_acceptance =
+            std::clamp(0.13 * structured_course_span_m(world_), 0.060, 0.085);
         const bool legacy_large_tank_loop_goal =
             tracked_closed_loop &&
             simple_single_turn_structured_loop(world_) &&
             world_span_m(world_) >= 0.45 &&
             full_loop_progress_complete &&
             returned_to_start &&
+            (!large_tank_structured_loop ||
+             goal_position_distance < large_tank_goal_position_acceptance) &&
             tracker_cross_track_error_ <= std::clamp(0.35 * structured_course_span_m(world_), 0.070, 0.110);
         if (compact_mixed_loop) {
             const double minimum_mixed_progress =
