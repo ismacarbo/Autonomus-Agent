@@ -1068,13 +1068,13 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::Custom;
-    world.bounds_ = {0.0, 0.0, 0.80, 0.65};
-    world.start_ = {0.120, 0.325};
-    world.goal_ = {0.680, 0.325};
+    world.bounds_ = {0.0, 0.0, 1.25, 0.68};
+    world.start_ = {0.200, 0.340};
+    world.goal_ = {0.940, 0.340};
     world.start_heading_ = 0.0;
 
     world.road_centerline_.clear();
-    constexpr int kRoadSamples = 20;
+    constexpr int kRoadSamples = 24;
     world.road_centerline_.reserve(kRoadSamples);
     for (int i = 0; i < kRoadSamples; ++i) {
         const double alpha = kRoadSamples > 1
