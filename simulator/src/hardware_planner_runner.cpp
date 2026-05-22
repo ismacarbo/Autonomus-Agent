@@ -514,6 +514,7 @@ void apply_start_motion_boost(int min_pwm, int* pwm_left, int* pwm_right) {
 
 void enforce_forward_tracked_turn_authority(double target_yaw_rate,
                                             int outer_min_pwm,
+                                            int inner_min_pwm,
                                             int inner_max_pwm,
                                             int* pwm_left,
                                             int* pwm_right) {
@@ -527,12 +528,13 @@ void enforce_forward_tracked_turn_authority(double target_yaw_rate,
 
     const int outer_floor = std::clamp(outer_min_pwm, 0, 255);
     const int inner_cap = std::clamp(inner_max_pwm, 0, std::max(0, outer_floor - 1));
+    const int inner_floor = std::clamp(inner_min_pwm, 0, inner_cap);
     if (target_yaw_rate > 0.0) {
         *pwm_right = std::max(*pwm_right, outer_floor);
-        *pwm_left = std::min(std::max(*pwm_left, 0), inner_cap);
+        *pwm_left = std::clamp(std::max(*pwm_left, 0), inner_floor, inner_cap);
     } else {
         *pwm_left = std::max(*pwm_left, outer_floor);
-        *pwm_right = std::min(std::max(*pwm_right, 0), inner_cap);
+        *pwm_right = std::clamp(std::max(*pwm_right, 0), inner_floor, inner_cap);
     }
 }
 
@@ -6434,23 +6436,58 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
         last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
-        const int turn_outer_pwm =
+        const int turn_start_pwm =
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm);
+        const int arc_outer_pwm =
+            simple_tiny_tracked_loop
+                ? std::clamp(
+                      config_.pwm.min_effective_pwm + 56,
+                      config_.pwm.min_effective_pwm + 18,
+                      turn_start_pwm)
+                : turn_start_pwm;
+        const bool positive_turn_command = last_command_.target_yaw_rate > 0.0;
+        const double measured_inner_track_speed =
+            positive_turn_command ? std::abs(measured_left_wheel_speed)
+                                  : std::abs(measured_right_wheel_speed);
+        const double measured_outer_track_speed =
+            positive_turn_command ? std::abs(measured_right_wheel_speed)
+                                  : std::abs(measured_left_wheel_speed);
+        const bool inner_track_lagging =
+            simple_tiny_tracked_loop &&
+            measured_wheel_speeds_valid_ &&
+            measured_outer_track_speed > 0.045 &&
+            measured_inner_track_speed < 0.006;
+        const int arc_inner_pwm =
+            simple_tiny_tracked_loop
+                ? std::clamp(
+                      config_.pwm.min_effective_pwm + (inner_track_lagging ? 10 : 6),
+                      config_.pwm.min_effective_pwm,
+                      std::max(config_.pwm.min_effective_pwm, arc_outer_pwm - 1))
+                : 0;
         const bool stalled_turn_needed =
             robot_is_still ||
             no_motion_command_cycles_ >= stall_boost_cycles_required;
         const bool hard_turn_needed =
-            stalled_turn_needed || tracker_heading_error_deg_ > 35.0;
+            stalled_turn_needed || (!simple_tiny_tracked_loop && tracker_heading_error_deg_ > 35.0);
         const int moving_turn_inner_cap =
             simple_tiny_tracked_loop
-                ? 0
-                : std::max(config_.pwm.min_effective_pwm, turn_outer_pwm - 70);
+                ? arc_inner_pwm
+                : std::max(config_.pwm.min_effective_pwm, turn_start_pwm - 70);
         const int turn_inner_cap = stalled_turn_needed
-            ? 0
+            ? (simple_tiny_tracked_loop ? arc_inner_pwm : 0)
             : moving_turn_inner_cap;
+        const int turn_inner_floor =
+            simple_tiny_tracked_loop ? arc_inner_pwm : 0;
+        const int turn_outer_floor =
+            stalled_turn_needed
+                ? std::min(255, turn_start_pwm + 8)
+                : (simple_tiny_tracked_loop && tracker_heading_error_deg_ > 35.0
+                       ? std::min(turn_start_pwm, arc_outer_pwm + 10)
+                       : (hard_turn_needed ? std::min(255, turn_start_pwm + 8) : arc_outer_pwm));
         enforce_forward_tracked_turn_authority(
             last_command_.target_yaw_rate,
-            hard_turn_needed ? std::min(255, turn_outer_pwm + 8) : turn_outer_pwm,
+            turn_outer_floor,
+            turn_inner_floor,
             turn_inner_cap,
             &last_command_.pwm_left,
             &last_command_.pwm_right);
@@ -6467,8 +6504,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 last_command_.pwm_right = std::max(last_command_.pwm_right, crawl_pwm);
             } else if (last_command_.target_yaw_rate > 0.0) {
                 last_command_.pwm_right = std::max(last_command_.pwm_right, crawl_pwm);
+                last_command_.pwm_left = std::max(last_command_.pwm_left, arc_inner_pwm);
             } else {
                 last_command_.pwm_left = std::max(last_command_.pwm_left, crawl_pwm);
+                last_command_.pwm_right = std::max(last_command_.pwm_right, arc_inner_pwm);
             }
         }
     }
