@@ -23,9 +23,8 @@ DEFAULT_SIMULATION = Path(
     "reports/thesis_planner_mixed_mixed_road_gate_validation_lidar_dynamic_gui_auto_20260514_163644_584.json"
 )
 DEFAULT_HARDWARE = [
-    Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_052657_596.json"),
-    Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_053236_711.json"),
-    Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_052931_566.json"),
+    Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260522_034044_274.json"),
+    Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260522_034454_542.json"),
 ]
 DEFAULT_OUTPUT_DIR = Path("data_analisys/outputs/mixed_model_validation_20260514")
 
@@ -316,7 +315,7 @@ def write_markdown(path: Path, runs: list[PreparedRun], report_paths: list[Path]
             "",
             "- usare la simulazione hardware-aligned come baseline confrontabile con i run reali;",
             "- usare la simulazione grande come spiegazione della logica score/switch;",
-            "- nei report hardware vecchi, le finestre gate sono ricostruite da `candidate_gates` e `chosen_gate_distance`.",
+            "- nei report hardware finali, `passed_gates` e' disponibile; le finestre gate restano lette da `candidate_gates` e `chosen_gate_distance`.",
             "",
         ]
     )

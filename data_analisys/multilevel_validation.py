@@ -47,8 +47,8 @@ DEFAULT_REPORTS: dict[str, dict[str, list[Path]]] = {
             Path("reports/thesis_planner_mixed_mixed_hardware_aligned_lidar_dynamic_headless_20260515_083538_038.json"),
         ],
         "hardware": [
-            Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_052657_596.json"),
-            Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_053236_711.json"),
+            Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260522_034044_274.json"),
+            Path("reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260522_034454_542.json"),
         ],
     },
 }
@@ -190,6 +190,13 @@ def prepare_run(mode: str, level: str, path: Path) -> PreparedRun:
     reference_length = _reference_length(data, source, road, mode)
     tracking_values = [_abs_metric(sample, "tracker_cross_track") for sample in history]
     tracking_values = [value for value in tracking_values if value is not None]
+    if _use_road_deviation_fallback(mode, source, tracking_values, road):
+        tracking_values = [
+            value
+            for value in (_distance_to_polyline(point, road) for point in path_points)
+            if value is not None
+        ]
+    tracking_p95 = _percentile(tracking_values, 95.0)
     heading_values = [_abs_metric(sample, "tracker_heading_error_deg") for sample in history]
     heading_values = [value for value in heading_values if value is not None]
     yaw_rates = [_abs_metric(sample, "yaw_rate") for sample in history]
@@ -240,8 +247,8 @@ def prepare_run(mode: str, level: str, path: Path) -> PreparedRun:
         path_over_reference=_safe_div(path_length, reference_length),
         final_goal_distance_m=_final_goal_distance(data, history),
         progress_norm=progress_series[-1] if progress_series else None,
-        tracking_p95_m=_percentile(tracking_values, 95.0),
-        tracking_p95_body=_safe_div(_percentile(tracking_values, 95.0), body_width),
+        tracking_p95_m=tracking_p95,
+        tracking_p95_body=_safe_div(tracking_p95, body_width),
         heading_p95_deg=_percentile(heading_values, 95.0),
         yaw_rate_p95_rad_s=_percentile(yaw_rates, 95.0),
         speed_mean_mps=_mean(speeds),
@@ -624,6 +631,17 @@ def _comparability_lines(runs: list[PreparedRun]) -> list[str]:
                 + "Usare le metriche normalizzate quando si confrontano i livelli."
             )
     return lines
+
+
+def _use_road_deviation_fallback(
+    mode: str,
+    source: str,
+    tracking_values: list[float],
+    road: list[tuple[float, float]],
+) -> bool:
+    if mode != "mixed" or source != "hardware" or not road:
+        return False
+    return True
 
 
 def _plot_labels(runs: list[PreparedRun]) -> list[str]:

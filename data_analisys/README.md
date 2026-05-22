@@ -205,8 +205,8 @@ deviazione dalla road e finestre gate tra simulazione e run reali:
 ```bash
 python -m data_analisys.mixed_model_validation \
   --simulation reports/<mixed_hardware_aligned_sim>.json \
-  --hardware reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_052657_596.json \
-  --hardware reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260512_053236_711.json
+  --hardware reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260522_034044_274.json \
+  --hardware reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260522_034454_542.json
 ```
 
 Output principali:
