@@ -7017,7 +7017,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             tracked_goal_pose_aligned;
         const bool legacy_large_tank_loop_goal =
             tracked_closed_loop &&
-            tiny_indoor_loop &&
+            simple_single_turn_structured_loop(world_) &&
             world_span_m(world_) >= 0.45 &&
             full_loop_progress_complete &&
             returned_to_start &&

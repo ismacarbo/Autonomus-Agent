@@ -84,7 +84,7 @@ enum WorkspaceView {
 };
 
 constexpr double kHardwareStructuredMaxSpanM = 0.40;
-constexpr double kTankHardwareStructuredMaxSpanM = 0.50;
+constexpr double kTankHardwareStructuredMaxSpanM = 1.00;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.70f;
 constexpr float kHardwareTrackMaxScale = 1.20f;
@@ -357,11 +357,11 @@ WorldMap fit_hardware_structured_world(WorldMap world, VehicleModelKind vehicle_
     const bool tank_model = vehicle_model == VehicleModelKind::TrackedVehicle;
     const double structured_max_span_m =
         tank_model ? kTankHardwareStructuredMaxSpanM : kHardwareStructuredMaxSpanM;
-    const double road_edge_margin_m = 0.04;
+    const double road_edge_margin_m = tank_model ? 0.16 : 0.04;
     const Rect content = structured_content_bounds(world);
     const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
     const double target_content_span =
-        std::max(tank_model ? 0.29 : 0.14, structured_max_span_m - 2.0 * road_edge_margin_m);
+        std::max(tank_model ? 0.68 : 0.14, structured_max_span_m - 2.0 * road_edge_margin_m);
     const Vec2 center{
         (content.min_x + content.max_x) * 0.5,
         (content.min_y + content.max_y) * 0.5,
@@ -371,8 +371,8 @@ WorldMap fit_hardware_structured_world(WorldMap world, VehicleModelKind vehicle_
     double scale = 1.0;
     if (content_span > target_content_span) {
         scale = target_content_span / content_span;
-    } else if (tank_model && content_span < 0.29) {
-        scale = 0.29 / std::max(content_span, 1e-6);
+    } else if (tank_model && content_span < 0.68) {
+        scale = 0.68 / std::max(content_span, 1e-6);
     }
     WorldMap fitted = transform_world_map_about(world, center, target_center, scale);
     const double half_span = 0.5 * structured_max_span_m;

@@ -166,9 +166,9 @@ Rect structured_content_bounds(const WorldMap& world) {
 
 WorldMap fit_structured_hardware_world(WorldMap world, VehicleProfile vehicle_profile) {
     const bool tank_profile = vehicle_profile == VehicleProfile::Tank;
-    const double structured_max_span_m = tank_profile ? 0.50 : 0.40;
-    const double road_edge_margin_m = 0.04;
-    const double min_content_span_m = tank_profile ? 0.29 : 0.18;
+    const double structured_max_span_m = tank_profile ? 1.00 : 0.40;
+    const double road_edge_margin_m = tank_profile ? 0.16 : 0.04;
+    const double min_content_span_m = tank_profile ? 0.68 : 0.18;
     if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
         return world;
     }
