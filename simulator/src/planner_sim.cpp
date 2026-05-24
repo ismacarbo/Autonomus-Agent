@@ -285,8 +285,36 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
         world.environment_mode() == EnvironmentMode::StructuredRoad &&
         (world.structured_preset() == StructuredMapPreset::ValidationRoad ||
          world.structured_preset() == StructuredMapPreset::IdealCircle);
+    const bool tank_hardware_structured =
+        validation_road &&
+        world_span_m(world) >= 0.90 &&
+        world_span_m(world) <= 1.10;
 
-    if (micro) {
+    if (tank_hardware_structured) {
+        geometry->wheelbase = 0.300;
+        geometry->cg_to_front = 0.150;
+        geometry->cg_to_rear = 0.150;
+        geometry->track = 0.180;
+        geometry->body_length = 0.340;
+        geometry->body_width = 0.240;
+        geometry->wheel_length = 0.090;
+        geometry->wheel_width = 0.030;
+        geometry->wheel_radius = 0.032;
+        geometry->encoder_ticks_per_revolution = 2400;
+        geometry->max_linear_speed = 0.14;
+        geometry->max_yaw_rate = 1.35;
+        geometry->max_curvature = 6.0;
+        geometry->max_steer_angle = 1.10;
+        geometry->max_steer_rate = 4.20;
+        geometry->speed_estimate_per_pwm = 0.0016;
+        geometry->motor_time_constant = 0.24;
+        geometry->pwm_slew_rate = 450.0;
+        geometry->yaw_response_scale = 1.0;
+        geometry->linear_feedback_gain = 50.0;
+        geometry->yaw_feedback_gain = 32.0;
+        geometry->min_effective_pwm = 48;
+        config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.08);
+    } else if (micro) {
         geometry->wheelbase = 0.085;
         geometry->cg_to_front = 0.0425;
         geometry->cg_to_rear = 0.0425;
@@ -354,7 +382,9 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
         config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.26);
     }
 
-    geometry->min_effective_pwm = std::max(geometry->min_effective_pwm, 50);
+    if (!tank_hardware_structured) {
+        geometry->min_effective_pwm = std::max(geometry->min_effective_pwm, 50);
+    }
     geometry->wheel_speed_to_pwm_gain = 190.0;
     geometry->wheel_speed_to_pwm_bias = 28.0;
     geometry->max_accel = std::min(geometry->max_accel, compact ? 0.9 : 1.1);
@@ -2974,7 +3004,16 @@ void PlannerDrivenVehicleSim::step() {
     const bool compact_mixed_world =
         world_.environment_mode() == EnvironmentMode::MixedRoadGates &&
         (world_span_m(world_) <= 1.20 || world_.structured_preset() == StructuredMapPreset::IdealCircle);
-    if (micro_structured_world(world_)) {
+    const bool tank_hardware_structured =
+        config_.vehicle_model == VehicleModelKind::TrackedVehicle &&
+        world_.environment_mode() == EnvironmentMode::StructuredRoad &&
+        (world_.structured_preset() == StructuredMapPreset::ValidationRoad ||
+         world_.structured_preset() == StructuredMapPreset::IdealCircle) &&
+        world_span_m(world_) >= 0.90 &&
+        world_span_m(world_) <= 1.10;
+    // The 1 m tank structured baseline uses bounds as chart extents; there are
+    // no simulated walls or obstacles on that validation loop.
+    if (micro_structured_world(world_) || tank_hardware_structured) {
         collision_ = false;
     } else {
         const double collision_padding =

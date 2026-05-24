@@ -85,6 +85,7 @@ enum WorkspaceView {
 
 constexpr double kHardwareStructuredMaxSpanM = 0.40;
 constexpr double kTankHardwareStructuredMaxSpanM = 1.00;
+constexpr double kTankStructuredBaselineRoadSpanM = 0.68;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.70f;
 constexpr float kHardwareTrackMaxScale = 1.20f;
@@ -382,6 +383,38 @@ WorldMap fit_hardware_structured_world(WorldMap world, VehicleModelKind vehicle_
         target_center.x + half_span,
         target_center.y + half_span,
     });
+    return fitted;
+}
+
+bool tank_structured_baseline_preset(StructuredMapPreset preset) {
+    return preset == StructuredMapPreset::ValidationRoad ||
+           preset == StructuredMapPreset::IdealCircle;
+}
+
+WorldMap fit_simulation_structured_world(WorldMap world, VehicleModelKind vehicle_model) {
+    if (vehicle_model != VehicleModelKind::TrackedVehicle ||
+        world.environment_mode() != EnvironmentMode::StructuredRoad ||
+        !tank_structured_baseline_preset(world.structured_preset())) {
+        return world;
+    }
+
+    const Rect content = structured_content_bounds(world);
+    const double content_span = std::max(content.max_x - content.min_x, content.max_y - content.min_y);
+    if (content_span <= 1e-6) {
+        return world;
+    }
+
+    const Vec2 source_center{
+        (content.min_x + content.max_x) * 0.5,
+        (content.min_y + content.max_y) * 0.5,
+    };
+    const Vec2 target_center{0.5 * kTankHardwareStructuredMaxSpanM, 0.5 * kTankHardwareStructuredMaxSpanM};
+    WorldMap fitted = transform_world_map_about(
+        world,
+        source_center,
+        target_center,
+        kTankStructuredBaselineRoadSpanM / content_span);
+    fitted.set_bounds({0.0, 0.0, kTankHardwareStructuredMaxSpanM, kTankHardwareStructuredMaxSpanM});
     return fitted;
 }
 
@@ -817,13 +850,16 @@ WorldMap world_from_ui_selection(const PlannerDrivenVehicleSim& sim, const UiSta
         custom.finalize_editor_changes();
         return custom;
     }
-    return make_world_from_mode(
+    WorldMap world = make_world_from_mode(
         selected_mode,
         selected_preset,
         selected_structured_preset,
         sim.gate_behavior(),
         sim.gate_seed(),
         ui_state.mixed_preset);
+    return fit_simulation_structured_world(
+        std::move(world),
+        static_cast<VehicleModelKind>(ui_state.vehicle_model));
 }
 
 WorldMap hardware_world_from_ui_selection(const UiState& ui_state) {
@@ -2185,19 +2221,35 @@ void apply_sim_tuning_overrides(PlannerDrivenVehicleSim* sim, const AppOptions& 
     sim->set_tuning_overrides(options.tuning_overrides);
 }
 
-void fill_ideal_tuning_defaults(VehicleTuningOverrides* tuning) {
+void fill_structured_tank_ideal_tuning_defaults(VehicleTuningOverrides* tuning) {
     if (tuning == nullptr) {
         return;
     }
-    // Keep the same vehicle limits as the baseline map so L0/L1 compare the
-    // planner and sensing stack, not a different robot geometry/dynamics.
+    // Best-case tracked response for the structured ideal toggle; mixed maps
+    // keep their existing baseline tuning.
+    tuning->min_effective_pwm = 35.0;
+    tuning->speed_estimate_per_pwm = 0.0018;
+    tuning->pwm_slew_rate = 720.0;
+    tuning->motor_time_constant = 0.10;
+    tuning->max_linear_speed = 0.18;
+    tuning->max_curvature = 6.5;
+    tuning->max_steer_angle = 1.35;
+    tuning->max_steer_rate = 5.5;
+    tuning->max_yaw_rate = 1.60;
+    tuning->linear_feedback_gain = 60.0;
+    tuning->yaw_feedback_gain = 40.0;
+    tuning->yaw_response_scale = 1.0;
+    tuning->cruise_speed_limit = 0.12;
 }
 
 void apply_ideal_simulation_defaults(AppOptions* options) {
     if (options == nullptr || !options->ideal_simulation) {
         return;
     }
-    fill_ideal_tuning_defaults(&options->tuning_overrides);
+    if (options->environment_mode == EnvironmentMode::StructuredRoad &&
+        options->vehicle_model == VehicleModelKind::TrackedVehicle) {
+        fill_structured_tank_ideal_tuning_defaults(&options->tuning_overrides);
+    }
 }
 
 void apply_sim_level_to_config(const AppOptions& options, thesis_sim::SimConfig* config) {
@@ -2268,7 +2320,10 @@ void apply_gui_stack_for_selected_map(PlannerDrivenVehicleSim& sim, UiState* ui_
             sim.set_dynamic_lidar_gates(true);
         }
         VehicleTuningOverrides ideal_tuning;
-        fill_ideal_tuning_defaults(&ideal_tuning);
+        if (selected_mode == EnvironmentMode::StructuredRoad &&
+            static_cast<VehicleModelKind>(ui_state->vehicle_model) == VehicleModelKind::TrackedVehicle) {
+            fill_structured_tank_ideal_tuning_defaults(&ideal_tuning);
+        }
         sim.set_tuning_overrides(ideal_tuning);
         sim.set_ideal_conditions(true);
     } else {
@@ -2368,11 +2423,15 @@ void apply_validation_preset(PlannerDrivenVehicleSim& sim,
         sim.gate_behavior(),
         sim.gate_seed(),
         preset.mixed_preset);
+    world = fit_simulation_structured_world(std::move(world), preset.vehicle);
     sim.load_world(std::move(world));
     sim.set_vehicle_stack(preset.vehicle, sim.tracking_controller_mode());
     if (preset.ideal) {
         VehicleTuningOverrides tuning;
-        fill_ideal_tuning_defaults(&tuning);
+        if (preset.environment == EnvironmentMode::StructuredRoad &&
+            preset.vehicle == VehicleModelKind::TrackedVehicle) {
+            fill_structured_tank_ideal_tuning_defaults(&tuning);
+        }
         sim.set_tuning_overrides(tuning);
         sim.set_ideal_conditions(true);
     } else {
@@ -2392,7 +2451,9 @@ std::string run_vehicle_benchmark(const PlannerDrivenVehicleSim& sim, const UiSt
     auto run_one = [&](VehicleModelKind model) {
         thesis_sim::SimConfig config = sim.config();
         config.vehicle_model = model;
-        PlannerDrivenVehicleSim candidate(world_from_ui_selection(sim, ui_state), config);
+        UiState candidate_ui = ui_state;
+        candidate_ui.vehicle_model = static_cast<int>(model);
+        PlannerDrivenVehicleSim candidate(world_from_ui_selection(sim, candidate_ui), config);
         const int max_steps =
             ui_state.environment_mode == static_cast<int>(EnvironmentMode::MixedRoadGates) ? 2200 : 1800;
         return candidate.run_headless(max_steps);
@@ -6401,7 +6462,12 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         if (ImGui::Combo("Motion Primitive Support", &vehicle_selection, vehicle_items, IM_ARRAYSIZE(vehicle_items))) {
             const VehicleModelKind next_model =
                 vehicle_selection == 1 ? VehicleModelKind::TrackedVehicle : VehicleModelKind::CarLikeBicycle;
+            ui_state->vehicle_model = static_cast<int>(next_model);
             sim.set_vehicle_stack(next_model, sim.tracking_controller_mode());
+            if (static_cast<EnvironmentMode>(ui_state->environment_mode) == EnvironmentMode::StructuredRoad) {
+                sim.load_world(world_from_ui_selection(sim, *ui_state));
+            }
+            apply_gui_stack_for_selected_map(sim, ui_state);
             sync_ui_state_from_sim(ui_state, sim);
             ui_state->paused = true;
         }
@@ -6577,19 +6643,27 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             }
             ImGui::Text("Preset = %s", thesis_sim::structured_map_preset_name(sim.world().structured_preset()));
             ImGui::Text("Road points = %d", static_cast<int>(sim.world().road_centerline().size()));
+            if (sim.vehicle_model_kind() == VehicleModelKind::TrackedVehicle) {
+                bool tank_ideal =
+                    static_cast<StructuredMapPreset>(ui_state->structured_preset) == StructuredMapPreset::IdealCircle;
+                if (ImGui::Checkbox("Tank ideal simulation", &tank_ideal)) {
+                    ui_state->structured_preset = static_cast<int>(
+                        tank_ideal ? StructuredMapPreset::IdealCircle : StructuredMapPreset::ValidationRoad);
+                    ui_state->ideal_simulation = tank_ideal;
+                    sim.load_world(world_from_ui_selection(sim, *ui_state));
+                    apply_gui_stack_for_selected_map(sim, ui_state);
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("Tank baseline uses the validated 1 m structured road; ideal keeps the same road with ideal sensing and best-case tracked tuning.");
+                ImGui::PopStyleColor();
+            }
             if (sim.world().structured_preset() == StructuredMapPreset::Custom) {
                 ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.42f, 1.0f), "Current road = Custom edited scenario");
                 ImGui::TextWrapped("The last edited structured road is active. Built-in presets in the combo restore the known-good loops.");
                 if (ImGui::Button("Restore Validation Road", ImVec2(-1.0f, 0.0f))) {
                     ui_state->structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
-                    sim.load_world(make_world_from_mode(
-                        EnvironmentMode::StructuredRoad,
-                        static_cast<UnstructuredMapPreset>(ui_state->unstructured_preset),
-                        StructuredMapPreset::ValidationRoad,
-                        sim.gate_behavior(),
-                        sim.gate_seed()));
-                    sync_ui_state_from_sim(ui_state, sim);
-                    ui_state->paused = true;
+                    sim.load_world(world_from_ui_selection(sim, *ui_state));
+                    apply_gui_stack_for_selected_map(sim, ui_state);
                 }
             }
             ImGui::TextDisabled("Gate layout controls are disabled in structured mode.");
@@ -7100,14 +7174,15 @@ int run_headless(const AppOptions& options) {
     sim_config.vehicle_model = options.vehicle_model;
     sim_config.dynamic_lidar_gates = options.dynamic_lidar_gates;
     apply_sim_level_to_config(options, &sim_config);
-    PlannerDrivenVehicleSim sim(make_world_from_mode(
+    WorldMap world = make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,
         options.structured_preset,
         GateBehaviorMode::Static,
         7,
-        options.mixed_preset),
-        sim_config);
+        options.mixed_preset);
+    world = fit_simulation_structured_world(std::move(world), options.vehicle_model);
+    PlannerDrivenVehicleSim sim(std::move(world), sim_config);
     apply_sim_tuning_overrides(&sim, options);
     const SimulationReport report = sim.run_headless(options.max_steps);
     const std::string status = report.goal_reached ? "goal_reached" : (report.collision ? "collision" : "timeout");
@@ -7174,14 +7249,15 @@ int run_gui(const AppOptions& options) {
     sim_config.vehicle_model = options.vehicle_model;
     sim_config.dynamic_lidar_gates = options.dynamic_lidar_gates;
     apply_sim_level_to_config(options, &sim_config);
-    PlannerDrivenVehicleSim sim(make_world_from_mode(
+    WorldMap world = make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,
         options.structured_preset,
         GateBehaviorMode::Static,
         7,
-        options.mixed_preset),
-        sim_config);
+        options.mixed_preset);
+    world = fit_simulation_structured_world(std::move(world), options.vehicle_model);
+    PlannerDrivenVehicleSim sim(std::move(world), sim_config);
     apply_sim_tuning_overrides(&sim, options);
     HardwareViewerState hardware_view;
     LiveViewStreamServer hardware_server;
