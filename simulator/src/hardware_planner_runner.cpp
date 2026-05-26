@@ -2563,6 +2563,7 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
     }
 
     const bool unstructured_perception_mode = unstructured_perception_only_mode();
+    const bool compact_mixed_open_world = compact_mixed_open_road(world_);
     const double motion_speed =
         std::max(std::abs(estimate_.speed), std::abs(last_command_.target_speed));
     const double motion_yaw_rate =
@@ -2578,6 +2579,14 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
             return;
         }
     }
+    if (compact_mixed_open_world) {
+        if (sim_time_ < 0.65) {
+            return;
+        }
+        if (motion_speed < 0.018 && motion_yaw_rate > 0.45) {
+            return;
+        }
+    }
 
     const double base_score = score_candidate_pose(estimate_.position, estimate_.yaw, scan);
     if (!std::isfinite(base_score)) {
@@ -2588,14 +2597,18 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
     double best_score = base_score;
 
     const std::array<LidarSearchWindow, 2> search_windows{{
-        {config_.localization.xy_search_window_m,
-         config_.localization.xy_search_step_m,
-         config_.localization.yaw_search_window_rad,
-         config_.localization.yaw_search_step_rad},
-        {std::max(config_.localization.xy_search_step_m, 0.08),
-         std::max(config_.localization.xy_search_step_m * 0.5, 0.04),
-         std::max(config_.localization.yaw_search_step_rad, 0.03),
-         std::max(config_.localization.yaw_search_step_rad * 0.5, 0.015)},
+        {compact_mixed_open_world ? std::min(config_.localization.xy_search_window_m, 0.06)
+                                  : config_.localization.xy_search_window_m,
+         compact_mixed_open_world ? std::min(config_.localization.xy_search_step_m, 0.03)
+                                  : config_.localization.xy_search_step_m,
+         compact_mixed_open_world ? std::min(config_.localization.yaw_search_window_rad, 0.045)
+                                  : config_.localization.yaw_search_window_rad,
+         compact_mixed_open_world ? std::min(config_.localization.yaw_search_step_rad, 0.018)
+                                  : config_.localization.yaw_search_step_rad},
+        {compact_mixed_open_world ? 0.025 : std::max(config_.localization.xy_search_step_m, 0.08),
+         compact_mixed_open_world ? 0.0125 : std::max(config_.localization.xy_search_step_m * 0.5, 0.04),
+         compact_mixed_open_world ? 0.020 : std::max(config_.localization.yaw_search_step_rad, 0.03),
+         compact_mixed_open_world ? 0.010 : std::max(config_.localization.yaw_search_step_rad * 0.5, 0.015)},
     }};
 
     for (const LidarSearchWindow& window : search_windows) {
@@ -2618,8 +2631,66 @@ void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1:
     }
 
     if (std::isfinite(best_score)) {
+        if (compact_mixed_open_world &&
+            base_score - best_score < 0.012) {
+            return;
+        }
         Vec2 corrected_position = best_position;
-        if (unstructured_perception_mode) {
+        if (compact_mixed_open_world) {
+            Vec2 road_tangent{1.0, 0.0};
+            double best_segment_distance_sq = std::numeric_limits<double>::infinity();
+            const std::vector<Vec2>& road = world_.road_centerline();
+            for (size_t i = 0; i + 1 < road.size(); ++i) {
+                const Vec2 segment{
+                    road[i + 1].x - road[i].x,
+                    road[i + 1].y - road[i].y,
+                };
+                const double segment_len_sq = dot_product(segment, segment);
+                if (!(segment_len_sq > 1e-12)) {
+                    continue;
+                }
+                const Vec2 from_start{
+                    estimate_.position.x - road[i].x,
+                    estimate_.position.y - road[i].y,
+                };
+                const double t = clamp_value(dot_product(from_start, segment) / segment_len_sq, 0.0, 1.0);
+                const Vec2 projection{
+                    road[i].x + segment.x * t,
+                    road[i].y + segment.y * t,
+                };
+                const double d_sq = distance_sq(estimate_.position, projection);
+                if (d_sq < best_segment_distance_sq) {
+                    const double segment_len = std::sqrt(segment_len_sq);
+                    road_tangent = {segment.x / segment_len, segment.y / segment_len};
+                    best_segment_distance_sq = d_sq;
+                }
+            }
+            const Vec2 road_normal{-road_tangent.y, road_tangent.x};
+            const Vec2 correction_delta{
+                best_position.x - estimate_.position.x,
+                best_position.y - estimate_.position.y,
+            };
+            const double dt_hint = std::max(config_.nominal_dt, 0.01);
+            const double max_longitudinal =
+                clamp_value(0.004 + 0.55 * motion_speed * dt_hint, 0.004, 0.018);
+            const double max_lateral =
+                locked_gap_goal_.has_value()
+                    ? clamp_value(0.008 + 0.40 * motion_speed * dt_hint, 0.008, 0.018)
+                    : clamp_value(0.006 + 0.30 * motion_speed * dt_hint, 0.006, 0.014);
+            const double longitudinal =
+                clamp_value(dot_product(correction_delta, road_tangent),
+                            -max_longitudinal,
+                            max_longitudinal);
+            const double lateral =
+                clamp_value(dot_product(correction_delta, road_normal),
+                            -max_lateral,
+                            max_lateral);
+            corrected_position = {
+                estimate_.position.x + longitudinal * road_tangent.x + lateral * road_normal.x,
+                estimate_.position.y + longitudinal * road_tangent.y + lateral * road_normal.y,
+            };
+            corrected_position = clamp_dynamic_gap_point(corrected_position);
+        } else if (unstructured_perception_mode) {
             const Vec2 correction_delta{
                 best_position.x - estimate_.position.x,
                 best_position.y - estimate_.position.y,
@@ -7295,7 +7366,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         const bool compact_mixed_open_world =
             compact_mixed_open_road(world_);
         if (compact_mixed_open_world) {
-            goal_tolerance = std::max(goal_tolerance, 0.14);
+            goal_tolerance = std::max(goal_tolerance, 0.09);
         }
         double goal_stop_speed = config_.goal_stop_speed_mps;
         if (compact_mixed_open_world && distance_to_goal_ < goal_tolerance) {
