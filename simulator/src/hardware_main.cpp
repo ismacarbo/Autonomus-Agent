@@ -250,7 +250,7 @@ int parse_mixed_preset(const std::string& value) {
 
 WorldMap mixed_hardware_world_from_preset(int preset) {
     if (preset == 3) {
-        return WorldMap::mixed_closed_obstacle_demo();
+        return WorldMap::mixed_closed_obstacle_hardware_demo();
     }
     if (preset == 1) {
         return WorldMap::mixed_hardware_aligned_demo();

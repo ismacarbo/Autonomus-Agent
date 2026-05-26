@@ -758,7 +758,7 @@ std::string map_preset_name(const WorldMap& world) {
         if (world.structured_preset() == StructuredMapPreset::IdealCircle && !world.obstacles().empty()) {
             return "Mixed Ideal Hardware-Aligned";
         }
-        if (world.structured_preset() == StructuredMapPreset::TankCircuit && span > 2.50) {
+        if (world.structured_preset() == StructuredMapPreset::TankCircuit && !world.obstacles().empty()) {
             return "Mixed Closed Obstacle Road";
         }
         if (span <= 1.20 && !world.obstacles().empty()) {
@@ -812,7 +812,7 @@ const char* hardware_mixed_map_cli_name(int preset) {
 
 WorldMap hardware_mixed_world_from_preset(int preset) {
     if (preset == 3) {
-        return WorldMap::mixed_closed_obstacle_demo();
+        return WorldMap::mixed_closed_obstacle_hardware_demo();
     }
     if (preset == 1) {
         return WorldMap::mixed_hardware_aligned_demo();
@@ -829,7 +829,7 @@ int mixed_preset_from_world(const WorldMap& world) {
     if (world.structured_preset() == StructuredMapPreset::IdealCircle && !world.obstacles().empty()) {
         return 2;
     }
-    if (world.structured_preset() == StructuredMapPreset::TankCircuit && span > 2.50) {
+    if (world.structured_preset() == StructuredMapPreset::TankCircuit && !world.obstacles().empty()) {
         return 3;
     }
     return span <= 1.20 && !world.obstacles().empty() ? 1 : 0;
@@ -841,7 +841,7 @@ int hardware_mixed_preset_from_world(const WorldMap& world) {
     }
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
-    if (world.structured_preset() == StructuredMapPreset::TankCircuit && span > 2.50) {
+    if (world.structured_preset() == StructuredMapPreset::TankCircuit && !world.obstacles().empty()) {
         return 3;
     }
     return span <= 1.20 && !world.obstacles().empty() ? 1 : 0;

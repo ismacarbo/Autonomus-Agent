@@ -1103,6 +1103,63 @@ WorldMap WorldMap::mixed_closed_obstacle_demo() {
     return world;
 }
 
+WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
+    WorldMap world = mixed_closed_obstacle_demo();
+
+    constexpr double kHardwareSpan = 0.50;
+    const Rect source_bounds = world.bounds_;
+    const double source_width = source_bounds.max_x - source_bounds.min_x;
+    const double source_height = source_bounds.max_y - source_bounds.min_y;
+    const double source_span = std::max(source_width, source_height);
+    if (!(source_span > 1e-6)) {
+        return world;
+    }
+
+    const double scale = kHardwareSpan / source_span;
+    const Vec2 source_center{
+        0.5 * (source_bounds.min_x + source_bounds.max_x),
+        0.5 * (source_bounds.min_y + source_bounds.max_y),
+    };
+    const Vec2 target_center{0.5 * kHardwareSpan, 0.5 * kHardwareSpan};
+    auto transform_point = [&](const Vec2& point) {
+        return Vec2{
+            target_center.x + (point.x - source_center.x) * scale,
+            target_center.y + (point.y - source_center.y) * scale,
+        };
+    };
+    auto transform_rect = [&](const Rect& rect) {
+        const Vec2 min_point = transform_point({rect.min_x, rect.min_y});
+        const Vec2 max_point = transform_point({rect.max_x, rect.max_y});
+        return Rect{
+            std::min(min_point.x, max_point.x),
+            std::min(min_point.y, max_point.y),
+            std::max(min_point.x, max_point.x),
+            std::max(min_point.y, max_point.y),
+        };
+    };
+    auto transform_gate = [&](GateSpec& gate) {
+        gate.position = transform_point(gate.position);
+        gate.anchor_position = transform_point(gate.anchor_position);
+        gate.motion_amplitude.x *= scale;
+        gate.motion_amplitude.y *= scale;
+    };
+
+    world.bounds_ = {0.0, 0.0, kHardwareSpan, kHardwareSpan};
+    world.start_ = transform_point(world.start_);
+    world.goal_ = transform_point(world.goal_);
+    for (Vec2& point : world.road_centerline_) {
+        point = transform_point(point);
+    }
+    for (Rect& obstacle : world.obstacles_) {
+        obstacle = transform_rect(obstacle);
+    }
+    for (GateSpec& gate : world.gate_templates_) {
+        transform_gate(gate);
+    }
+    world.gates_ = world.gate_templates_;
+    return world;
+}
+
 WorldMap WorldMap::mixed_ideal_demo() {
     WorldMap world = mixed_hardware_aligned_demo();
     world.unstructured_preset_ = UnstructuredMapPreset::IdealValidation;

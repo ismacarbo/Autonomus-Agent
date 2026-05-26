@@ -1505,15 +1505,16 @@ void HardwarePlannerRunner::initialize_planner_state() {
     const bool compact_world = world_span <= 5.0;
     const bool compact_structured_world =
         compact_world && world_has_structured_reference(world_);
+    const bool mixed_world = world_is_mixed(world_);
 
     const bool micro_structured_world =
-        compact_structured_world && world_span <= 0.35;
+        !mixed_world && compact_structured_world && world_span <= 0.35;
     const bool tiny_indoor_loop =
         micro_structured_world &&
         structured_road_is_closed_loop(world_) &&
         structured_road_length_m(world_) <= 0.95;
     const bool compact_mixed_loop =
-        world_is_mixed(world_) &&
+        mixed_world &&
         compact_structured_world &&
         structured_road_is_closed_loop(world_);
     const double structured_loop_length =
@@ -1533,7 +1534,7 @@ void HardwarePlannerRunner::initialize_planner_state() {
     sim_.veh_L = geometry_.body_length;
     sim_.end_sim = tiny_indoor_loop ? std::max(world_span * 4.0, 1.4)
                    : micro_structured_world ? std::max(world_span * 8.0, 3.0)
-                   : compact_mixed_loop ? std::max(structured_loop_length, 1.60)
+                   : compact_mixed_loop ? std::max(structured_loop_length, 0.50)
                    : (compact_world ? std::max(world_span * 4.0, 6.0) : 200.0);
     sim_.tol_obst = tiny_indoor_loop ? 0.04 : (micro_structured_world ? 0.06 : (compact_mixed_loop ? 0.12 : (compact_world ? 0.18 : 0.25)));
     sim_.lat_tol = tiny_indoor_loop ? 0.025 : (micro_structured_world ? 0.04 : (compact_mixed_loop ? 0.08 : (compact_world ? 0.12 : 0.2)));
