@@ -413,6 +413,7 @@ class HardwarePlannerRunner {
     int required_unstructured_gap_pass_count() const;
     bool dynamic_gap_mode_enabled() const;
     bool strict_locked_gate_motion_enabled() const;
+    double mixed_road_gate_lookahead_m() const;
     double compute_mixed_road_forward_clearance(double lookahead_m) const;
     double compute_mixed_road_block_score(double lookahead_m) const;
     void count_mixed_gate_crossing_if_needed();
@@ -499,8 +500,10 @@ class HardwarePlannerRunner {
     Vec2 structured_goal_position_{};
     std::optional<Vec2> locked_gap_goal_;
     std::vector<Vec2> passed_unstructured_gap_positions_;
+    Vec2 locked_gap_start_position_{};
     Vec2 locked_gap_approach_direction_{1.0, 0.0};
     double locked_gap_corridor_half_width_m_ = 0.0;
+    double locked_gap_set_time_s_ = 0.0;
     double startup_scan_elapsed_s_ = 0.0;
     double unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     double startup_scan_direction_ = 1.0;
