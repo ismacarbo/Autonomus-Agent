@@ -332,6 +332,67 @@ std::vector<Vec2> make_hardware_figure_eight_track() {
     return resample_closed_polyline(track, 0.012);
 }
 
+Vec2 map_unit_point(const Rect& content, const Vec2& point) {
+    return {
+        content.min_x + point.x * (content.max_x - content.min_x),
+        content.min_y + point.y * (content.max_y - content.min_y),
+    };
+}
+
+Rect map_unit_rect(const Rect& content, const Rect& rect) {
+    const Vec2 min_point = map_unit_point(content, {rect.min_x, rect.min_y});
+    const Vec2 max_point = map_unit_point(content, {rect.max_x, rect.max_y});
+    return {
+        std::min(min_point.x, max_point.x),
+        std::min(min_point.y, max_point.y),
+        std::max(min_point.x, max_point.x),
+        std::max(min_point.y, max_point.y),
+    };
+}
+
+std::vector<Vec2> make_closed_obstacle_mixed_loop(const Rect& content, double spacing) {
+    std::vector<Vec2> track{
+        map_unit_point(content, {0.10, 0.36}),
+        map_unit_point(content, {0.23, 0.29}),
+        map_unit_point(content, {0.43, 0.24}),
+        map_unit_point(content, {0.62, 0.27}),
+        map_unit_point(content, {0.79, 0.35}),
+        map_unit_point(content, {0.92, 0.46}),
+        map_unit_point(content, {0.96, 0.58}),
+        map_unit_point(content, {0.88, 0.71}),
+        map_unit_point(content, {0.72, 0.81}),
+        map_unit_point(content, {0.56, 0.76}),
+        map_unit_point(content, {0.40, 0.82}),
+        map_unit_point(content, {0.23, 0.72}),
+        map_unit_point(content, {0.11, 0.58}),
+        map_unit_point(content, {0.06, 0.47}),
+    };
+    track = close_polyline_loop(std::move(track), 0.02);
+    track = chaikin_closed_polyline(track, 2);
+    return resample_closed_polyline(track, spacing);
+}
+
+std::vector<Rect> make_closed_obstacle_road_blocks(const Rect& content) {
+    return {
+        // This block sits on the nominal structured path. The mixed planner
+        // must derive a side gate from the obstacle and the road boundary.
+        map_unit_rect(content, {0.52, 0.22, 0.58, 0.29}),
+        map_unit_rect(content, {0.56, 0.75, 0.64, 0.82}),
+    };
+}
+
+Vec2 sampled_loop_point(const std::vector<Vec2>& loop, double fraction) {
+    if (loop.empty()) {
+        return {};
+    }
+    const double clamped = std::clamp(fraction, 0.0, 1.0);
+    const size_t max_index = loop.size() - 1;
+    const size_t index = std::min(
+        max_index,
+        static_cast<size_t>(std::round(clamped * static_cast<double>(max_index))));
+    return loop[index];
+}
+
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
     if (points.size() < 3 || distance(points.front(), points.back()) > threshold) {
         return false;
@@ -1010,6 +1071,33 @@ WorldMap WorldMap::mixed_demo() {
     world.gates_ = world.gate_templates_;
     recompute_gate_headings(&world.gates_, world.goal_);
     world.gate_templates_ = world.gates_;
+    world.gate_behavior_ = GateBehaviorMode::Static;
+    world.gate_seed_ = 0;
+    return world;
+}
+
+WorldMap WorldMap::mixed_closed_obstacle_demo() {
+    WorldMap world;
+    world.environment_mode_ = EnvironmentMode::MixedRoadGates;
+    world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
+    world.structured_preset_ = StructuredMapPreset::TankCircuit;
+    world.bounds_ = {0.0, 0.0, 6.00, 5.00};
+
+    const Rect content{0.70, 0.95, 5.30, 4.05};
+    world.road_centerline_ = make_closed_obstacle_mixed_loop(content, 0.045);
+    world.start_ = world.road_centerline_.front();
+    world.goal_ = world.start_;
+    world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+
+    world.obstacles_ = make_closed_obstacle_road_blocks(content);
+    const Vec2 first_checkpoint = sampled_loop_point(world.road_centerline_, 0.45);
+    const Vec2 far_checkpoint = sampled_loop_point(world.road_centerline_, 0.72);
+    world.gate_templates_ = {
+        {"checkpoint_1", first_checkpoint, first_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"checkpoint_2", far_checkpoint, far_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"finish", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, world.start_heading_, true},
+    };
+    world.gates_ = world.gate_templates_;
     world.gate_behavior_ = GateBehaviorMode::Static;
     world.gate_seed_ = 0;
     return world;

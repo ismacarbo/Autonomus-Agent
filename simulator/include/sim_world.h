@@ -85,6 +85,7 @@ class WorldMap {
                                       std::uint32_t gate_seed = 0);
     static WorldMap structured_demo(StructuredMapPreset preset = StructuredMapPreset::ValidationRoad);
     static WorldMap mixed_demo();
+    static WorldMap mixed_closed_obstacle_demo();
     static WorldMap mixed_ideal_demo();
     static WorldMap mixed_hardware_aligned_demo();
     static WorldMap mixed_hardware_demo();

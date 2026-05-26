@@ -95,6 +95,7 @@ struct AppOptions {
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
+    int mixed_preset = 0;
     std::string world_file;
     std::string stream_host;
     int stream_port = 0;
@@ -225,10 +226,36 @@ EnvironmentMode parse_environment_mode(const std::string& value) {
     if (value == "unstructured") {
         return EnvironmentMode::UnstructuredGates;
     }
-    if (value == "mixed" || value == "mixed_road_gates" || value == "road_gates") {
+    if (value == "mixed" || value == "mixed_road_gates" || value == "road_gates" ||
+        value == "mixed_obstacle" || value == "mixed-closed-obstacle" ||
+        value == "mixed_closed_obstacle") {
         return EnvironmentMode::MixedRoadGates;
     }
     return EnvironmentMode::StructuredRoad;
+}
+
+int parse_mixed_preset(const std::string& value) {
+    if (value == "obstacle" || value == "closed_obstacle" ||
+        value == "closed-obstacle" || value == "obstacle_road" ||
+        value == "obstacle-road" || value == "mixed_obstacle" ||
+        value == "mixed_closed_obstacle" || value == "mixed-closed-obstacle") {
+        return 3;
+    }
+    if (value == "hardware_aligned" || value == "hardware-aligned" ||
+        value == "hardware_lab" || value == "hardware-lab" || value == "lab") {
+        return 1;
+    }
+    return 0;
+}
+
+WorldMap mixed_hardware_world_from_preset(int preset) {
+    if (preset == 3) {
+        return WorldMap::mixed_closed_obstacle_demo();
+    }
+    if (preset == 1) {
+        return WorldMap::mixed_hardware_aligned_demo();
+    }
+    return WorldMap::mixed_hardware_demo();
 }
 
 UnstructuredMapPreset parse_unstructured_preset(const std::string& value) {
@@ -293,7 +320,7 @@ WorldMap make_world_from_options(const AppOptions& options) {
             options.vehicle_profile);
     }
     if (options.environment_mode == EnvironmentMode::MixedRoadGates) {
-        return WorldMap::mixed_hardware_demo();
+        return mixed_hardware_world_from_preset(options.mixed_preset);
     }
     return WorldMap::unstructured_demo(options.unstructured_preset, GateBehaviorMode::Static, 0);
 }
@@ -321,6 +348,7 @@ void print_usage(const char* argv0) {
         << "  --scenario MODE           structured | unstructured | mixed\n"
         << "  --structured-map NAME     validation | circle | zigzag | hardware_track | figure_eight | tank_circuit\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
+        << "  --mixed-map NAME          hardware | hardware_aligned | obstacle\n"
         << "  --world-file PATH         load a custom exported `.thmap` world file\n"
         << "  --stream-host HOST        send live view snapshots to HOST\n"
         << "  --stream-port N           send live view snapshots to TCP port N\n"
@@ -358,9 +386,17 @@ AppOptions parse_args(int argc, char** argv) {
         } else if (arg == "--simulate") {
             options.simulate = true;
         } else if (arg == "--scenario" && i + 1 < argc) {
-            options.environment_mode = parse_environment_mode(argv[++i]);
+            const std::string value = argv[++i];
+            options.environment_mode = parse_environment_mode(value);
+            if (options.environment_mode == EnvironmentMode::MixedRoadGates) {
+                options.mixed_preset = parse_mixed_preset(value);
+            }
         } else if (arg.rfind("--scenario=", 0) == 0) {
-            options.environment_mode = parse_environment_mode(arg.substr(std::strlen("--scenario=")));
+            const std::string value = arg.substr(std::strlen("--scenario="));
+            options.environment_mode = parse_environment_mode(value);
+            if (options.environment_mode == EnvironmentMode::MixedRoadGates) {
+                options.mixed_preset = parse_mixed_preset(value);
+            }
         } else if (arg == "--structured-map" && i + 1 < argc) {
             options.structured_preset = parse_structured_preset(argv[++i]);
         } else if (arg.rfind("--structured-map=", 0) == 0) {
@@ -369,6 +405,10 @@ AppOptions parse_args(int argc, char** argv) {
             options.unstructured_preset = parse_unstructured_preset(argv[++i]);
         } else if (arg.rfind("--unstructured-map=", 0) == 0) {
             options.unstructured_preset = parse_unstructured_preset(arg.substr(std::strlen("--unstructured-map=")));
+        } else if (arg == "--mixed-map" && i + 1 < argc) {
+            options.mixed_preset = parse_mixed_preset(argv[++i]);
+        } else if (arg.rfind("--mixed-map=", 0) == 0) {
+            options.mixed_preset = parse_mixed_preset(arg.substr(std::strlen("--mixed-map=")));
         } else if (arg == "--world-file" && i + 1 < argc) {
             options.world_file = argv[++i];
         } else if (arg.rfind("--world-file=", 0) == 0) {
