@@ -1239,10 +1239,10 @@ WorldMap WorldMap::mixed_hardware_demo() {
         {0.080, 0.740, 0.980, 0.780},
         // Protrusion from the lower wall into the road: the only useful bypass
         // is the gate between this obstacle and the upper corridor wall.
-        {0.485, 0.100, 0.605, 0.420},
+        {0.560, 0.100, 0.680, 0.420},
     };
     world.gate_templates_ = {
-        {"corridor_checkpoint", {0.720, 0.300}, {0.720, 0.300}, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"corridor_checkpoint", {0.790, 0.300}, {0.790, 0.300}, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
         {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
     };
     world.gates_ = world.gate_templates_;
