@@ -1213,9 +1213,9 @@ WorldMap WorldMap::mixed_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::Custom;
-    world.bounds_ = {0.0, 0.0, 1.25, 0.68};
-    world.start_ = {0.200, 0.340};
-    world.goal_ = {0.940, 0.340};
+    world.bounds_ = {0.0, 0.0, 1.05, 0.80};
+    world.start_ = {0.150, 0.300};
+    world.goal_ = {0.900, 0.300};
     world.start_heading_ = 0.0;
 
     world.road_centerline_.clear();
@@ -1231,9 +1231,23 @@ WorldMap WorldMap::mixed_hardware_demo() {
         });
     }
 
-    world.obstacles_.clear();
-    world.gate_templates_.clear();
-    world.gates_.clear();
+    world.obstacles_ = {
+        // Physical corridor walls for the hardware mixed smoke test. These
+        // should be reproduced with low cardboard/foam walls so the LiDAR sees
+        // the same constraints instead of treating the room as open space.
+        {0.080, 0.060, 0.980, 0.100},
+        {0.080, 0.740, 0.980, 0.780},
+        // Protrusion from the lower wall into the road: the only useful bypass
+        // is the gate between this obstacle and the upper corridor wall.
+        {0.485, 0.100, 0.605, 0.420},
+    };
+    world.gate_templates_ = {
+        {"corridor_checkpoint", {0.720, 0.300}, {0.720, 0.300}, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+    };
+    world.gates_ = world.gate_templates_;
+    recompute_gate_headings(&world.gates_, world.goal_);
+    world.gate_templates_ = world.gates_;
     world.gate_behavior_ = GateBehaviorMode::Static;
     world.gate_seed_ = 0;
     return world;
