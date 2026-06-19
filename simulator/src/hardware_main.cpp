@@ -26,6 +26,7 @@ using thesis_sim::GateBehaviorMode;
 using thesis_sim::HardwarePlannerConfig;
 using thesis_sim::HardwarePlannerReport;
 using thesis_sim::HardwarePlannerRunner;
+using thesis_sim::HardwareLocalizationPolicy;
 using thesis_sim::LidarHit;
 using thesis_sim::LiveViewStreamClient;
 using thesis_sim::MotorControlMode;
@@ -92,6 +93,7 @@ struct AppOptions {
     double max_linear_speed_mps = 0.0;
     double max_yaw_rate_rad_s = 0.0;
     double cruise_speed_limit_mps = 0.0;
+    HardwareLocalizationPolicy localization_policy = HardwareLocalizationPolicy::Auto;
     EnvironmentMode environment_mode = EnvironmentMode::StructuredRoad;
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
@@ -198,6 +200,9 @@ WorldMap fit_structured_hardware_world(WorldMap world, VehicleProfile vehicle_pr
         for (Rect& obstacle : world.editable_obstacles()) {
             obstacle = transform_rect_about(obstacle, center, target_center, scale);
         }
+        for (Rect& obstacle : world.editable_perception_obstacles()) {
+            obstacle = transform_rect_about(obstacle, center, target_center, scale);
+        }
         for (GateSpec& gate : world.editable_gates()) {
             gate.position = transform_point_about(gate.position, center, target_center, scale);
             gate.anchor_position = transform_point_about(gate.anchor_position, center, target_center, scale);
@@ -299,6 +304,18 @@ StructuredMapPreset parse_structured_preset(const std::string& value) {
     return StructuredMapPreset::ValidationRoad;
 }
 
+HardwareLocalizationPolicy parse_localization_policy(const std::string& value) {
+    if (value == "encoder" || value == "encoder_imu" || value == "odom" ||
+        value == "odometry" || value == "perception") {
+        return HardwareLocalizationPolicy::EncoderImuPrimary;
+    }
+    if (value == "lidar" || value == "scan_matching" || value == "scan-match" ||
+        value == "pose_correction") {
+        return HardwareLocalizationPolicy::LidarPoseCorrection;
+    }
+    return HardwareLocalizationPolicy::Auto;
+}
+
 WorldMap make_world_from_options(const AppOptions& options) {
     if (!options.world_file.empty()) {
         std::ifstream in(options.world_file, std::ios::binary);
@@ -361,6 +378,7 @@ void print_usage(const char* argv0) {
         << "  --max-linear-speed MPS    override hardware max linear speed\n"
         << "  --max-yaw-rate RADS       override hardware max yaw rate\n"
         << "  --cruise-speed MPS        override planner cruise speed limit\n"
+        << "  --pose-fusion MODE        auto | encoder | lidar (default auto)\n"
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
         << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n"
         << "  --enable-planner-safety   enable planner-side LiDAR safety stop logic\n"
@@ -449,6 +467,10 @@ AppOptions parse_args(int argc, char** argv) {
             options.max_yaw_rate_rad_s = std::atof(argv[++i]);
         } else if (arg == "--cruise-speed" && i + 1 < argc) {
             options.cruise_speed_limit_mps = std::atof(argv[++i]);
+        } else if (arg == "--pose-fusion" && i + 1 < argc) {
+            options.localization_policy = parse_localization_policy(argv[++i]);
+        } else if (arg.rfind("--pose-fusion=", 0) == 0) {
+            options.localization_policy = parse_localization_policy(arg.substr(std::strlen("--pose-fusion=")));
         } else if (arg == "--no-auto-mode") {
             options.auto_mode = false;
         } else if (arg == "--no-gyro-zero") {
@@ -717,7 +739,8 @@ std::vector<RPLidarA1::ScanPoint> make_lidar_scan(const WorldMap& world,
         state.yaw + config.localization.lidar_yaw_offset,
         kBeams,
         2.0 * kPi,
-        config.localization.max_range_m);
+        config.localization.max_range_m,
+        true);
 
     std::vector<RPLidarA1::ScanPoint> scan;
     scan.reserve(hits.size());
@@ -953,6 +976,7 @@ int main(int argc, char** argv) {
         planner_config.auto_gyro_zero = options.gyro_zero;
         planner_config.use_encoder_odometry = true;
         planner_config.planner_safety_stop_enabled = options.planner_safety_stop_enabled;
+        planner_config.localization_policy = options.localization_policy;
         if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
             planner_config.cruise_speed_limit = 0.16;
             planner_config.goal_tolerance_m = 0.08;

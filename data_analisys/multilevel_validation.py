@@ -392,13 +392,6 @@ def write_figures(output_dir: Path, runs: list[PreparedRun]) -> None:
         y_label="candidate without choice ratio",
     )
     write_grouped_bar_chart(
-        output_dir / "mixed_switches.svg",
-        title="Road/gate switches",
-        categories=modes,
-        groups=by_level("mixed_switches"),
-        y_label="switch count",
-    )
-    write_grouped_bar_chart(
         output_dir / "gate_score_max.svg",
         title="Winning gate salience upper bound",
         categories=modes,
@@ -567,7 +560,6 @@ def write_markdown(path: Path, runs: list[PreparedRun], report_paths: list[Path]
             "- `gate_completion.svg`",
             "- `gate_target_min_distance.svg`",
             "- `candidate_without_choice_ratio.svg`",
-            "- `mixed_switches.svg`",
             "- `gate_score_max.svg`",
             "- `planner_compute_p95.svg`",
             "- `path_over_reference.svg`",

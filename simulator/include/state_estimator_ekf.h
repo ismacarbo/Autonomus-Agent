@@ -38,6 +38,7 @@ class KinematicBicycleEkf {
     void predict(double dt, double odom_speed, double odom_yaw_rate);
     void update_imu(double measured_yaw, double measured_yaw_rate);
     void update_lidar_pose(const Vec2& measured_position, double measured_yaw, bool include_yaw);
+    void override_pose(const Vec2& position, double yaw);
 
     const EkfState& state() const { return state_; }
     const EkfConfig& config() const { return config_; }

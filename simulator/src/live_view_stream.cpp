@@ -22,9 +22,9 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 8U;
+constexpr std::uint16_t kPacketVersion = 9U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
-constexpr std::uint16_t kWorldBlobVersion = 1U;
+constexpr std::uint16_t kWorldBlobVersion = 2U;
 constexpr std::uint16_t kPacketHello = 0U;
 constexpr std::uint16_t kPacketScene = 1U;
 constexpr std::uint16_t kPacketFrame = 2U;
@@ -293,6 +293,7 @@ void write_world(std::vector<std::uint8_t>* out, const WorldMap& world) {
     write_vec2(out, world.goal());
     write_pod(out, world.start_heading());
     write_vector(out, world.obstacles(), write_rect);
+    write_vector(out, world.perception_obstacles(), write_rect);
     write_vector(out, world.gates(), write_gate_spec);
     write_vector(out, world.road_centerline(), write_vec2);
 }
@@ -312,6 +313,7 @@ bool read_world(const std::vector<std::uint8_t>& data, std::size_t* offset, Worl
     Vec2 goal{};
     double start_heading = 0.0;
     std::vector<Rect> obstacles;
+    std::vector<Rect> perception_obstacles;
     std::vector<GateSpec> gates;
     std::vector<Vec2> road_centerline;
 
@@ -325,6 +327,7 @@ bool read_world(const std::vector<std::uint8_t>& data, std::size_t* offset, Worl
         !read_vec2(data, offset, &goal) ||
         !read_pod(data, offset, &start_heading) ||
         !read_vector(data, offset, &obstacles, read_rect) ||
+        !read_vector(data, offset, &perception_obstacles, read_rect) ||
         !read_vector(data, offset, &gates, read_gate_spec) ||
         !read_vector(data, offset, &road_centerline, read_vec2)) {
         return false;
@@ -346,6 +349,7 @@ bool read_world(const std::vector<std::uint8_t>& data, std::size_t* offset, Worl
     restored.set_goal(goal);
     restored.set_start_heading(start_heading);
     restored.editable_obstacles() = std::move(obstacles);
+    restored.editable_perception_obstacles() = std::move(perception_obstacles);
     restored.editable_gates() = std::move(gates);
     restored.editable_road_centerline() = std::move(road_centerline);
     // Do not finalize deserialized stream worlds here. The sender already
@@ -1215,6 +1219,7 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
     WorldMap scene_world = remap.display_world;
     if (runner.world().environment_mode() == EnvironmentMode::UnstructuredGates) {
         scene_world.editable_obstacles().clear();
+        scene_world.editable_perception_obstacles().clear();
         scene_world.editable_gates().clear();
     }
     LiveSceneSnapshot scene;
@@ -1224,15 +1229,21 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
     scene.geometry = runner.geometry();
     scene.imu_enabled = true;
     scene.lidar_enabled = lidar_enabled;
+    const bool lidar_pose_correction = runner.lidar_pose_correction_enabled_for_current_mode();
     scene.localization_mode =
-        runner.world().environment_mode() == EnvironmentMode::UnstructuredGates
-            ? "EKF (IMU + perception map)"
-            : (lidar_enabled ? "EKF (IMU + LiDAR)" : "EKF (IMU + road constraint)");
+        !lidar_enabled
+            ? "EKF (encoder/IMU + road constraint)"
+            : (lidar_pose_correction
+                   ? "EKF (encoder/IMU + LiDAR pose correction)"
+                   : "EKF (encoder/IMU primary; LiDAR perception)");
     scene.heading_source = "IMU";
     scene.range_sensor_name =
         runner.world().environment_mode() == EnvironmentMode::UnstructuredGates
             ? "RPLidar A1 (perception-driven)"
-            : (lidar_enabled ? "RPLidar A1" : "LiDAR disabled for structured planner");
+            : (lidar_enabled
+                   ? (lidar_pose_correction ? "RPLidar A1 (pose + perception)"
+                                            : "RPLidar A1 (perception only)")
+                   : "LiDAR disabled for structured planner");
     scene.vehicle_model_name = vehicle_model_kind_name(runner.config().vehicle_model);
     scene.tracking_controller_name = "MPC path follower";
     scene.active_lidar_beams = lidar_enabled ? 360 : 0;

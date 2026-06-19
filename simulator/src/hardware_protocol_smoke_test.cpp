@@ -671,7 +671,8 @@ std::vector<RPLidarA1::ScanPoint> make_sim_lidar_scan(const WorldMap& world,
         pose.yaw + config.lidar_yaw_offset_rad,
         kBeams,
         2.0 * kPi,
-        config.lidar_max_range_m);
+        config.lidar_max_range_m,
+        true);
 
     std::vector<RPLidarA1::ScanPoint> scan;
     scan.reserve(hits.size());
@@ -954,6 +955,12 @@ void translate_world(WorldMap* world, const Vec2& delta) {
         obstacle.min_y += delta.y;
         obstacle.max_y += delta.y;
     }
+    for (Rect& obstacle : world->editable_perception_obstacles()) {
+        obstacle.min_x += delta.x;
+        obstacle.max_x += delta.x;
+        obstacle.min_y += delta.y;
+        obstacle.max_y += delta.y;
+    }
     for (auto& gate : world->editable_gates()) {
         gate.position = {gate.position.x + delta.x, gate.position.y + delta.y};
         gate.anchor_position = {gate.anchor_position.x + delta.x, gate.anchor_position.y + delta.y};
@@ -972,6 +979,7 @@ WorldMap make_local_mapping_world(const TestOptions& options) {
 WorldMap make_stream_world(const TestOptions& options) {
     WorldMap world = make_selected_world(options);
     world.editable_obstacles().clear();
+    world.editable_perception_obstacles().clear();
 
     const double size = std::max(options.stream.world_size_m, 2.0);
     const Vec2 anchor{size * 0.5, size * 0.5};

@@ -78,6 +78,14 @@ struct LidarHit {
     bool hit = false;
 };
 
+struct DynamicObstacleSpec {
+    Rect obstacle;
+    double activate_after_s = 0.0;
+    double activate_after_progress_m = 0.0;
+    double deactivate_after_s = -1.0;
+    bool discovered = false;
+};
+
 class WorldMap {
   public:
     static WorldMap unstructured_demo(UnstructuredMapPreset preset = UnstructuredMapPreset::RobotValidation,
@@ -86,6 +94,7 @@ class WorldMap {
     static WorldMap structured_demo(StructuredMapPreset preset = StructuredMapPreset::ValidationRoad);
     static WorldMap mixed_demo();
     static WorldMap mixed_closed_obstacle_demo();
+    static WorldMap mixed_dynamic_obstacle_demo();
     static WorldMap mixed_closed_obstacle_hardware_demo();
     static WorldMap mixed_ideal_demo();
     static WorldMap mixed_hardware_aligned_demo();
@@ -96,6 +105,8 @@ class WorldMap {
 
     const Rect& bounds() const { return bounds_; }
     const std::vector<Rect>& obstacles() const { return obstacles_; }
+    const std::vector<Rect>& perception_obstacles() const { return perception_obstacles_; }
+    const std::vector<DynamicObstacleSpec>& dynamic_obstacles() const { return dynamic_obstacles_; }
     const std::vector<GateSpec>& gates() const { return gates_; }
     const std::vector<Vec2>& road_centerline() const { return road_centerline_; }
     const Vec2& start() const { return start_; }
@@ -108,16 +119,28 @@ class WorldMap {
     StructuredMapPreset structured_preset() const { return structured_preset_; }
 
     bool line_of_sight(const Vec2& from, const Vec2& to, double padding = 0.15) const;
-    std::vector<LidarHit> raycast(const Vec2& origin, double heading, int beams, double fov_rad, double max_range) const;
+    std::vector<LidarHit> raycast(const Vec2& origin,
+                                  double heading,
+                                  int beams,
+                                  double fov_rad,
+                                  double max_range,
+                                  bool include_perception_obstacles = false) const;
     bool collides(const std::array<Vec2, 4>& polygon, double padding = 0.05) const;
     void set_gate_behavior(GateBehaviorMode gate_behavior, std::uint32_t gate_seed);
     void reset_gate_layout(std::uint32_t gate_seed);
     void update_gate_layout(double sim_time_s);
+    void reset_perception_obstacles();
+    void update_perception_obstacles(double sim_time_s,
+                                     double progress_s,
+                                     const Vec2* sensor_origin = nullptr,
+                                     double detection_range_m = -1.0);
     void set_bounds(const Rect& bounds) { bounds_ = bounds; }
     void set_start(const Vec2& start) { start_ = start; }
     void set_goal(const Vec2& goal) { goal_ = goal; }
     void set_start_heading(double start_heading) { start_heading_ = start_heading; }
     std::vector<Rect>& editable_obstacles() { return obstacles_; }
+    std::vector<Rect>& editable_perception_obstacles() { return perception_obstacles_; }
+    std::vector<DynamicObstacleSpec>& editable_dynamic_obstacles() { return dynamic_obstacles_; }
     std::vector<GateSpec>& editable_gates() { return gates_; }
     std::vector<Vec2>& editable_road_centerline() { return road_centerline_; }
     void finalize_editor_changes();
@@ -128,6 +151,8 @@ class WorldMap {
     Vec2 goal_;
     double start_heading_ = 0.0;
     std::vector<Rect> obstacles_;
+    std::vector<Rect> perception_obstacles_;
+    std::vector<DynamicObstacleSpec> dynamic_obstacles_;
     std::vector<GateSpec> gates_;
     std::vector<GateSpec> gate_templates_;
     std::vector<Vec2> road_centerline_;

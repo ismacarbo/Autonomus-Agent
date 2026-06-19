@@ -218,6 +218,7 @@ class PlannerDrivenVehicleSim {
     double active_lidar_range() const;
     void load_world(WorldMap world);
     void set_sensor_suite(bool imu_enabled, bool lidar_enabled, RangeSensorProfile profile);
+    void set_lidar_range(double range_m);
     void set_ideal_conditions(bool enabled);
     void set_dynamic_lidar_gates(bool enabled);
     void set_gate_behavior(GateBehaviorMode mode, std::uint32_t seed);

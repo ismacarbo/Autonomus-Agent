@@ -55,6 +55,14 @@ void KinematicBicycleEkf::reset(const Vec2& position, double yaw) {
     state_.covariance *= 0.05;
 }
 
+void KinematicBicycleEkf::override_pose(const Vec2& position, double yaw) {
+    state_.position = position;
+    state_.yaw = wrap_angle(yaw);
+    state_.covariance(0, 0) = std::min(state_.covariance(0, 0), 0.04);
+    state_.covariance(1, 1) = std::min(state_.covariance(1, 1), 0.04);
+    state_.covariance(2, 2) = std::min(state_.covariance(2, 2), 0.03);
+}
+
 void KinematicBicycleEkf::finalize_predict(double odom_speed, double odom_yaw_rate, double dt) {
     const double prev_speed = state_.speed;
     state_.speed = odom_speed;

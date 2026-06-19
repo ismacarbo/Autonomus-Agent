@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="90" viewBox="0 0 1500 90">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#1E66D0"/>
+    </marker>
+  </defs>
+  <line x1="20" y1="45" x2="1460" y2="45" stroke="#1E66D0" stroke-width="12" marker-end="url(#arrow)"/>
+  <path d="M232,24 L254,45 L232,66" fill="none" stroke="#1E66D0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M482,24 L504,45 L482,66" fill="none" stroke="#1E66D0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M732,24 L754,45 L732,66" fill="none" stroke="#1E66D0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M982,24 L1004,45 L982,66" fill="none" stroke="#1E66D0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M1232,24 L1254,45 L1232,66" fill="none" stroke="#1E66D0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

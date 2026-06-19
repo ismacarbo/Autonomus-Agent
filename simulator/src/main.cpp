@@ -28,8 +28,10 @@
 namespace {
 
 using thesis_sim::GateSpec;
+using thesis_sim::DynamicObstacleSpec;
 using thesis_sim::GateBehaviorMode;
 using thesis_sim::EnvironmentMode;
+using thesis_sim::HardwareLocalizationPolicy;
 using thesis_sim::HardwareTelemetrySample;
 using thesis_sim::LidarHit;
 using thesis_sim::LiveFrameSnapshot;
@@ -86,6 +88,7 @@ enum WorkspaceView {
 constexpr double kHardwareStructuredMaxSpanM = 0.40;
 constexpr double kTankHardwareStructuredMaxSpanM = 1.00;
 constexpr double kTankStructuredBaselineRoadSpanM = 0.68;
+constexpr double kDynamicObstacleSimulationLidarRangeM = 0.75;
 constexpr float kHardwareTrackDefaultScale = 1.00f;
 constexpr float kHardwareTrackMinScale = 0.70f;
 constexpr float kHardwareTrackMaxScale = 1.20f;
@@ -121,6 +124,7 @@ struct UiState {
     int hardware_structured_preset = static_cast<int>(StructuredMapPreset::ValidationRoad);
     int hardware_mixed_preset = 0;
     int hardware_vehicle_model = static_cast<int>(VehicleModelKind::CarLikeBicycle);
+    int hardware_localization_policy = static_cast<int>(HardwareLocalizationPolicy::Auto);
     float hardware_track_scale = kHardwareTrackDefaultScale;
     bool show_grid = true;
     bool show_trails = true;
@@ -154,6 +158,8 @@ struct UiState {
     std::string last_hardware_report_path;
     std::string last_hardware_csv_report_path;
     std::string last_hardware_markdown_report_path;
+    std::string last_hardware_lidar_reconstruction_csv_path;
+    std::string last_hardware_lidar_reconstruction_ply_path;
     std::string last_hardware_report_error;
     std::string last_hardware_world_path;
     std::string last_hardware_world_error;
@@ -168,9 +174,59 @@ struct HardwareViewerState {
     LiveSceneSnapshot scene;
     LiveFrameSnapshot frame;
     std::vector<thesis_sim::HardwareTelemetrySample> history;
+    struct LidarReconstructionPoint {
+        double time = 0.0;
+        int step = 0;
+        int beam_index = 0;
+        double pose_x = 0.0;
+        double pose_y = 0.0;
+        double pose_yaw = 0.0;
+        double range_m = 0.0;
+        double angle_world_rad = 0.0;
+        double hit_x = 0.0;
+        double hit_y = 0.0;
+    };
+    std::vector<LidarReconstructionPoint> lidar_reconstruction;
+    int last_lidar_reconstruction_step = -1;
+};
+
+struct HardwarePoseQuality {
+    std::string source;
+    std::string detail;
+    double confidence = 0.0;
+    ImVec4 color{0.87f, 0.79f, 0.39f, 1.0f};
+};
+
+struct HardwarePreflightSummary {
+    int passed = 0;
+    int total = 0;
+    bool ready = false;
+    bool warning = false;
+};
+
+struct HardwareThesisMetrics {
+    bool has_data = false;
+    double runtime_s = 0.0;
+    double time_to_goal_s = -1.0;
+    double final_goal_distance_m = 0.0;
+    double min_clearance_m = 0.0;
+    double max_cross_track_m = 0.0;
+    double max_heading_error_deg = 0.0;
+    double avg_speed_mps = 0.0;
+    double max_speed_mps = 0.0;
+    double encoder_distance_m = 0.0;
+    double estimated_path_length_m = 0.0;
+    double odom_pose_delta_m = 0.0;
+    double structured_time_s = 0.0;
+    double gate_time_s = 0.0;
+    int passed_gates = 0;
+    int switch_events = 0;
+    int structured_to_gate_switches = 0;
+    int gate_to_structured_switches = 0;
 };
 
 std::string hardware_launch_hint(const UiState& ui_state);
+VehicleModelKind vehicle_model_from_live_name(const std::string& name);
 
 bool simulation_uses_dynamic_gates(const PlannerDrivenVehicleSim& sim) {
     return (sim.environment_mode() == EnvironmentMode::UnstructuredGates ||
@@ -280,6 +336,14 @@ Rect structured_content_bounds(const WorldMap& world) {
         include_point({obstacle.min_x, obstacle.min_y});
         include_point({obstacle.max_x, obstacle.max_y});
     }
+    for (const Rect& obstacle : world.perception_obstacles()) {
+        include_point({obstacle.min_x, obstacle.min_y});
+        include_point({obstacle.max_x, obstacle.max_y});
+    }
+    for (const DynamicObstacleSpec& obstacle : world.dynamic_obstacles()) {
+        include_point({obstacle.obstacle.min_x, obstacle.obstacle.min_y});
+        include_point({obstacle.obstacle.max_x, obstacle.obstacle.max_y});
+    }
     return bounds;
 }
 
@@ -297,6 +361,13 @@ WorldMap scale_world_map_about(const WorldMap& source, const Vec2& center, doubl
 
     for (Rect& obstacle : scaled.editable_obstacles()) {
         obstacle = scale_rect_about(obstacle, center, scale);
+    }
+    for (Rect& obstacle : scaled.editable_perception_obstacles()) {
+        obstacle = scale_rect_about(obstacle, center, scale);
+    }
+    for (DynamicObstacleSpec& obstacle : scaled.editable_dynamic_obstacles()) {
+        obstacle.obstacle = scale_rect_about(obstacle.obstacle, center, scale);
+        obstacle.activate_after_progress_m *= scale;
     }
     for (GateSpec& gate : scaled.editable_gates()) {
         gate.position = scale_point_about(gate.position, center, scale);
@@ -328,6 +399,13 @@ WorldMap transform_world_map_about(const WorldMap& source,
 
     for (Rect& obstacle : transformed.editable_obstacles()) {
         obstacle = transform_rect_about(obstacle, source_center, target_center, scale);
+    }
+    for (Rect& obstacle : transformed.editable_perception_obstacles()) {
+        obstacle = transform_rect_about(obstacle, source_center, target_center, scale);
+    }
+    for (DynamicObstacleSpec& obstacle : transformed.editable_dynamic_obstacles()) {
+        obstacle.obstacle = transform_rect_about(obstacle.obstacle, source_center, target_center, scale);
+        obstacle.activate_after_progress_m *= scale;
     }
     for (GateSpec& gate : transformed.editable_gates()) {
         gate.position = transform_point_about(gate.position, source_center, target_center, scale);
@@ -517,6 +595,7 @@ WorldMap sanitize_hardware_unstructured_world(WorldMap world) {
     }
 
     world.editable_obstacles().clear();
+    world.editable_perception_obstacles().clear();
     world.editable_gates().clear();
     world.finalize_editor_changes();
     world.set_gate_behavior(GateBehaviorMode::Static, 0);
@@ -755,6 +834,9 @@ std::string map_preset_name(const WorldMap& world) {
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
         const Rect& bounds = world.bounds();
         const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+        if (!world.dynamic_obstacles().empty()) {
+            return "Mixed Dynamic Obstacle Road";
+        }
         if (world.structured_preset() == StructuredMapPreset::IdealCircle && !world.obstacles().empty()) {
             return "Mixed Ideal Hardware-Aligned";
         }
@@ -774,6 +856,8 @@ std::string map_preset_name(const WorldMap& world) {
 
 const char* mixed_map_preset_name(int preset) {
     switch (preset) {
+        case 4:
+            return "Dynamic Obstacle Road";
         case 3:
             return "Closed Obstacle Road";
         case 2:
@@ -826,6 +910,9 @@ int mixed_preset_from_world(const WorldMap& world) {
     }
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    if (!world.dynamic_obstacles().empty()) {
+        return 4;
+    }
     if (world.structured_preset() == StructuredMapPreset::IdealCircle && !world.obstacles().empty()) {
         return 2;
     }
@@ -1020,6 +1107,13 @@ std::string replace_extension(const std::string& path, const char* extension) {
     return out.string();
 }
 
+std::string append_stem_suffix(const std::string& path, const char* suffix, const char* extension) {
+    std::filesystem::path out(path);
+    const std::string stem = out.stem().string();
+    out.replace_filename(stem + (suffix != nullptr ? suffix : "") + (extension != nullptr ? extension : ""));
+    return out.string();
+}
+
 RunQualitySummary summarize_run_quality(const std::vector<TelemetrySample>& history) {
     RunQualitySummary summary;
     if (history.empty()) {
@@ -1090,6 +1184,263 @@ RunQualitySummary summarize_run_quality(const std::vector<HardwareTelemetrySampl
         summary.min_lidar = 0.0;
     }
     return summary;
+}
+
+bool flag_set(std::uint16_t flags, thesis_sim::StatusFlag flag) {
+    return (flags & static_cast<std::uint16_t>(flag)) != 0U;
+}
+
+bool flag_set(std::uint16_t flags, thesis_sim::MotorFlag flag) {
+    return (flags & static_cast<std::uint16_t>(flag)) != 0U;
+}
+
+HardwarePoseQuality estimate_hardware_pose_quality(const HardwareViewerState& hardware) {
+    HardwarePoseQuality quality;
+    const bool has_sample = hardware.frame.has_latest_sample;
+    const HardwareTelemetrySample& sample = hardware.frame.latest_sample;
+    const bool has_lidar =
+        hardware.has_scene &&
+        hardware.scene.lidar_enabled &&
+        hardware.frame.valid_lidar_samples >= 32;
+    const bool imu_ready =
+        has_sample && flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::ImuReady);
+    const bool encoders_ready =
+        has_sample &&
+        flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::EncodersReady) &&
+        sample.controller_encoder_dt_ms > 0.0;
+    const bool motors_ready =
+        has_sample &&
+        flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::MotorsReady);
+    const bool pose_from_lidar =
+        hardware.has_scene &&
+        hardware.scene.localization_mode.find("LiDAR pose") != std::string::npos;
+    const bool pose_encoder_primary =
+        hardware.has_scene &&
+        hardware.scene.localization_mode.find("encoder/IMU primary") != std::string::npos;
+
+    quality.source =
+        pose_from_lidar ? "LiDAR pose correction"
+                        : (pose_encoder_primary ? "Encoder/IMU primary" : "Road/IMU constraint");
+    double confidence = 0.10;
+    if (hardware.frame.telemetry_ready) {
+        confidence += 0.18;
+    }
+    if (imu_ready) {
+        confidence += 0.18;
+    }
+    if (encoders_ready) {
+        confidence += 0.24;
+    }
+    if (motors_ready) {
+        confidence += 0.08;
+    }
+    if (!hardware.has_scene || !hardware.scene.lidar_enabled || has_lidar) {
+        confidence += 0.14;
+    }
+    if (hardware.frame.planner_has_reference) {
+        confidence += 0.08;
+    }
+    if (std::abs(hardware.frame.tracker_cross_track_error) < 0.08 &&
+        std::abs(hardware.frame.tracker_heading_error_deg) < 25.0) {
+        confidence += 0.08;
+    }
+    quality.confidence = std::clamp(confidence, 0.0, 1.0);
+    quality.color = quality.confidence >= 0.78
+                        ? ImVec4(0.48f, 0.88f, 0.62f, 1.0f)
+                        : (quality.confidence >= 0.52
+                               ? ImVec4(0.87f, 0.79f, 0.39f, 1.0f)
+                               : ImVec4(0.95f, 0.40f, 0.34f, 1.0f));
+    if (!hardware.frame.telemetry_ready) {
+        quality.detail = "waiting for controller telemetry";
+    } else if (!imu_ready) {
+        quality.detail = "IMU not ready";
+    } else if (!encoders_ready) {
+        quality.detail = "encoder odometry not ready";
+    } else if (hardware.has_scene && hardware.scene.lidar_enabled && !has_lidar) {
+        quality.detail = "LiDAR perception is weak";
+    } else if (pose_encoder_primary) {
+        quality.detail = "pose is driven by odometry; LiDAR feeds gates and obstacles";
+    } else {
+        quality.detail = hardware.has_scene ? hardware.scene.localization_mode : "waiting for live scene";
+    }
+    return quality;
+}
+
+HardwarePreflightSummary summarize_hardware_preflight(const HardwareViewerState& hardware,
+                                                      const UiState& ui_state,
+                                                      const LiveViewStreamServer& hardware_server) {
+    HardwarePreflightSummary summary;
+    auto required = [&](bool ok) {
+        ++summary.total;
+        if (ok) {
+            ++summary.passed;
+        }
+    };
+
+    const bool has_sample = hardware.frame.has_latest_sample;
+    const HardwareTelemetrySample& sample = hardware.frame.latest_sample;
+    const VehicleModelKind configured_model =
+        static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model);
+    const bool live_model_ok =
+        hardware.has_scene &&
+        vehicle_model_from_live_name(hardware.scene.vehicle_model_name) == configured_model;
+    const bool imu_ready =
+        has_sample && flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::ImuReady);
+    const bool encoders_ready =
+        has_sample &&
+        flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::EncodersReady) &&
+        sample.controller_encoder_dt_ms > 0.0;
+    const bool motors_ready =
+        has_sample && flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::MotorsReady);
+    const bool lidar_ready =
+        !hardware.has_scene ||
+        !hardware.scene.lidar_enabled ||
+        hardware.frame.valid_lidar_samples >= 32;
+
+    required(hardware_server.listening());
+    required(hardware_server.connected() || hardware.frame.connected);
+    required(hardware.has_scene);
+    required(live_model_ok);
+    required(!hardware_server.has_pending_world());
+    required(hardware.frame.telemetry_ready);
+    required(imu_ready);
+    required(encoders_ready);
+    required(motors_ready);
+    required(lidar_ready);
+    required(hardware.frame.planner_has_reference || hardware.frame.step_count == 0);
+
+    summary.ready = summary.total > 0 && summary.passed == summary.total;
+    summary.warning =
+        summary.passed >= std::max(0, summary.total - 2) &&
+        !summary.ready;
+    return summary;
+}
+
+HardwareThesisMetrics summarize_hardware_thesis_metrics(const HardwareViewerState& hardware) {
+    HardwareThesisMetrics metrics;
+    if (hardware.history.empty()) {
+        return metrics;
+    }
+
+    metrics.has_data = true;
+    metrics.runtime_s = hardware.history.back().time;
+    metrics.final_goal_distance_m = hardware.history.back().distance_to_goal;
+    metrics.passed_gates =
+        static_cast<int>(std::lround(hardware.history.back().passed_gates));
+    metrics.min_clearance_m = std::numeric_limits<double>::infinity();
+
+    const double ticks_to_distance =
+        hardware.has_scene && hardware.scene.geometry.encoder_ticks_per_revolution > 0
+            ? (2.0 * 3.14159265358979323846 * hardware.scene.geometry.wheel_radius) /
+                  static_cast<double>(hardware.scene.geometry.encoder_ticks_per_revolution)
+            : 0.0;
+
+    double speed_total = 0.0;
+    bool previous_gate_mode =
+        hardware.history.front().dynamic_gap_gates > 0.5 &&
+        hardware.history.front().chosen_gate_index >= 0.0;
+    for (size_t i = 0; i < hardware.history.size(); ++i) {
+        const HardwareTelemetrySample& sample = hardware.history[i];
+        speed_total += sample.speed;
+        metrics.max_speed_mps = std::max(metrics.max_speed_mps, sample.speed);
+        metrics.max_cross_track_m =
+            std::max(metrics.max_cross_track_m, std::abs(sample.tracker_cross_track));
+        metrics.max_heading_error_deg =
+            std::max(metrics.max_heading_error_deg, std::abs(sample.tracker_heading_error_deg));
+        if (sample.min_lidar > 0.0) {
+            metrics.min_clearance_m = std::min(metrics.min_clearance_m, sample.min_lidar);
+        }
+        if (metrics.time_to_goal_s < 0.0 && sample.distance_to_goal <= 1e-3) {
+            metrics.time_to_goal_s = sample.time;
+        }
+        if (ticks_to_distance > 0.0) {
+            metrics.encoder_distance_m +=
+                0.5 *
+                (std::abs(static_cast<double>(sample.controller_left_encoder_delta)) +
+                 std::abs(static_cast<double>(sample.controller_right_encoder_delta))) *
+                ticks_to_distance;
+        }
+        if (i > 0) {
+            const HardwareTelemetrySample& prev = hardware.history[i - 1];
+            metrics.estimated_path_length_m +=
+                std::hypot(sample.position_x - prev.position_x,
+                           sample.position_y - prev.position_y);
+            const double dt = std::max(sample.time - prev.time, 0.0);
+            const bool gate_mode =
+                sample.dynamic_gap_gates > 0.5 &&
+                sample.chosen_gate_index >= 0.0;
+            if (gate_mode) {
+                metrics.gate_time_s += dt;
+            } else {
+                metrics.structured_time_s += dt;
+            }
+            if (gate_mode != previous_gate_mode) {
+                ++metrics.switch_events;
+                if (gate_mode) {
+                    ++metrics.structured_to_gate_switches;
+                } else {
+                    ++metrics.gate_to_structured_switches;
+                }
+                previous_gate_mode = gate_mode;
+            }
+        }
+    }
+    metrics.avg_speed_mps = speed_total / static_cast<double>(hardware.history.size());
+    metrics.odom_pose_delta_m = std::abs(metrics.encoder_distance_m - metrics.estimated_path_length_m);
+    if (!std::isfinite(metrics.min_clearance_m)) {
+        metrics.min_clearance_m = 0.0;
+    }
+    if (hardware.frame.goal_reached && metrics.time_to_goal_s < 0.0) {
+        metrics.time_to_goal_s = hardware.frame.sim_time;
+    }
+    return metrics;
+}
+
+void append_lidar_reconstruction_frame(HardwareViewerState* hardware) {
+    if (hardware == nullptr || !hardware->has_scene || !hardware->scene.lidar_enabled) {
+        return;
+    }
+    const LiveFrameSnapshot& frame = hardware->frame;
+    if (frame.step_count == hardware->last_lidar_reconstruction_step || frame.lidar_hits.empty()) {
+        return;
+    }
+
+    const double sample_time = frame.has_latest_sample ? frame.latest_sample.time : frame.sim_time;
+    const Vec2 pose = frame.navigation_position;
+    const double pose_yaw = frame.navigation_yaw;
+    int beam_index = 0;
+    for (const LidarHit& hit : frame.lidar_hits) {
+        if (!hit.hit ||
+            !(hit.distance > 0.0) ||
+            !std::isfinite(hit.distance) ||
+            !std::isfinite(hit.point.x) ||
+            !std::isfinite(hit.point.y)) {
+            ++beam_index;
+            continue;
+        }
+        hardware->lidar_reconstruction.push_back({
+            sample_time,
+            frame.step_count,
+            beam_index,
+            pose.x,
+            pose.y,
+            pose_yaw,
+            hit.distance,
+            hit.angle,
+            hit.point.x,
+            hit.point.y,
+        });
+        ++beam_index;
+    }
+    hardware->last_lidar_reconstruction_step = frame.step_count;
+
+    constexpr std::size_t kMaxReconstructionPoints = 1000000;
+    if (hardware->lidar_reconstruction.size() > kMaxReconstructionPoints) {
+        const std::size_t overflow = hardware->lidar_reconstruction.size() - kMaxReconstructionPoints;
+        hardware->lidar_reconstruction.erase(
+            hardware->lidar_reconstruction.begin(),
+            hardware->lidar_reconstruction.begin() + static_cast<std::ptrdiff_t>(overflow));
+    }
 }
 
 void push_timeline_event(std::vector<TimelineEvent>* events,
@@ -1513,6 +1864,13 @@ void write_world_json(std::ostream& out, const WorldMap& world) {
         out << (i + 1 < world.obstacles().size() ? ",\n" : "\n");
     }
     out << "      ],\n";
+    out << "      \"perception_obstacles\": [\n";
+    for (size_t i = 0; i < world.perception_obstacles().size(); ++i) {
+        out << "        ";
+        write_rect_json(out, world.perception_obstacles()[i]);
+        out << (i + 1 < world.perception_obstacles().size() ? ",\n" : "\n");
+    }
+    out << "      ],\n";
     out << "      \"gates\": [\n";
     for (size_t i = 0; i < world.gates().size(); ++i) {
         const GateSpec& gate = world.gates()[i];
@@ -1707,6 +2065,8 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     const MetricSummary lidar_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::lidar_ms);
     const MetricSummary estimator_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::estimator_ms);
     const MetricSummary step_summary = summarize_metric(hardware.history, &HardwareTelemetrySample::step_ms);
+    const HardwareThesisMetrics thesis_metrics = summarize_hardware_thesis_metrics(hardware);
+    const HardwarePoseQuality pose_quality = estimate_hardware_pose_quality(hardware);
 
     out << std::fixed << std::setprecision(6);
     out << "{\n";
@@ -1848,11 +2208,34 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "  },\n";
     out << "  \"performance\": {\n";
     out << "    \"history_samples\": " << hardware.history.size() << ",\n";
+    out << "    \"lidar_reconstruction_points\": " << hardware.lidar_reconstruction.size() << ",\n";
     out << "    \"planning_ms\": {\"avg\": " << planning_summary.avg << ",\"max\": " << planning_summary.max << "},\n";
     out << "    \"tracking_ms\": {\"avg\": " << tracking_summary.avg << ",\"max\": " << tracking_summary.max << "},\n";
     out << "    \"lidar_ms\": {\"avg\": " << lidar_summary.avg << ",\"max\": " << lidar_summary.max << "},\n";
     out << "    \"estimator_ms\": {\"avg\": " << estimator_summary.avg << ",\"max\": " << estimator_summary.max << "},\n";
     out << "    \"step_ms\": {\"avg\": " << step_summary.avg << ",\"max\": " << step_summary.max << "}\n";
+    out << "  },\n";
+    out << "  \"thesis_metrics\": {\n";
+    out << "    \"pose_source\": \"" << json_escape(pose_quality.source) << "\",\n";
+    out << "    \"pose_confidence\": " << pose_quality.confidence << ",\n";
+    out << "    \"pose_note\": \"" << json_escape(pose_quality.detail) << "\",\n";
+    out << "    \"runtime_s\": " << thesis_metrics.runtime_s << ",\n";
+    out << "    \"time_to_goal_s\": " << thesis_metrics.time_to_goal_s << ",\n";
+    out << "    \"final_goal_distance_m\": " << thesis_metrics.final_goal_distance_m << ",\n";
+    out << "    \"passed_gates\": " << thesis_metrics.passed_gates << ",\n";
+    out << "    \"switch_events\": " << thesis_metrics.switch_events << ",\n";
+    out << "    \"structured_to_gate_switches\": " << thesis_metrics.structured_to_gate_switches << ",\n";
+    out << "    \"gate_to_structured_switches\": " << thesis_metrics.gate_to_structured_switches << ",\n";
+    out << "    \"structured_time_s\": " << thesis_metrics.structured_time_s << ",\n";
+    out << "    \"gate_time_s\": " << thesis_metrics.gate_time_s << ",\n";
+    out << "    \"encoder_distance_m\": " << thesis_metrics.encoder_distance_m << ",\n";
+    out << "    \"estimated_path_length_m\": " << thesis_metrics.estimated_path_length_m << ",\n";
+    out << "    \"odom_pose_delta_m\": " << thesis_metrics.odom_pose_delta_m << ",\n";
+    out << "    \"min_clearance_m\": " << thesis_metrics.min_clearance_m << ",\n";
+    out << "    \"max_cross_track_m\": " << thesis_metrics.max_cross_track_m << ",\n";
+    out << "    \"max_heading_error_deg\": " << thesis_metrics.max_heading_error_deg << ",\n";
+    out << "    \"avg_speed_mps\": " << thesis_metrics.avg_speed_mps << ",\n";
+    out << "    \"max_speed_mps\": " << thesis_metrics.max_speed_mps << "\n";
     out << "  },\n";
     out << "  \"history\": [\n";
     for (size_t i = 0; i < hardware.history.size(); ++i) {
@@ -1946,6 +2329,13 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
         out << "      ";
         write_rect_json(out, world.obstacles()[i]);
         out << (i + 1 < world.obstacles().size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"perception_obstacles\": [\n";
+    for (size_t i = 0; i < world.perception_obstacles().size(); ++i) {
+        out << "      ";
+        write_rect_json(out, world.perception_obstacles()[i]);
+        out << (i + 1 < world.perception_obstacles().size() ? ",\n" : "\n");
     }
     out << "    ],\n";
     out << "    \"gates\": [\n";
@@ -2094,8 +2484,10 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
     }
     out << std::fixed << std::setprecision(6);
     out << "time,x,y,yaw,speed,target_speed,target_yaw_rate,jerk,command_r,distance_to_goal,min_lidar,front_lidar,"
+           "structured_track_s,structured_progress_s,passed_gates,"
            "tracker_cross_track,tracker_heading_error_deg,planning_ms,tracking_ms,lidar_ms,estimator_ms,step_ms,"
            "pwm_left,pwm_right,controller_pwm_left,controller_pwm_right,controller_target_pwm_left,controller_target_pwm_right,"
+           "controller_left_encoder_ticks,controller_right_encoder_ticks,controller_left_encoder_delta,controller_right_encoder_delta,controller_encoder_dt_ms,"
            "chosen_gate_index,chosen_gate_distance,candidate_gates,safety_stop_active,planner_has_reference,dynamic_gap_gates\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
@@ -2110,6 +2502,9 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.distance_to_goal << ','
             << sample.min_lidar << ','
             << sample.front_lidar << ','
+            << sample.structured_track_s << ','
+            << sample.structured_progress_s << ','
+            << sample.passed_gates << ','
             << sample.tracker_cross_track << ','
             << sample.tracker_heading_error_deg << ','
             << sample.planning_ms << ','
@@ -2123,6 +2518,11 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.controller_pwm_right << ','
             << sample.controller_target_pwm_left << ','
             << sample.controller_target_pwm_right << ','
+            << sample.controller_left_encoder_ticks << ','
+            << sample.controller_right_encoder_ticks << ','
+            << sample.controller_left_encoder_delta << ','
+            << sample.controller_right_encoder_delta << ','
+            << sample.controller_encoder_dt_ms << ','
             << sample.chosen_gate_index << ','
             << sample.chosen_gate_distance << ','
             << sample.candidate_gates << ','
@@ -2130,6 +2530,70 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.planner_has_reference << ','
             << sample.dynamic_gap_gates << '\n';
     }
+    return true;
+}
+
+bool write_hardware_lidar_reconstruction_csv(const HardwareViewerState& hardware,
+                                             const std::string& report_path) {
+    std::ofstream out(report_path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+    out << std::fixed << std::setprecision(6);
+    out << "time,step,beam_index,pose_x,pose_y,pose_yaw,range_m,angle_world_rad,hit_x,hit_y,pose_source\n";
+    for (const HardwareViewerState::LidarReconstructionPoint& point : hardware.lidar_reconstruction) {
+        out << point.time << ','
+            << point.step << ','
+            << point.beam_index << ','
+            << point.pose_x << ','
+            << point.pose_y << ','
+            << point.pose_yaw << ','
+            << point.range_m << ','
+            << point.angle_world_rad << ','
+            << point.hit_x << ','
+            << point.hit_y << ','
+            << "estimated_onboard_pose\n";
+    }
+    return true;
+}
+
+bool write_hardware_lidar_reconstruction_ply(const HardwareViewerState& hardware,
+                                             const std::string& report_path) {
+    std::ofstream out(report_path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+    out << std::fixed << std::setprecision(6);
+    out << "ply\n";
+    out << "format ascii 1.0\n";
+    out << "comment Thesis hardware LiDAR reconstruction point cloud\n";
+    out << "comment Coordinates are generated from LiDAR ranges transformed by estimated onboard pose, not external ground truth\n";
+    out << "element vertex " << hardware.lidar_reconstruction.size() << "\n";
+    out << "property float x\n";
+    out << "property float y\n";
+    out << "property float z\n";
+    out << "end_header\n";
+    for (const HardwareViewerState::LidarReconstructionPoint& point : hardware.lidar_reconstruction) {
+        out << point.hit_x << ' ' << point.hit_y << " 0.000000\n";
+    }
+    return true;
+}
+
+bool write_hardware_lidar_reconstruction_note(const HardwareViewerState& hardware,
+                                              const std::string& report_path,
+                                              const std::string& csv_path,
+                                              const std::string& ply_path) {
+    std::ofstream out(report_path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+    out << "# LiDAR Reconstruction Export\n\n";
+    out << "- Points: `" << hardware.lidar_reconstruction.size() << "`\n";
+    out << "- CSV: `" << csv_path << "`\n";
+    out << "- PLY: `" << ply_path << "`\n";
+    out << "- Pose source: `estimated_onboard_pose`\n\n";
+    out << "This export is intentionally passive: it records LiDAR hit points seen during the run without feeding them back into the gate arbiter, planner, or live UI state.\n\n";
+    out << "The point coordinates are not external ground truth. They are LiDAR measurements transformed into the map frame using the onboard estimated pose at each frame. This makes the file useful for offline reconstruction, map consistency checks, and thesis figures, but a zenith camera or motion-capture system is still required for independent ground truth.\n";
     return true;
 }
 
@@ -2189,6 +2653,8 @@ bool write_hardware_markdown_summary(const HardwareViewerState& hardware,
         return false;
     }
     const RunQualitySummary quality = summarize_run_quality(hardware.history);
+    const HardwareThesisMetrics thesis_metrics = summarize_hardware_thesis_metrics(hardware);
+    const HardwarePoseQuality pose_quality = estimate_hardware_pose_quality(hardware);
     const VehicleModelKind configured_model =
         static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model);
     out << std::fixed << std::setprecision(3);
@@ -2198,12 +2664,21 @@ bool write_hardware_markdown_summary(const HardwareViewerState& hardware,
     out << "- Port: `" << hardware_server.port() << "`\n";
     out << "- Configured robot: `" << thesis_sim::vehicle_model_kind_name(configured_model) << "`\n";
     out << "- Live robot: `" << (hardware.has_scene ? hardware.scene.vehicle_model_name : "waiting for scene") << "`\n";
+    out << "- Pose source: `" << pose_quality.source << "` (" << pose_quality.confidence << " confidence)\n";
     out << "- Launch command: `" << hardware_launch_hint(ui_state) << "`\n\n";
     out << "| Metric | Value |\n";
     out << "| --- | ---: |\n";
     out << "| Samples | " << hardware.history.size() << " |\n";
+    out << "| LiDAR reconstruction points | " << hardware.lidar_reconstruction.size() << " |\n";
     out << "| Runtime | " << hardware.frame.sim_time << " s |\n";
     out << "| Goal distance | " << hardware.frame.distance_to_goal << " m |\n";
+    out << "| Time to goal | " << thesis_metrics.time_to_goal_s << " s |\n";
+    out << "| Passed gates | " << thesis_metrics.passed_gates << " |\n";
+    out << "| Mixed switch events | " << thesis_metrics.switch_events << " |\n";
+    out << "| Structured / gate time | " << thesis_metrics.structured_time_s << " / " << thesis_metrics.gate_time_s << " s |\n";
+    out << "| Encoder distance | " << thesis_metrics.encoder_distance_m << " m |\n";
+    out << "| Estimated path length | " << thesis_metrics.estimated_path_length_m << " m |\n";
+    out << "| Odom-pose delta | " << thesis_metrics.odom_pose_delta_m << " m |\n";
     out << "| Average speed | " << quality.avg_speed << " m/s |\n";
     out << "| Max cross-track error | " << quality.max_cross_track << " m |\n";
     out << "| Max heading error | " << quality.max_heading_error_deg << " deg |\n";
@@ -2225,6 +2700,8 @@ bool write_hardware_markdown_summary(const HardwareViewerState& hardware,
             out << '\n';
         }
     }
+    out << "\n## LiDAR Reconstruction\n\n";
+    out << "The hardware thesis bundle can include passive LiDAR reconstruction files. These points are raw LiDAR hits accumulated over the run and transformed with the onboard estimated pose. They are useful for offline mapping and consistency checks, but they are not external ground truth.\n";
     return true;
 }
 
@@ -2334,6 +2811,33 @@ bool mixed_preset_is_ideal(int preset) {
     return preset == 2;
 }
 
+bool mixed_preset_is_dynamic_obstacle(int preset) {
+    return preset == 4;
+}
+
+bool world_uses_dynamic_obstacle_reveal(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::MixedRoadGates &&
+           !world.dynamic_obstacles().empty();
+}
+
+void apply_dynamic_obstacle_sim_config(const WorldMap& world, thesis_sim::SimConfig* config) {
+    if (config == nullptr || config->ideal_conditions || !world_uses_dynamic_obstacle_reveal(world)) {
+        return;
+    }
+    config->lidar_enabled = true;
+    config->range_sensor_profile = RangeSensorProfile::RplidarA1;
+    config->lidar_range = kDynamicObstacleSimulationLidarRangeM;
+    config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.10);
+}
+
+void apply_dynamic_obstacle_sim_config(PlannerDrivenVehicleSim& sim) {
+    if (sim.config().ideal_conditions || !world_uses_dynamic_obstacle_reveal(sim.world())) {
+        return;
+    }
+    sim.set_sensor_suite(sim.imu_enabled(), true, RangeSensorProfile::RplidarA1);
+    sim.set_lidar_range(kDynamicObstacleSimulationLidarRangeM);
+}
+
 bool ui_selection_uses_ideal_map(const UiState& ui_state) {
     const EnvironmentMode mode = static_cast<EnvironmentMode>(ui_state.environment_mode);
     if (mode == EnvironmentMode::StructuredRoad) {
@@ -2389,6 +2893,10 @@ void apply_gui_stack_for_selected_map(PlannerDrivenVehicleSim& sim, UiState* ui_
         if (selected_mode == EnvironmentMode::MixedRoadGates && !sim.config().dynamic_lidar_gates) {
             sim.set_dynamic_lidar_gates(true);
         }
+        if (selected_mode == EnvironmentMode::MixedRoadGates &&
+            mixed_preset_is_dynamic_obstacle(ui_state->mixed_preset)) {
+            apply_dynamic_obstacle_sim_config(sim);
+        }
     }
 
     sync_ui_state_from_sim(ui_state, sim);
@@ -2397,8 +2905,8 @@ void apply_gui_stack_for_selected_map(PlannerDrivenVehicleSim& sim, UiState* ui_
     ui_state->last_report_path.clear();
 }
 
-const std::array<ValidationPreset, 6>& validation_presets() {
-    static const std::array<ValidationPreset, 6> presets{{
+const std::array<ValidationPreset, 7>& validation_presets() {
+    static const std::array<ValidationPreset, 7> presets{{
         {"Bicycle structured",
          "Baseline structured-road validation.",
          EnvironmentMode::StructuredRoad,
@@ -2423,6 +2931,15 @@ const std::array<ValidationPreset, 6>& validation_presets() {
          UnstructuredMapPreset::RobotValidation,
          StructuredMapPreset::ValidationRoad,
          0,
+         VehicleModelKind::CarLikeBicycle,
+         true,
+         false},
+        {"Bicycle dynamic",
+         "Mixed road where obstacles appear online in the LiDAR layer.",
+         EnvironmentMode::MixedRoadGates,
+         UnstructuredMapPreset::RobotValidation,
+         StructuredMapPreset::TankCircuit,
+         4,
          VehicleModelKind::CarLikeBicycle,
          true,
          false},
@@ -2494,6 +3011,7 @@ void apply_validation_preset(PlannerDrivenVehicleSim& sim,
         sim.set_ideal_conditions(false);
     }
     sim.set_dynamic_lidar_gates(preset.dynamic_gates);
+    apply_dynamic_obstacle_sim_config(sim);
     sync_ui_state_from_sim(ui_state, sim);
     ui_state->workspace_source = kWorkspaceSourceSimulation;
     ui_state->workspace_view = kWorkspaceViewMission;
@@ -2567,6 +3085,13 @@ AppOptions parse_args(int argc, char** argv) {
                 options.environment_mode = EnvironmentMode::MixedRoadGates;
                 options.dynamic_lidar_gates = true;
                 options.mixed_preset = 3;
+            } else if (value == "mixed_dynamic_obstacle" || value == "mixed-dynamic-obstacle" ||
+                       value == "mixed_dynamic_obstacle_road" || value == "mixed-dynamic-obstacle-road" ||
+                       value == "dynamic_obstacle" || value == "dynamic-obstacle" ||
+                       value == "dynamic_obstacle_road" || value == "dynamic-obstacle-road") {
+                options.environment_mode = EnvironmentMode::MixedRoadGates;
+                options.dynamic_lidar_gates = true;
+                options.mixed_preset = 4;
             } else {
                 options.environment_mode = EnvironmentMode::UnstructuredGates;
             }
@@ -2587,6 +3112,13 @@ AppOptions parse_args(int argc, char** argv) {
             options.environment_mode = EnvironmentMode::MixedRoadGates;
             options.dynamic_lidar_gates = true;
             options.mixed_preset = 3;
+        } else if (arg == "--scenario=mixed_dynamic_obstacle" || arg == "--scenario=mixed-dynamic-obstacle" ||
+                   arg == "--scenario=mixed_dynamic_obstacle_road" || arg == "--scenario=mixed-dynamic-obstacle-road" ||
+                   arg == "--scenario=dynamic_obstacle" || arg == "--scenario=dynamic-obstacle" ||
+                   arg == "--scenario=dynamic_obstacle_road" || arg == "--scenario=dynamic-obstacle-road") {
+            options.environment_mode = EnvironmentMode::MixedRoadGates;
+            options.dynamic_lidar_gates = true;
+            options.mixed_preset = 4;
         } else if (arg == "--mixed-map" && i + 1 < argc) {
             const std::string value = argv[++i];
             if (value == "ideal" || value == "perfect") {
@@ -2597,6 +3129,12 @@ AppOptions parse_args(int argc, char** argv) {
                        value == "closed-obstacle" || value == "obstacle_road" ||
                        value == "obstacle-road") {
                 options.mixed_preset = 3;
+                options.dynamic_lidar_gates = true;
+            } else if (value == "dynamic" || value == "dynamic_obstacle" ||
+                       value == "dynamic-obstacle" || value == "dynamic_obstacle_road" ||
+                       value == "dynamic-obstacle-road" || value == "late_obstacle" ||
+                       value == "late-obstacle") {
+                options.mixed_preset = 4;
                 options.dynamic_lidar_gates = true;
             } else {
                 options.mixed_preset =
@@ -2613,6 +3151,12 @@ AppOptions parse_args(int argc, char** argv) {
                        value == "closed-obstacle" || value == "obstacle_road" ||
                        value == "obstacle-road") {
                 options.mixed_preset = 3;
+                options.dynamic_lidar_gates = true;
+            } else if (value == "dynamic" || value == "dynamic_obstacle" ||
+                       value == "dynamic-obstacle" || value == "dynamic_obstacle_road" ||
+                       value == "dynamic-obstacle-road" || value == "late_obstacle" ||
+                       value == "late-obstacle") {
+                options.mixed_preset = 4;
                 options.dynamic_lidar_gates = true;
             } else {
                 options.mixed_preset =
@@ -2745,6 +3289,9 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
         return WorldMap::structured_demo(structured_preset);
     }
     if (mode == EnvironmentMode::MixedRoadGates) {
+        if (mixed_preset == 4) {
+            return WorldMap::mixed_dynamic_obstacle_demo();
+        }
         if (mixed_preset == 3) {
             return WorldMap::mixed_closed_obstacle_demo();
         }
@@ -2927,6 +3474,12 @@ double structured_road_width_for_world(const WorldMap& world) {
         if (world.structured_preset() == StructuredMapPreset::TankCircuit &&
             world.unstructured_preset() == UnstructuredMapPreset::HardwareLab &&
             !world.obstacles().empty()) {
+            const Rect& bounds = world.bounds();
+            const double span = std::max(bounds.max_x - bounds.min_x,
+                                         bounds.max_y - bounds.min_y);
+            if (span <= 2.50) {
+                return std::clamp(span * 0.41, 0.70, 0.76);
+            }
             return 2.40;
         }
         return 1.20;
@@ -3350,6 +3903,9 @@ std::string hardware_launch_hint(const UiState& ui_state) {
     } else {
         cmd << " --vehicle-model car";
     }
+    cmd << " --pose-fusion "
+        << thesis_sim::hardware_localization_policy_cli_name(
+               static_cast<HardwareLocalizationPolicy>(ui_state.hardware_localization_policy));
     if (custom_world) {
         cmd << " --world-file <copied-custom-map.thmap>";
     } else if (structured) {
@@ -3778,6 +4334,11 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
     }
 
     for (const Rect& obstacle : sim.world().obstacles()) {
+        draw_list->AddRectFilled(world_to_screen(tx, {obstacle.min_x, obstacle.max_y}),
+                                 world_to_screen(tx, {obstacle.max_x, obstacle.min_y}),
+                                 kColorObstacle, 4.0f);
+    }
+    for (const Rect& obstacle : sim.world().perception_obstacles()) {
         draw_list->AddRectFilled(world_to_screen(tx, {obstacle.min_x, obstacle.max_y}),
                                  world_to_screen(tx, {obstacle.max_x, obstacle.min_y}),
                                  kColorObstacle, 4.0f);
@@ -4848,6 +5409,11 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
                                  world_to_screen(tx, {obstacle.max_x, obstacle.min_y}),
                                  kColorObstacle, 4.0f);
     }
+    for (const Rect& obstacle : world.perception_obstacles()) {
+        draw_list->AddRectFilled(world_to_screen(tx, {obstacle.min_x, obstacle.max_y}),
+                                 world_to_screen(tx, {obstacle.max_x, obstacle.min_y}),
+                                 kColorObstacle, 4.0f);
+    }
     if (!world.road_centerline().empty()) {
         if (world.environment_mode() == EnvironmentMode::StructuredRoad) {
             draw_structured_road_map(draw_list, tx, world);
@@ -5562,6 +6128,239 @@ void render_hardware_readiness_panel(const HardwareViewerState& hardware,
     }
 }
 
+void render_hardware_workflow_strip(UiState* ui_state) {
+    if (ui_state == nullptr) {
+        return;
+    }
+    const struct Step {
+        const char* label;
+        int tab;
+        int view;
+    } steps[] = {
+        {"Setup", 0, kWorkspaceViewMission},
+        {"Preflight", 0, kWorkspaceViewMission},
+        {"Launch", 1, kWorkspaceViewExport},
+        {"Record", 1, kWorkspaceViewExport},
+        {"Export", 1, kWorkspaceViewExport},
+    };
+    if (ImGui::BeginTable("HardwareWorkflowStrip", 5, ImGuiTableFlags_SizingStretchSame)) {
+        for (const Step& step : steps) {
+            ImGui::TableNextColumn();
+            const bool selected =
+                ui_state->hardware_panel_tab == step.tab &&
+                ui_state->workspace_view == step.view;
+            if (selected) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.43f, 0.52f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.56f, 0.66f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.11f, 0.33f, 0.40f, 1.0f));
+            }
+            if (ImGui::Button(step.label, ImVec2(-1.0f, 0.0f))) {
+                ui_state->hardware_panel_tab = step.tab;
+                ui_state->requested_hardware_panel_tab = step.tab;
+                ui_state->workspace_view = step.view;
+            }
+            if (selected) {
+                ImGui::PopStyleColor(3);
+            }
+        }
+        ImGui::EndTable();
+    }
+}
+
+void render_hardware_pose_confidence_panel(const HardwareViewerState& hardware) {
+    const HardwarePoseQuality pose_quality = estimate_hardware_pose_quality(hardware);
+    char confidence_buf[32];
+    std::snprintf(confidence_buf, sizeof(confidence_buf), "%.0f%%", pose_quality.confidence * 100.0);
+    ImGui::SeparatorText("Pose State");
+    status_line("Pose source", pose_quality.source.c_str(), pose_quality.color);
+    status_line("Pose confidence", confidence_buf, pose_quality.color);
+    ImGui::ProgressBar(static_cast<float>(pose_quality.confidence), ImVec2(-1.0f, 0.0f), confidence_buf);
+    ImGui::TextWrapped("%s", pose_quality.detail.c_str());
+}
+
+void render_hardware_preflight_panel(const HardwareViewerState& hardware,
+                                     const UiState& ui_state,
+                                     const LiveViewStreamServer& hardware_server) {
+    const HardwarePreflightSummary summary =
+        summarize_hardware_preflight(hardware, ui_state, hardware_server);
+    const bool has_sample = hardware.frame.has_latest_sample;
+    const HardwareTelemetrySample& sample = hardware.frame.latest_sample;
+    const VehicleModelKind configured_model =
+        static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model);
+    const bool live_model_ok =
+        hardware.has_scene &&
+        vehicle_model_from_live_name(hardware.scene.vehicle_model_name) == configured_model;
+    const bool imu_ready =
+        has_sample && flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::ImuReady);
+    const bool encoders_ready =
+        has_sample &&
+        flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::EncodersReady) &&
+        sample.controller_encoder_dt_ms > 0.0;
+    const bool motors_ready =
+        has_sample && flag_set(sample.controller_status_flags, thesis_sim::StatusFlag::MotorsReady);
+    const bool lidar_required = hardware.has_scene && hardware.scene.lidar_enabled;
+    const bool lidar_ready = !lidar_required || hardware.frame.valid_lidar_samples >= 32;
+    const bool planner_ready = hardware.frame.planner_has_reference || hardware.frame.step_count == 0;
+    const bool map_ready = !hardware_server.has_pending_world();
+
+    ImGui::SeparatorText("Preflight");
+    const ImVec4 summary_color =
+        summary.ready ? ImVec4(0.48f, 0.88f, 0.62f, 1.0f)
+                      : (summary.warning ? ImVec4(0.87f, 0.79f, 0.39f, 1.0f)
+                                         : ImVec4(0.95f, 0.40f, 0.34f, 1.0f));
+    char summary_buf[48];
+    std::snprintf(summary_buf, sizeof(summary_buf), "%d / %d ready", summary.passed, summary.total);
+    status_line("Checklist", summary_buf, summary_color);
+
+    auto row = [](const char* label, const char* value, bool ok) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        ImGui::TableNextColumn();
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ok ? ImVec4(0.48f, 0.88f, 0.62f, 1.0f)
+                                 : ImVec4(0.95f, 0.60f, 0.34f, 1.0f));
+        ImGui::TextUnformatted(ok ? "ready" : "check");
+        ImGui::PopStyleColor();
+        ImGui::TableNextColumn();
+        ImGui::TextWrapped("%s", value);
+    };
+
+    if (ImGui::BeginTable("HardwarePreflightTable", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthFixed, 92.0f);
+        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+        ImGui::TableSetupColumn("Detail", ImGuiTableColumnFlags_WidthStretch);
+        row("Listener",
+            hardware_server.listening() ? "TCP listener active" : "start the listener",
+            hardware_server.listening());
+        row("Link",
+            hardware_server.connected() ? hardware_server.remote_endpoint().c_str() : "waiting for Raspberry runner",
+            hardware_server.connected() || hardware.frame.connected);
+        row("Scene",
+            hardware.has_scene ? "runner metadata received" : "waiting for live scene packet",
+            hardware.has_scene);
+        row("Robot",
+            hardware.has_scene ? hardware.scene.vehicle_model_name.c_str() : "waiting scene",
+            live_model_ok);
+        row("Map",
+            map_ready ? "no pending map sync" : "map/profile sync queued",
+            map_ready);
+        row("Telemetry",
+            hardware.frame.telemetry_ready ? "controller telemetry streaming" : "waiting controller telemetry",
+            hardware.frame.telemetry_ready);
+        row("IMU",
+            imu_ready ? "orientation stream ready" : "BNO/IMU not ready",
+            imu_ready);
+        row("Encoders",
+            encoders_ready ? "tick stream ready" : "encoder dt/flags missing",
+            encoders_ready);
+        row("Motors",
+            motors_ready ? "controller reports motors ready" : "motor ready flag missing",
+            motors_ready);
+        row("LiDAR",
+            lidar_required ? (lidar_ready ? "valid scan samples" : "scan weak or missing")
+                           : "not required for this scenario",
+            lidar_ready);
+        row("Planner",
+            planner_ready ? "reference available or waiting at start" : "planner reference missing",
+            planner_ready);
+        ImGui::EndTable();
+    }
+}
+
+void render_hardware_thesis_metrics_panel(const HardwareViewerState& hardware) {
+    const HardwareThesisMetrics metrics = summarize_hardware_thesis_metrics(hardware);
+    const HardwarePoseQuality pose_quality = estimate_hardware_pose_quality(hardware);
+    ImGui::SeparatorText("Thesis Metrics");
+    status_line("Pose source", pose_quality.source.c_str(), pose_quality.color);
+    if (!metrics.has_data) {
+        ImGui::TextDisabled("Waiting for hardware history.");
+        return;
+    }
+
+    char goal_buf[32];
+    char gates_buf[32];
+    char switches_buf[32];
+    char mode_time_buf[48];
+    char clearance_buf[32];
+    char tracking_buf[48];
+    char odom_buf[48];
+    char speed_buf[48];
+    if (metrics.time_to_goal_s >= 0.0) {
+        std::snprintf(goal_buf, sizeof(goal_buf), "%.1f s", metrics.time_to_goal_s);
+    } else {
+        std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m left", metrics.final_goal_distance_m);
+    }
+    std::snprintf(gates_buf, sizeof(gates_buf), "%d", metrics.passed_gates);
+    std::snprintf(switches_buf,
+                  sizeof(switches_buf),
+                  "%d (%d/%d)",
+                  metrics.switch_events,
+                  metrics.structured_to_gate_switches,
+                  metrics.gate_to_structured_switches);
+    std::snprintf(mode_time_buf,
+                  sizeof(mode_time_buf),
+                  "%.1f / %.1f s",
+                  metrics.structured_time_s,
+                  metrics.gate_time_s);
+    if (std::isfinite(metrics.min_clearance_m)) {
+        std::snprintf(clearance_buf, sizeof(clearance_buf), "%.2f m", metrics.min_clearance_m);
+    } else {
+        std::snprintf(clearance_buf, sizeof(clearance_buf), "n/a");
+    }
+    std::snprintf(tracking_buf,
+                  sizeof(tracking_buf),
+                  "%.2f m / %.1f deg",
+                  metrics.max_cross_track_m,
+                  metrics.max_heading_error_deg);
+    std::snprintf(odom_buf,
+                  sizeof(odom_buf),
+                  "%.2f / %.2f / %.2f m",
+                  metrics.encoder_distance_m,
+                  metrics.estimated_path_length_m,
+                  metrics.odom_pose_delta_m);
+    std::snprintf(speed_buf,
+                  sizeof(speed_buf),
+                  "%.2f / %.2f m/s",
+                  metrics.avg_speed_mps,
+                  metrics.max_speed_mps);
+
+    const ImVec4 ok = ImVec4(0.48f, 0.88f, 0.62f, 1.0f);
+    const ImVec4 warn = ImVec4(0.87f, 0.79f, 0.39f, 1.0f);
+    const ImVec4 bad = ImVec4(0.95f, 0.40f, 0.34f, 1.0f);
+    const ImVec4 clearance_color =
+        !std::isfinite(metrics.min_clearance_m)
+            ? warn
+            : (metrics.min_clearance_m >= 0.12 ? ok
+                                                : (metrics.min_clearance_m >= 0.06 ? warn : bad));
+    const ImVec4 tracking_color =
+        metrics.max_cross_track_m <= 0.12 ? ok : (metrics.max_cross_track_m <= 0.25 ? warn : bad);
+
+    auto row = [](const char* label, const char* value, ImVec4 color) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        ImGui::TableNextColumn();
+        ImGui::PushStyleColor(ImGuiCol_Text, color);
+        ImGui::TextUnformatted(value);
+        ImGui::PopStyleColor();
+    };
+
+    if (ImGui::BeginTable("HardwareThesisMetricsTable", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+        row("Goal", goal_buf, metrics.time_to_goal_s >= 0.0 ? ok : warn);
+        row("Passed gates", gates_buf, metrics.passed_gates > 0 ? ok : warn);
+        row("Switches", switches_buf, metrics.switch_events > 0 ? ok : warn);
+        row("Road / gate", mode_time_buf, ok);
+        row("Clearance", clearance_buf, clearance_color);
+        row("Max tracking", tracking_buf, tracking_color);
+        row("Enc / est / delta", odom_buf, ok);
+        row("Avg / max speed", speed_buf, ok);
+        ImGui::EndTable();
+    }
+}
+
 void render_editor_inspector(WorldMap& editor_world, UiState* ui_state, bool* dirty_flag) {
     if (ui_state == nullptr || dirty_flag == nullptr) {
         return;
@@ -5778,6 +6577,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
     }
 
     render_hardware_readiness_panel(hardware, *ui_state, *hardware_server);
+    render_hardware_workflow_strip(ui_state);
+    render_hardware_pose_confidence_panel(hardware);
+    render_hardware_preflight_panel(hardware, *ui_state, *hardware_server);
 
     if (ImGui::BeginTabBar("HardwareDeskTabs")) {
         if (ImGui::BeginTabItem("Setup", nullptr, requested_tab_flags(ui_state->requested_hardware_panel_tab, 0))) {
@@ -6004,6 +6806,32 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             }
         }
 
+        ImGui::SeparatorText("Planner Policy");
+        const char* pose_fusion_items[] = {
+            "Auto",
+            "Encoder/IMU primary",
+            "LiDAR pose correction",
+        };
+        int pose_fusion_selection = std::clamp(
+            ui_state->hardware_localization_policy,
+            static_cast<int>(HardwareLocalizationPolicy::Auto),
+            static_cast<int>(HardwareLocalizationPolicy::LidarPoseCorrection));
+        if (ImGui::Combo("Pose Fusion",
+                         &pose_fusion_selection,
+                         pose_fusion_items,
+                         IM_ARRAYSIZE(pose_fusion_items))) {
+            ui_state->hardware_localization_policy = pose_fusion_selection;
+        }
+        const HardwareLocalizationPolicy pose_policy =
+            static_cast<HardwareLocalizationPolicy>(ui_state->hardware_localization_policy);
+        status_line("Launch arg",
+                    thesis_sim::hardware_localization_policy_cli_name(pose_policy),
+                    pose_policy == HardwareLocalizationPolicy::EncoderImuPrimary
+                        ? ImVec4(0.48f, 0.88f, 0.62f, 1.0f)
+                        : (pose_policy == HardwareLocalizationPolicy::LidarPoseCorrection
+                               ? ImVec4(0.87f, 0.79f, 0.39f, 1.0f)
+                               : ImVec4(0.43f, 0.82f, 0.96f, 1.0f)));
+
         ImGui::SeparatorText("Connection");
         if (ImGui::BeginTable("HardwareListenerButtons", 2, ImGuiTableFlags_SizingStretchSame)) {
             ImGui::TableNextColumn();
@@ -6070,7 +6898,8 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             !hardware.history.empty() ||
             hardware.frame.connected ||
             hardware.frame.step_count > 0;
-        ImGui::TextWrapped("Save a full hardware debug snapshot on demand. The file includes the current frame, controller flags, trajectory, LiDAR hits/map points, visible gates and the full workstation-side telemetry history.");
+        ImGui::TextWrapped("Save a full hardware snapshot with controller flags, trajectory, LiDAR, gates, workstation telemetry and thesis metrics.");
+        render_hardware_thesis_metrics_panel(hardware);
         if (!can_capture) {
             ImGui::BeginDisabled();
         }
@@ -6081,28 +6910,42 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 ui_state->last_hardware_report_path = report_path;
                 ui_state->last_hardware_csv_report_path.clear();
                 ui_state->last_hardware_markdown_report_path.clear();
+                ui_state->last_hardware_lidar_reconstruction_csv_path.clear();
+                ui_state->last_hardware_lidar_reconstruction_ply_path.clear();
                 ui_state->last_hardware_report_error.clear();
             } else {
                 ui_state->hardware_report_written = false;
                 ui_state->last_hardware_report_error = "Could not write the hardware telemetry report.";
             }
         }
-        if (ImGui::Button("Save Hardware Paper Bundle", ImVec2(-1.0f, 0.0f))) {
+        if (ImGui::Button("Save Thesis Bundle", ImVec2(-1.0f, 0.0f))) {
             const std::string json_path = default_hardware_report_path(hardware, *ui_state, "gui_bundle");
             const std::string csv_path = replace_extension(json_path, ".csv");
             const std::string markdown_path = replace_extension(json_path, ".md");
+            const std::string lidar_csv_path = append_stem_suffix(json_path, "_lidar_reconstruction", ".csv");
+            const std::string lidar_ply_path = append_stem_suffix(json_path, "_lidar_reconstruction", ".ply");
+            const std::string lidar_note_path = append_stem_suffix(json_path, "_lidar_reconstruction", ".md");
             const bool json_ok = write_hardware_json_report(hardware, *ui_state, *hardware_server, json_path);
             const bool csv_ok = write_hardware_csv_report(hardware, csv_path);
             const bool markdown_ok = write_hardware_markdown_summary(hardware, *ui_state, *hardware_server, markdown_path);
-            if (json_ok && csv_ok && markdown_ok) {
+            const bool lidar_csv_ok = write_hardware_lidar_reconstruction_csv(hardware, lidar_csv_path);
+            const bool lidar_ply_ok = write_hardware_lidar_reconstruction_ply(hardware, lidar_ply_path);
+            const bool lidar_note_ok = write_hardware_lidar_reconstruction_note(
+                hardware,
+                lidar_note_path,
+                lidar_csv_path,
+                lidar_ply_path);
+            if (json_ok && csv_ok && markdown_ok && lidar_csv_ok && lidar_ply_ok && lidar_note_ok) {
                 ui_state->hardware_report_written = true;
                 ui_state->last_hardware_report_path = json_path;
                 ui_state->last_hardware_csv_report_path = csv_path;
                 ui_state->last_hardware_markdown_report_path = markdown_path;
+                ui_state->last_hardware_lidar_reconstruction_csv_path = lidar_csv_path;
+                ui_state->last_hardware_lidar_reconstruction_ply_path = lidar_ply_path;
                 ui_state->last_hardware_report_error.clear();
             } else {
                 ui_state->hardware_report_written = false;
-                ui_state->last_hardware_report_error = "Could not write the complete hardware paper bundle.";
+                ui_state->last_hardware_report_error = "Could not write the complete hardware thesis bundle.";
             }
         }
         if (!can_capture) {
@@ -6113,6 +6956,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::Text("Current LiDAR hits = %d   map points = %d",
                     static_cast<int>(hardware.frame.lidar_hits.size()),
                     static_cast<int>(hardware.frame.slam_points.size()));
+        ImGui::Text("Reconstruction points = %d", static_cast<int>(hardware.lidar_reconstruction.size()));
         if (!ui_state->last_hardware_report_path.empty()) {
             ImGui::TextWrapped("JSON: %s", ui_state->last_hardware_report_path.c_str());
         }
@@ -6121,6 +6965,12 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         }
         if (!ui_state->last_hardware_markdown_report_path.empty()) {
             ImGui::TextWrapped("Markdown: %s", ui_state->last_hardware_markdown_report_path.c_str());
+        }
+        if (!ui_state->last_hardware_lidar_reconstruction_csv_path.empty()) {
+            ImGui::TextWrapped("LiDAR reconstruction CSV: %s", ui_state->last_hardware_lidar_reconstruction_csv_path.c_str());
+        }
+        if (!ui_state->last_hardware_lidar_reconstruction_ply_path.empty()) {
+            ImGui::TextWrapped("LiDAR reconstruction PLY: %s", ui_state->last_hardware_lidar_reconstruction_ply_path.c_str());
         }
         if (!ui_state->last_hardware_report_error.empty()) {
             ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.34f, 1.0f), "%s", ui_state->last_hardware_report_error.c_str());
@@ -6678,6 +7528,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 mixed_map_preset_name(1),
                 mixed_map_preset_name(2),
                 mixed_map_preset_name(3),
+                mixed_map_preset_name(4),
             };
             int mixed_selection = std::clamp(ui_state->mixed_preset, 0, static_cast<int>(IM_ARRAYSIZE(mixed_items)) - 1);
             if (ImGui::Combo("Mixed Map", &mixed_selection, mixed_items, IM_ARRAYSIZE(mixed_items))) {
@@ -7311,6 +8162,7 @@ int run_headless(const AppOptions& options) {
         7,
         options.mixed_preset);
     world = fit_simulation_structured_world(std::move(world), options.vehicle_model);
+    apply_dynamic_obstacle_sim_config(world, &sim_config);
     PlannerDrivenVehicleSim sim(std::move(world), sim_config);
     apply_sim_tuning_overrides(&sim, options);
     const SimulationReport report = sim.run_headless(options.max_steps);
@@ -7386,6 +8238,7 @@ int run_gui(const AppOptions& options) {
         7,
         options.mixed_preset);
     world = fit_simulation_structured_world(std::move(world), options.vehicle_model);
+    apply_dynamic_obstacle_sim_config(world, &sim_config);
     PlannerDrivenVehicleSim sim(std::move(world), sim_config);
     apply_sim_tuning_overrides(&sim, options);
     HardwareViewerState hardware_view;
@@ -7426,12 +8279,17 @@ int run_gui(const AppOptions& options) {
                 static_cast<int>(vehicle_model_from_live_name(hardware_view.scene.vehicle_model_name));
             hardware_view.frame = {};
             hardware_view.history.clear();
+            hardware_view.lidar_reconstruction.clear();
+            hardware_view.last_lidar_reconstruction_step = -1;
             ui_state.hardware_report_written = false;
             ui_state.last_hardware_report_path.clear();
             ui_state.last_hardware_report_error.clear();
+            ui_state.last_hardware_lidar_reconstruction_csv_path.clear();
+            ui_state.last_hardware_lidar_reconstruction_ply_path.clear();
         }
         if (hardware_updates.frame_received && hardware_updates.frame.has_value()) {
             hardware_view.frame = *hardware_updates.frame;
+            append_lidar_reconstruction_frame(&hardware_view);
             if (hardware_view.frame.has_latest_sample) {
                 const bool duplicate =
                     !hardware_view.history.empty() &&

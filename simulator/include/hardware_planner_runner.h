@@ -131,6 +131,15 @@ struct GapExtractionConfig {
     int gap_track_max_misses = 8;
 };
 
+enum class HardwareLocalizationPolicy {
+    Auto = 0,
+    EncoderImuPrimary,
+    LidarPoseCorrection,
+};
+
+const char* hardware_localization_policy_name(HardwareLocalizationPolicy policy);
+const char* hardware_localization_policy_cli_name(HardwareLocalizationPolicy policy);
+
 struct PerceptionOccupancyCell {
     Vec2 center;
     int hit_count = 0;
@@ -162,6 +171,7 @@ struct HardwarePlannerConfig {
     bool auto_gyro_zero = true;
     bool use_encoder_odometry = true;
     bool planner_safety_stop_enabled = false;
+    HardwareLocalizationPolicy localization_policy = HardwareLocalizationPolicy::Auto;
     VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     DifferentialDriveGeometry drive{};
     MotorPwmMapperConfig pwm{};
@@ -336,6 +346,7 @@ class HardwarePlannerRunner {
     bool goal_reached() const { return goal_reached_; }
     bool safety_stop_active() const { return safety_stop_active_; }
     bool lidar_enabled_for_current_mode() const;
+    bool lidar_pose_correction_enabled_for_current_mode() const;
     int step_count() const { return step_count_; }
     double sim_time() const { return sim_time_; }
     double last_j() const { return last_j_; }
@@ -380,6 +391,7 @@ class HardwarePlannerRunner {
                                         double max_forward_step,
                                         bool closed_loop,
                                         double* progress_delta) const;
+    void stabilize_compact_open_gate_odometry(double odom_speed, double dt);
     void correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan);
     double score_candidate_pose(const Vec2& position, double yaw, const std::vector<RPLidarA1::ScanPoint>& scan) const;
     double score_candidate_pose_against_perception_map(const Vec2& position,

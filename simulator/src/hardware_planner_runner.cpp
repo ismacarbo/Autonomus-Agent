@@ -1144,6 +1144,30 @@ double grid_local_clearance_score(const LocalOccupancyGrid& grid,
 
 }  // namespace
 
+const char* hardware_localization_policy_name(HardwareLocalizationPolicy policy) {
+    switch (policy) {
+        case HardwareLocalizationPolicy::EncoderImuPrimary:
+            return "Encoder/IMU primary";
+        case HardwareLocalizationPolicy::LidarPoseCorrection:
+            return "LiDAR pose correction";
+        case HardwareLocalizationPolicy::Auto:
+        default:
+            return "Auto";
+    }
+}
+
+const char* hardware_localization_policy_cli_name(HardwareLocalizationPolicy policy) {
+    switch (policy) {
+        case HardwareLocalizationPolicy::EncoderImuPrimary:
+            return "encoder";
+        case HardwareLocalizationPolicy::LidarPoseCorrection:
+            return "lidar";
+        case HardwareLocalizationPolicy::Auto:
+        default:
+            return "auto";
+    }
+}
+
 HardwarePlannerRunner::HardwarePlannerRunner(WorldMap world,
                                              RealRobotBridge::Options bridge_options,
                                              HardwarePlannerConfig config)
@@ -1844,6 +1868,10 @@ double HardwarePlannerRunner::compute_mixed_road_forward_clearance(double lookah
             : 0.0;
     const double sample_step = 0.06;
     const bool closed_loop = structured_road_is_closed_loop(world_);
+    const bool compact_closed_mixed_loop =
+        world_is_mixed(world_) &&
+        closed_loop &&
+        current_world_span <= 2.50;
     for (double ahead = sample_step; ahead <= lookahead_m + 1e-9; ahead += sample_step) {
         double s_probe = best_s + ahead;
         if (closed_loop) {
@@ -1856,6 +1884,15 @@ double HardwarePlannerRunner::compute_mixed_road_forward_clearance(double lookah
             return ahead;
         }
         for (const Rect& obstacle : world_.obstacles()) {
+            if (compact_closed_mixed_loop) {
+                const Vec2 obstacle_center{
+                    0.5 * (obstacle.min_x + obstacle.max_x),
+                    0.5 * (obstacle.min_y + obstacle.max_y),
+                };
+                if (distance_sq(probe, obstacle_center) > 0.24 * 0.24) {
+                    continue;
+                }
+            }
             if (point_in_expanded_rect(probe, obstacle, corridor_padding)) {
                 return ahead;
             }
@@ -1934,6 +1971,21 @@ Vec2 HardwarePlannerRunner::clamp_dynamic_gap_point(const Vec2& position) const 
 
 bool HardwarePlannerRunner::lidar_enabled_for_current_mode() const {
     return world_.environment_mode() != EnvironmentMode::StructuredRoad;
+}
+
+bool HardwarePlannerRunner::lidar_pose_correction_enabled_for_current_mode() const {
+    if (!lidar_enabled_for_current_mode()) {
+        return false;
+    }
+    switch (config_.localization_policy) {
+        case HardwareLocalizationPolicy::EncoderImuPrimary:
+            return false;
+        case HardwareLocalizationPolicy::LidarPoseCorrection:
+            return true;
+        case HardwareLocalizationPolicy::Auto:
+        default:
+            return !compact_mixed_open_road(world_);
+    }
 }
 
 void HardwarePlannerRunner::plan_if_needed() {
@@ -2168,6 +2220,9 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     estimator_.predict(encoder_dt, odom_speed, odom_yaw_rate);
     estimator_.update_imu(measured_yaw, measured_yaw_rate);
     sync_estimate_from_ekf_state();
+    if (encoder_ready) {
+        stabilize_compact_open_gate_odometry(odom_speed, encoder_dt);
+    }
 }
 
 void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerTelemetry& telemetry,
@@ -2541,6 +2596,88 @@ double HardwarePlannerRunner::stabilize_structured_track_s(double candidate_s,
                        : clamp_value(stabilized_s, 0.0, road_length);
 }
 
+void HardwarePlannerRunner::stabilize_compact_open_gate_odometry(double odom_speed, double dt) {
+    if (!compact_mixed_open_road(world_) ||
+        !locked_gap_goal_.has_value() ||
+        !(odom_speed > 1e-5) ||
+        !(dt > 1e-6) ||
+        cl_.prev_road.num_segments() <= 0 ||
+        !std::isfinite(cl_.end_point_s) ||
+        cl_.end_point_s <= 1e-6) {
+        return;
+    }
+
+    const double road_length = cl_.end_point_s;
+    const double progress_scale = 0.86;
+    const double progress_delta = clamp_value(progress_scale * odom_speed * dt, 0.0, 0.08);
+    if (!(progress_delta > 1e-6)) {
+        return;
+    }
+
+    const double previous_progress = clamp_value(
+        std::max(structured_progress_s_,
+                 std::isfinite(structured_last_s_) ? structured_last_s_ : 0.0),
+        0.0,
+        road_length);
+    structured_progress_s_ = clamp_value(previous_progress + progress_delta, 0.0, road_length);
+
+    const double s_hint =
+        std::isfinite(structured_last_s_) ? structured_last_s_ : structured_progress_s_;
+    double projected_s = structured_progress_s_;
+    double projected_n = 0.0;
+    const bool have_projection = project_curvilinear_state(
+        cl_,
+        estimate_.position,
+        s_hint,
+        false,
+        false,
+        &projected_s,
+        &projected_n);
+    if (!have_projection) {
+        projected_s = structured_progress_s_;
+        projected_n = 0.0;
+    }
+
+    const double odom_floor_s = structured_progress_s_;
+    const double fused_s = clamp_value(std::max(projected_s, odom_floor_s), 0.0, road_length);
+    const bool rejoin_phase =
+        passed_unstructured_gap_count_ > 0 &&
+        (passed_unstructured_gap_count_ % 2) == 1;
+    double fused_n = projected_n;
+    if (rejoin_phase) {
+        const double rejoin_band =
+            odom_floor_s >= 0.70 * road_length ? 0.035 : 0.065;
+        fused_n = clamp_value(fused_n, -rejoin_band, rejoin_band);
+    } else {
+        fused_n = clamp_value(fused_n, -0.22, 0.22);
+    }
+
+    structured_last_s_ = fused_s;
+    x0_.x = fused_s;
+    x0_.n = fused_n;
+    x0_.b = 0.0;
+
+    const bool longitudinal_lag = fused_s - projected_s > 0.018;
+    const bool lateral_rejoin_correction =
+        rejoin_phase && std::abs(fused_n - projected_n) > 0.006;
+    if (!longitudinal_lag && !lateral_rejoin_correction) {
+        return;
+    }
+
+    double road_x = 0.0;
+    double road_y = 0.0;
+    cl_.prev_road.eval(fused_s, road_x, road_y);
+    const double road_heading = wrap_angle(cl_.prev_road.theta(fused_s));
+    const Vec2 road_normal{-std::sin(road_heading), std::cos(road_heading)};
+    Vec2 corrected_position{
+        road_x + fused_n * road_normal.x,
+        road_y + fused_n * road_normal.y,
+    };
+    corrected_position = clamp_point_to_bounds(world_, corrected_position, 0.015);
+    estimator_.override_pose(corrected_position, estimate_.yaw);
+    sync_estimate_from_ekf_state();
+}
+
 void HardwarePlannerRunner::sync_estimate_from_ekf_state() {
     const EkfState& state = estimator_.state();
     estimate_.position = state.position;
@@ -2559,6 +2696,9 @@ void HardwarePlannerRunner::sync_estimate_from_ekf_state() {
 
 void HardwarePlannerRunner::correct_pose_with_lidar(const std::vector<RPLidarA1::ScanPoint>& scan) {
     if (static_cast<int>(scan.size()) < config_.localization.min_scan_points) {
+        return;
+    }
+    if (!lidar_pose_correction_enabled_for_current_mode()) {
         return;
     }
 
@@ -4783,15 +4923,15 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 compact_mixed_world &&
                 std::max(world_.bounds().max_x - world_.bounds().min_x,
                          world_.bounds().max_y - world_.bounds().min_y) <= 1.25;
-            const double lab_scale_min_road_progress =
-                lab_scale_mixed_world
+            const double compact_min_road_progress =
+                compact_mixed_world
                     ? clamp_value(0.08 * std::max(structured_goal_progress_target_, 0.0),
-                                  0.045,
-                                  0.080)
+                                  lab_scale_mixed_world ? 0.045 : 0.14,
+                                  lab_scale_mixed_world ? 0.080 : 0.22)
                     : 0.0;
-            const bool lab_scale_road_has_started =
-                !lab_scale_mixed_world ||
-                structured_progress_s_ >= lab_scale_min_road_progress;
+            const bool compact_road_has_started =
+                !compact_mixed_world ||
+                structured_progress_s_ >= compact_min_road_progress;
             const bool compact_dynamic_obstacle_required =
                 compact_mixed_world && (world_.obstacles().empty() || lab_scale_mixed_world);
             const bool have_close_dynamic_obstacle =
@@ -4928,11 +5068,11 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                     ? (front_obstacle_pressure || compact_close_obstacle_recovery)
                     : (have_close_dynamic_obstacle || front_obstacle_pressure);
             const bool lab_scale_gate_priority_ready =
-                !lab_scale_mixed_world ||
+                !compact_mixed_world ||
                 rejoin_stage ||
                 front_obstacle_pressure ||
                 compact_close_obstacle_recovery ||
-                (lab_scale_road_has_started && road_block_score >= 0.45);
+                (compact_road_has_started && road_block_score >= 0.45);
             if (!lab_scale_gate_priority_ready) {
                 gates_.clear();
                 gate_specs_.clear();

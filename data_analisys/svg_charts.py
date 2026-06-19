@@ -258,10 +258,10 @@ def write_timeline_chart(
             svg.append(f'<line class="marker" x1="{x_pos:.2f}" y1="{y_mid - 15:.2f}" x2="{x_pos:.2f}" y2="{y_mid + 15:.2f}" stroke="{color}" />')
 
     svg.append(f'<text class="axis-label" x="{margin_left + plot_w / 2:.1f}" y="{height - 6}" text-anchor="middle">time [s]</text>')
-    svg.extend(_legend([
-        {"label": "planner reference", "color": "#1f77b4"},
-        {"label": "gate completion", "color": "#d62728"},
-    ], width - margin_right - 230, margin_top - 6))
+    legend_items = [{"label": "planner reference", "color": "#1f77b4"}]
+    if any(row.get("markers") for row in rows):
+        legend_items.append({"label": "gate completion", "color": "#d62728"})
+    svg.extend(_legend(legend_items, width - margin_right - 230, margin_top - 6))
     svg.append("</svg>\n")
     output_path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -273,18 +273,18 @@ def _svg_header(width: int, height: int) -> str:
 def _style() -> str:
     return """<style>
     svg { background: #ffffff; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    .title { font-size: 17px; font-weight: 700; fill: #111827; }
+    .title { font-size: 26px; font-weight: 700; fill: #111827; }
     .axis, .axis-light { stroke: #374151; stroke-width: 1.2; }
     .axis-light { stroke: #9ca3af; }
     .grid { stroke: #e5e7eb; stroke-width: 1; }
-    .tick-label, .axis-label, .row-label, .marker-label { fill: #4b5563; font-size: 12px; }
+    .tick-label, .axis-label, .row-label, .marker-label { fill: #4b5563; font-size: 20px; }
     .axis-label { font-weight: 600; }
     .row-label { font-weight: 600; }
     .line { fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
     .marker { stroke-width: 1.4; stroke-dasharray: 5 4; }
     .timeline-window { fill: #1f77b4; opacity: 0.78; rx: 3; }
     .bar { opacity: 0.88; }
-    .legend-text { fill: #374151; font-size: 12px; }
+    .legend-text { fill: #374151; font-size: 18px; }
     .legend-box { fill: #ffffff; stroke: #e5e7eb; stroke-width: 1; rx: 6; }
     </style>"""
 
@@ -409,4 +409,3 @@ def _empty_svg(title: str, width: int, height: int) -> str:
             "</svg>\n",
         ]
     )
-

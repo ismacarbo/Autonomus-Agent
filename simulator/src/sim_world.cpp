@@ -381,6 +381,49 @@ std::vector<Rect> make_closed_obstacle_road_blocks(const Rect& content) {
     };
 }
 
+Rect centered_rect(const Vec2& center, double width, double height) {
+    return {
+        center.x - 0.5 * width,
+        center.y - 0.5 * height,
+        center.x + 0.5 * width,
+        center.y + 0.5 * height,
+    };
+}
+
+std::vector<Rect> make_offset_wall_blocks(const std::vector<Vec2>& loop,
+                                          double offset,
+                                          double block_size) {
+    std::vector<Rect> blocks;
+    if (loop.size() < 3) {
+        return blocks;
+    }
+    const size_t last_index = loop.size() - 1;
+    blocks.reserve(last_index);
+    for (size_t i = 0; i < last_index; ++i) {
+        const size_t prev = i == 0 ? last_index - 1 : i - 1;
+        const size_t next = (i + 1) % last_index;
+        const Vec2 tangent_raw{
+            loop[next].x - loop[prev].x,
+            loop[next].y - loop[prev].y,
+        };
+        const double tangent_norm = std::hypot(tangent_raw.x, tangent_raw.y);
+        if (!(tangent_norm > 1e-9)) {
+            continue;
+        }
+        const Vec2 tangent{
+            tangent_raw.x / tangent_norm,
+            tangent_raw.y / tangent_norm,
+        };
+        const Vec2 normal{-tangent.y, tangent.x};
+        const Vec2 point{
+            loop[i].x + offset * normal.x,
+            loop[i].y + offset * normal.y,
+        };
+        blocks.push_back(centered_rect(point, block_size, block_size));
+    }
+    return blocks;
+}
+
 Vec2 sampled_loop_point(const std::vector<Vec2>& loop, double fraction) {
     if (loop.empty()) {
         return {};
@@ -391,6 +434,52 @@ Vec2 sampled_loop_point(const std::vector<Vec2>& loop, double fraction) {
         max_index,
         static_cast<size_t>(std::round(clamped * static_cast<double>(max_index))));
     return loop[index];
+}
+
+double polyline_length(const std::vector<Vec2>& points) {
+    double length = 0.0;
+    for (size_t i = 1; i < points.size(); ++i) {
+        length += distance(points[i - 1], points[i]);
+    }
+    return length;
+}
+
+double nearest_polyline_s(const std::vector<Vec2>& points, const Vec2& point) {
+    if (points.size() < 2) {
+        return 0.0;
+    }
+    double best_s = 0.0;
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    double s_base = 0.0;
+    for (size_t i = 0; i + 1 < points.size(); ++i) {
+        const Vec2 a = points[i];
+        const Vec2 b = points[i + 1];
+        const Vec2 segment{b.x - a.x, b.y - a.y};
+        const double segment_len_sq = dot(segment, segment);
+        if (!(segment_len_sq > 1e-12)) {
+            continue;
+        }
+        const double segment_len = std::sqrt(segment_len_sq);
+        const Vec2 from_a{point.x - a.x, point.y - a.y};
+        const double t = clamp_value(dot(from_a, segment) / segment_len_sq, 0.0, 1.0);
+        const Vec2 candidate{a.x + segment.x * t, a.y + segment.y * t};
+        const Vec2 delta{point.x - candidate.x, point.y - candidate.y};
+        const double d_sq = dot(delta, delta);
+        if (d_sq < best_distance_sq) {
+            best_distance_sq = d_sq;
+            best_s = s_base + t * segment_len;
+        }
+        s_base += segment_len;
+    }
+    return best_s;
+}
+
+double distance_point_to_rect(const Vec2& point, const Rect& rect) {
+    const double dx = point.x < rect.min_x ? rect.min_x - point.x
+                     : (point.x > rect.max_x ? point.x - rect.max_x : 0.0);
+    const double dy = point.y < rect.min_y ? rect.min_y - point.y
+                     : (point.y > rect.max_y ? point.y - rect.max_y : 0.0);
+    return std::hypot(dx, dy);
 }
 
 bool points_form_closed_loop(const std::vector<Vec2>& points, double threshold) {
@@ -1103,60 +1192,95 @@ WorldMap WorldMap::mixed_closed_obstacle_demo() {
     return world;
 }
 
-WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
-    WorldMap world = mixed_closed_obstacle_demo();
+WorldMap WorldMap::mixed_dynamic_obstacle_demo() {
+    WorldMap world;
+    world.environment_mode_ = EnvironmentMode::MixedRoadGates;
+    world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
+    world.structured_preset_ = StructuredMapPreset::TankCircuit;
+    world.bounds_ = {0.0, 0.0, 1.80, 1.80};
 
-    constexpr double kHardwareSpan = 0.50;
-    const Rect source_bounds = world.bounds_;
-    const double source_width = source_bounds.max_x - source_bounds.min_x;
-    const double source_height = source_bounds.max_y - source_bounds.min_y;
-    const double source_span = std::max(source_width, source_height);
-    if (!(source_span > 1e-6)) {
-        return world;
+    const Rect content{0.30, 0.50, 1.38, 1.31};
+    world.road_centerline_ = make_closed_obstacle_mixed_loop(content, 0.025);
+    const std::vector<Vec2> marker_loop = world.road_centerline_;
+    world.start_ = world.road_centerline_.front();
+    world.goal_ = world.start_;
+    world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+
+    world.obstacles_.clear();
+    world.perception_obstacles_.clear();
+    const Vec2 lower_block_center = map_unit_point(content, {0.82, 0.100});
+    const Vec2 upper_block_center = map_unit_point(content, {0.60, 0.785});
+    const std::vector<Rect> scheduled_obstacles = {
+        centered_rect(lower_block_center, 0.16, 0.08),
+        centered_rect(upper_block_center, 0.14, 0.08),
+    };
+    for (size_t obstacle_index = 0; obstacle_index < scheduled_obstacles.size(); ++obstacle_index) {
+        DynamicObstacleSpec spec{};
+        spec.obstacle = scheduled_obstacles[obstacle_index];
+        spec.activate_after_s = 0.0;
+        spec.activate_after_progress_m = obstacle_index == 0 ? 0.0 : 0.45;
+        spec.deactivate_after_s = -1.0;
+        spec.discovered = false;
+        world.dynamic_obstacles_.push_back(spec);
     }
 
-    const double scale = kHardwareSpan / source_span;
-    const Vec2 source_center{
-        0.5 * (source_bounds.min_x + source_bounds.max_x),
-        0.5 * (source_bounds.min_y + source_bounds.max_y),
+    const Vec2 first_checkpoint = sampled_loop_point(marker_loop, 0.45);
+    const Vec2 far_checkpoint = sampled_loop_point(marker_loop, 0.72);
+    world.gate_templates_ = {
+        {"checkpoint_1", first_checkpoint, first_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"checkpoint_2", far_checkpoint, far_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"finish", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, world.start_heading_, true},
     };
-    const Vec2 target_center{0.5 * kHardwareSpan, 0.5 * kHardwareSpan};
-    auto transform_point = [&](const Vec2& point) {
-        return Vec2{
-            target_center.x + (point.x - source_center.x) * scale,
-            target_center.y + (point.y - source_center.y) * scale,
-        };
-    };
-    auto transform_rect = [&](const Rect& rect) {
-        const Vec2 min_point = transform_point({rect.min_x, rect.min_y});
-        const Vec2 max_point = transform_point({rect.max_x, rect.max_y});
-        return Rect{
-            std::min(min_point.x, max_point.x),
-            std::min(min_point.y, max_point.y),
-            std::max(min_point.x, max_point.x),
-            std::max(min_point.y, max_point.y),
-        };
-    };
-    auto transform_gate = [&](GateSpec& gate) {
-        gate.position = transform_point(gate.position);
-        gate.anchor_position = transform_point(gate.anchor_position);
-        gate.motion_amplitude.x *= scale;
-        gate.motion_amplitude.y *= scale;
-    };
-
-    world.bounds_ = {0.0, 0.0, kHardwareSpan, kHardwareSpan};
-    world.start_ = transform_point(world.start_);
-    world.goal_ = transform_point(world.goal_);
-    for (Vec2& point : world.road_centerline_) {
-        point = transform_point(point);
-    }
-    for (Rect& obstacle : world.obstacles_) {
-        obstacle = transform_rect(obstacle);
-    }
-    for (GateSpec& gate : world.gate_templates_) {
-        transform_gate(gate);
-    }
     world.gates_ = world.gate_templates_;
+    world.gate_behavior_ = GateBehaviorMode::Static;
+    world.gate_seed_ = 0;
+    return world;
+}
+
+WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
+    WorldMap world;
+    world.environment_mode_ = EnvironmentMode::MixedRoadGates;
+    world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
+    world.structured_preset_ = StructuredMapPreset::TankCircuit;
+    world.bounds_ = {0.0, 0.0, 1.80, 1.80};
+
+    const Rect content{0.30, 0.50, 1.50, 1.31};
+    constexpr double kRoadWidth = 0.74;
+    constexpr double kWallBlockSize = 0.052;
+
+    world.road_centerline_ = make_closed_obstacle_mixed_loop(content, 0.025);
+    const std::vector<Vec2> marker_loop = world.road_centerline_;
+    if (world.road_centerline_.size() > 2) {
+        std::reverse(world.road_centerline_.begin() + 1, world.road_centerline_.end());
+    }
+    world.start_ = world.road_centerline_.front();
+    world.goal_ = world.start_;
+    world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
+
+    world.obstacles_.clear();
+    std::vector<Rect> outer_wall =
+        make_offset_wall_blocks(world.road_centerline_, 0.5 * kRoadWidth, kWallBlockSize);
+    std::vector<Rect> inner_wall =
+        make_offset_wall_blocks(world.road_centerline_, -0.5 * kRoadWidth, kWallBlockSize);
+    world.obstacles_.insert(world.obstacles_.end(), outer_wall.begin(), outer_wall.end());
+    world.obstacles_.insert(world.obstacles_.end(), inner_wall.begin(), inner_wall.end());
+
+    const Vec2 lower_block_center = map_unit_point(content, {0.55, 0.255});
+    const Vec2 upper_block_center = map_unit_point(content, {0.60, 0.785});
+    world.perception_obstacles_.clear();
+    world.perception_obstacles_.push_back(centered_rect(lower_block_center, 0.24, 0.16));
+    world.perception_obstacles_.push_back(centered_rect(upper_block_center, 0.26, 0.17));
+
+    const Vec2 first_checkpoint = sampled_loop_point(marker_loop, 0.45);
+    const Vec2 far_checkpoint = sampled_loop_point(marker_loop, 0.72);
+    world.gate_templates_ = {
+        {"checkpoint_1", first_checkpoint, first_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"checkpoint_2", far_checkpoint, far_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+        {"finish", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, world.start_heading_, true},
+    };
+    world.gates_ = world.gate_templates_;
+    world.gate_behavior_ = GateBehaviorMode::Static;
+    world.gate_seed_ = 0;
     return world;
 }
 
@@ -1340,17 +1464,71 @@ void WorldMap::update_gate_layout(double sim_time_s) {
     recompute_gate_headings(&gates_, goal_);
 }
 
+void WorldMap::reset_perception_obstacles() {
+    perception_obstacles_.clear();
+    for (DynamicObstacleSpec& spec : dynamic_obstacles_) {
+        spec.discovered = false;
+    }
+}
+
+void WorldMap::update_perception_obstacles(double sim_time_s,
+                                           double progress_s,
+                                           const Vec2* sensor_origin,
+                                           double detection_range_m) {
+    if (dynamic_obstacles_.empty()) {
+        return;
+    }
+
+    perception_obstacles_.clear();
+    const bool has_sensor_range =
+        sensor_origin != nullptr &&
+        std::isfinite(detection_range_m) &&
+        detection_range_m > 1e-6;
+    for (DynamicObstacleSpec& spec : dynamic_obstacles_) {
+        const bool time_ready = sim_time_s + kEps >= spec.activate_after_s;
+        const bool progress_ready = progress_s + kEps >= spec.activate_after_progress_m;
+        const bool still_active = spec.deactivate_after_s < 0.0 ||
+                                  sim_time_s <= spec.deactivate_after_s + kEps;
+        const bool inside_lidar_radius =
+            has_sensor_range &&
+            distance_point_to_rect(*sensor_origin, spec.obstacle) <= detection_range_m + kEps;
+        if (!spec.discovered && time_ready && progress_ready && still_active && inside_lidar_radius) {
+            spec.discovered = true;
+        }
+        if (spec.discovered && still_active) {
+            perception_obstacles_.push_back(spec.obstacle);
+        }
+    }
+}
+
 void WorldMap::finalize_editor_changes() {
     start_ = clamp_to_bounds(bounds_, start_);
     goal_ = clamp_to_bounds(bounds_, goal_);
 
-    for (Rect& obstacle : obstacles_) {
-        normalize_rect(&obstacle);
-        obstacle.min_x = clamp_value(obstacle.min_x, bounds_.min_x, bounds_.max_x);
-        obstacle.max_x = clamp_value(obstacle.max_x, bounds_.min_x, bounds_.max_x);
-        obstacle.min_y = clamp_value(obstacle.min_y, bounds_.min_y, bounds_.max_y);
-        obstacle.max_y = clamp_value(obstacle.max_y, bounds_.min_y, bounds_.max_y);
-        normalize_rect(&obstacle);
+    auto sanitize_rects = [&](std::vector<Rect>* rects) {
+        if (rects == nullptr) {
+            return;
+        }
+        for (Rect& obstacle : *rects) {
+            normalize_rect(&obstacle);
+            obstacle.min_x = clamp_value(obstacle.min_x, bounds_.min_x, bounds_.max_x);
+            obstacle.max_x = clamp_value(obstacle.max_x, bounds_.min_x, bounds_.max_x);
+            obstacle.min_y = clamp_value(obstacle.min_y, bounds_.min_y, bounds_.max_y);
+            obstacle.max_y = clamp_value(obstacle.max_y, bounds_.min_y, bounds_.max_y);
+            normalize_rect(&obstacle);
+        }
+    };
+    sanitize_rects(&obstacles_);
+    sanitize_rects(&perception_obstacles_);
+    for (DynamicObstacleSpec& spec : dynamic_obstacles_) {
+        normalize_rect(&spec.obstacle);
+        spec.obstacle.min_x = clamp_value(spec.obstacle.min_x, bounds_.min_x, bounds_.max_x);
+        spec.obstacle.max_x = clamp_value(spec.obstacle.max_x, bounds_.min_x, bounds_.max_x);
+        spec.obstacle.min_y = clamp_value(spec.obstacle.min_y, bounds_.min_y, bounds_.max_y);
+        spec.obstacle.max_y = clamp_value(spec.obstacle.max_y, bounds_.min_y, bounds_.max_y);
+        normalize_rect(&spec.obstacle);
+        spec.activate_after_s = std::max(0.0, spec.activate_after_s);
+        spec.activate_after_progress_m = std::max(0.0, spec.activate_after_progress_m);
     }
 
     if (environment_mode_ == EnvironmentMode::StructuredRoad ||
@@ -1455,7 +1633,12 @@ bool WorldMap::line_of_sight(const Vec2& from, const Vec2& to, double padding) c
     return true;
 }
 
-std::vector<LidarHit> WorldMap::raycast(const Vec2& origin, double heading, int beams, double fov_rad, double max_range) const {
+std::vector<LidarHit> WorldMap::raycast(const Vec2& origin,
+                                        double heading,
+                                        int beams,
+                                        double fov_rad,
+                                        double max_range,
+                                        bool include_perception_obstacles) const {
     std::vector<LidarHit> hits;
     hits.reserve(static_cast<size_t>(std::max(beams, 1)));
 
@@ -1485,6 +1668,16 @@ std::vector<LidarHit> WorldMap::raycast(const Vec2& origin, double heading, int 
                 }
             }
         }
+        if (include_perception_obstacles) {
+            for (const Rect& obstacle : perception_obstacles_) {
+                if (const auto obstacle_hit = ray_rect_distance(origin, dir, obstacle)) {
+                    if (*obstacle_hit >= 0.0 && *obstacle_hit <= max_range && *obstacle_hit < best) {
+                        best = *obstacle_hit;
+                        hit = true;
+                    }
+                }
+            }
+        }
 
         if (best > max_range) {
             best = max_range;
@@ -1511,6 +1704,11 @@ bool WorldMap::collides(const std::array<Vec2, 4>& polygon, double padding) cons
     }
 
     for (const Rect& obstacle : obstacles_) {
+        if (polygon_intersects_rect(polygon, expand(obstacle, padding))) {
+            return true;
+        }
+    }
+    for (const Rect& obstacle : perception_obstacles_) {
         if (polygon_intersects_rect(polygon, expand(obstacle, padding))) {
             return true;
         }
