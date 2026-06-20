@@ -1333,7 +1333,8 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
 
     constexpr double kSide = 0.50;
     constexpr double kCenter = 0.5 * kSide;
-    constexpr double kCenterlineRadius = 0.155;
+    constexpr double kWallThickness = 0.014;
+    constexpr double kCenterlineRadius = 0.115;
     constexpr double kStartAngle = -42.0 * kPi / 180.0;
     constexpr double kLapAngle = 2.0 * kPi;
     constexpr double kReferenceSpacing = 0.010;
@@ -1350,6 +1351,9 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
     world.obstacles_.clear();
+    std::vector<Rect> boundary_walls =
+        make_boundary_wall_blocks(world.bounds_, kWallThickness);
+    world.obstacles_.insert(world.obstacles_.end(), boundary_walls.begin(), boundary_walls.end());
     world.perception_obstacles_.clear();
     const Vec2 first_checkpoint = sampled_polyline_point(world.road_centerline_, 0.34);
     const Vec2 far_checkpoint = sampled_polyline_point(world.road_centerline_, 0.68);

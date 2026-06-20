@@ -6361,6 +6361,18 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool lidar_front_blocked =
         estimate_.front_lidar_distance > 0.0 &&
         estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m;
+    const bool static_map_front_block_only =
+        !mixed_gate_active &&
+        world_has_structured_reference(world_) &&
+        compact_hardware_mixed_lab_world(world_) &&
+        !world_.obstacles().empty() &&
+        !lidar_pressure_excluding_static_map(
+            world_,
+            lidar_hits_,
+            estimate_.yaw,
+            config_.localization.obstacle_stop_distance_m + 0.03,
+            config_.localization.front_sector_half_angle_rad,
+            true);
     const bool lidar_front_blocked_for_recovery =
         estimate_.front_lidar_distance > 0.0 &&
         estimate_.front_lidar_distance <
@@ -6728,7 +6740,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.localization.obstacle_stop_distance_m + 0.05,
             config_.localization.min_valid_range_m + 0.16);
     const bool effective_lidar_front_blocked =
-        lidar_front_blocked && !mixed_gate_side_motion_clear;
+        lidar_front_blocked && !mixed_gate_side_motion_clear && !static_map_front_block_only;
     if ((config_.planner_safety_stop_enabled || dynamic_gap_safety_stop_enabled) &&
         !scanning_startup &&
         !use_gap_recovery_turn &&
@@ -6788,12 +6800,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             if (!closed_structured_loop && micro_structured_world(world_)) {
                 allow_direct_yaw_acquire = early_progress && std::abs(estimate_.speed) < 0.012;
             }
+            const bool suppress_car_like_mixed_direct_yaw =
+                compact_mixed_road && !tracked_vehicle;
             const bool severe_indoor_heading =
+                !suppress_car_like_mixed_direct_yaw &&
                 tiny_indoor_loop &&
                 closed_structured_loop &&
                 std::abs(estimate_.speed) < 0.012 &&
                 heading_error_abs > deg_to_rad(100.0);
             const bool stalled_indoor_heading =
+                !suppress_car_like_mixed_direct_yaw &&
                 tiny_indoor_loop &&
                 closed_structured_loop &&
                 !early_progress &&
