@@ -149,16 +149,20 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
     config->gap_extraction.planning_max_range_m = config->localization.max_range_m;
     config->gap_extraction.free_distance_threshold_m =
         clamp_value(0.36 * span, config->localization.min_valid_range_m + 0.04, 0.20);
-    config->gap_extraction.min_gap_width_m = clamp_value(0.38 * span, 0.16, 0.22);
+    config->gap_extraction.min_gap_width_m = clamp_value(0.26 * span, 0.110, 0.160);
     config->gap_extraction.min_gap_depth_contrast_m = clamp_value(0.16 * span, 0.055, 0.095);
     config->gap_extraction.min_target_distance_m =
         clamp_value(0.26 * span, config->localization.min_valid_range_m + 0.005, 0.18);
     config->gap_extraction.max_target_distance_m =
         clamp_value(0.62 * span, config->gap_extraction.min_target_distance_m + 0.06, 0.36);
     config->gap_extraction.gap_aperture_target_margin_m = clamp_value(0.07 * span, 0.025, 0.050);
-    config->gap_extraction.target_clearance_radius_m = clamp_value(0.12 * span, 0.040, 0.065);
-    config->gap_extraction.path_clearance_radius_m = clamp_value(0.08 * span, 0.030, 0.050);
+    config->gap_extraction.target_clearance_radius_m = clamp_value(0.10 * span, 0.035, 0.055);
+    config->gap_extraction.path_clearance_radius_m = clamp_value(0.065 * span, 0.025, 0.040);
     config->gap_extraction.map_point_resolution_m = clamp_value(0.040 * span, 0.018, 0.025);
+    config->gap_extraction.gap_goal_tolerance_m = clamp_value(0.08 * span, 0.035, 0.052);
+    config->gap_extraction.gap_goal_acceptance_radius_m = clamp_value(0.12 * span, 0.050, 0.070);
+    config->gap_extraction.gap_goal_acceptance_lateral_slack_m = clamp_value(0.08 * span, 0.030, 0.045);
+    config->gap_extraction.gap_crossing_margin_m = clamp_value(0.04 * span, 0.012, 0.025);
 }
 
 Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {

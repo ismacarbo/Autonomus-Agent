@@ -4069,6 +4069,9 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
         const Rect& bounds = world.bounds();
         const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+        if (span <= 0.65) {
+            return 0.24f;
+        }
         if (span <= 1.25) {
             return 0.55f;
         }
@@ -4143,6 +4146,9 @@ double mixed_gate_acceptance_radius_for_world(const WorldMap& world) {
     }
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+    if (span <= 0.65) {
+        return 0.035;
+    }
     return span <= 1.25 ? 0.10 : 0.12;
 }
 
