@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -160,6 +161,7 @@ struct UiState {
     std::string last_hardware_markdown_report_path;
     std::string last_hardware_lidar_reconstruction_csv_path;
     std::string last_hardware_lidar_reconstruction_ply_path;
+    std::string last_hardware_lidar_reconstruction_png_path;
     std::string last_hardware_report_error;
     std::string last_hardware_world_path;
     std::string last_hardware_world_error;
@@ -1112,6 +1114,354 @@ std::string append_stem_suffix(const std::string& path, const char* suffix, cons
     const std::string stem = out.stem().string();
     out.replace_filename(stem + (suffix != nullptr ? suffix : "") + (extension != nullptr ? extension : ""));
     return out.string();
+}
+
+struct RgbaColor {
+    std::uint8_t r = 0;
+    std::uint8_t g = 0;
+    std::uint8_t b = 0;
+    std::uint8_t a = 255;
+};
+
+struct RasterImage {
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+
+struct ImageWorldTransform {
+    Rect bounds;
+    int plot_x = 0;
+    int plot_y = 0;
+    int plot_w = 1;
+    int plot_h = 1;
+    double scale = 1.0;
+};
+
+void append_be32(std::vector<std::uint8_t>* out, std::uint32_t value) {
+    out->push_back(static_cast<std::uint8_t>((value >> 24) & 0xff));
+    out->push_back(static_cast<std::uint8_t>((value >> 16) & 0xff));
+    out->push_back(static_cast<std::uint8_t>((value >> 8) & 0xff));
+    out->push_back(static_cast<std::uint8_t>(value & 0xff));
+}
+
+std::uint32_t png_crc32_update(std::uint32_t crc, std::uint8_t byte) {
+    crc ^= byte;
+    for (int k = 0; k < 8; ++k) {
+        crc = (crc & 1u) ? (0xedb88320u ^ (crc >> 1)) : (crc >> 1);
+    }
+    return crc;
+}
+
+std::uint32_t png_crc32(const char type[4], const std::vector<std::uint8_t>& data) {
+    std::uint32_t crc = 0xffffffffu;
+    for (int i = 0; i < 4; ++i) {
+        crc = png_crc32_update(crc, static_cast<std::uint8_t>(type[i]));
+    }
+    for (std::uint8_t byte : data) {
+        crc = png_crc32_update(crc, byte);
+    }
+    return crc ^ 0xffffffffu;
+}
+
+std::uint32_t png_adler32(const std::vector<std::uint8_t>& data) {
+    constexpr std::uint32_t kMod = 65521u;
+    std::uint32_t a = 1u;
+    std::uint32_t b = 0u;
+    for (std::uint8_t byte : data) {
+        a = (a + byte) % kMod;
+        b = (b + a) % kMod;
+    }
+    return (b << 16) | a;
+}
+
+void write_png_chunk(std::ofstream& out, const char type[4], const std::vector<std::uint8_t>& data) {
+    std::vector<std::uint8_t> length;
+    append_be32(&length, static_cast<std::uint32_t>(data.size()));
+    out.write(reinterpret_cast<const char*>(length.data()), static_cast<std::streamsize>(length.size()));
+    out.write(type, 4);
+    if (!data.empty()) {
+        out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    }
+    std::vector<std::uint8_t> crc_bytes;
+    append_be32(&crc_bytes, png_crc32(type, data));
+    out.write(reinterpret_cast<const char*>(crc_bytes.data()), static_cast<std::streamsize>(crc_bytes.size()));
+}
+
+std::vector<std::uint8_t> make_zlib_stored_stream(const std::vector<std::uint8_t>& raw) {
+    std::vector<std::uint8_t> zlib;
+    zlib.reserve(raw.size() + raw.size() / 65535 + 16);
+    zlib.push_back(0x78);
+    zlib.push_back(0x01);
+    std::size_t offset = 0;
+    while (offset < raw.size() || (raw.empty() && offset == 0)) {
+        const std::size_t remaining = raw.size() - offset;
+        const std::uint16_t block_len =
+            static_cast<std::uint16_t>(std::min<std::size_t>(remaining, 65535));
+        const bool final_block = offset + block_len >= raw.size();
+        zlib.push_back(final_block ? 0x01 : 0x00);
+        zlib.push_back(static_cast<std::uint8_t>(block_len & 0xff));
+        zlib.push_back(static_cast<std::uint8_t>((block_len >> 8) & 0xff));
+        const std::uint16_t nlen = static_cast<std::uint16_t>(~block_len);
+        zlib.push_back(static_cast<std::uint8_t>(nlen & 0xff));
+        zlib.push_back(static_cast<std::uint8_t>((nlen >> 8) & 0xff));
+        if (block_len > 0) {
+            zlib.insert(zlib.end(), raw.begin() + static_cast<std::ptrdiff_t>(offset),
+                        raw.begin() + static_cast<std::ptrdiff_t>(offset + block_len));
+        }
+        offset += block_len;
+        if (raw.empty()) {
+            break;
+        }
+    }
+    append_be32(&zlib, png_adler32(raw));
+    return zlib;
+}
+
+bool write_png_rgba(const std::string& path, int width, int height, const std::vector<std::uint8_t>& rgba) {
+    if (width <= 0 || height <= 0 || rgba.size() != static_cast<std::size_t>(width * height * 4)) {
+        return false;
+    }
+    std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    const std::array<std::uint8_t, 8> signature{{137, 80, 78, 71, 13, 10, 26, 10}};
+    out.write(reinterpret_cast<const char*>(signature.data()), static_cast<std::streamsize>(signature.size()));
+
+    std::vector<std::uint8_t> ihdr;
+    append_be32(&ihdr, static_cast<std::uint32_t>(width));
+    append_be32(&ihdr, static_cast<std::uint32_t>(height));
+    ihdr.push_back(8);
+    ihdr.push_back(6);
+    ihdr.push_back(0);
+    ihdr.push_back(0);
+    ihdr.push_back(0);
+    write_png_chunk(out, "IHDR", ihdr);
+
+    std::vector<std::uint8_t> raw;
+    raw.reserve(static_cast<std::size_t>((width * 4 + 1) * height));
+    for (int y = 0; y < height; ++y) {
+        raw.push_back(0);
+        const std::size_t row_offset = static_cast<std::size_t>(y * width * 4);
+        raw.insert(raw.end(), rgba.begin() + static_cast<std::ptrdiff_t>(row_offset),
+                   rgba.begin() + static_cast<std::ptrdiff_t>(row_offset + width * 4));
+    }
+    write_png_chunk(out, "IDAT", make_zlib_stored_stream(raw));
+    write_png_chunk(out, "IEND", {});
+    return out.good();
+}
+
+RasterImage make_raster_image(int width, int height, RgbaColor fill) {
+    RasterImage image;
+    image.width = width;
+    image.height = height;
+    image.rgba.assign(static_cast<std::size_t>(width * height * 4), 0);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t offset = static_cast<std::size_t>((y * width + x) * 4);
+            image.rgba[offset + 0] = fill.r;
+            image.rgba[offset + 1] = fill.g;
+            image.rgba[offset + 2] = fill.b;
+            image.rgba[offset + 3] = fill.a;
+        }
+    }
+    return image;
+}
+
+void set_pixel(RasterImage* image, int x, int y, RgbaColor color) {
+    if (image == nullptr || x < 0 || y < 0 || x >= image->width || y >= image->height) {
+        return;
+    }
+    const std::size_t offset = static_cast<std::size_t>((y * image->width + x) * 4);
+    image->rgba[offset + 0] = color.r;
+    image->rgba[offset + 1] = color.g;
+    image->rgba[offset + 2] = color.b;
+    image->rgba[offset + 3] = color.a;
+}
+
+void draw_line_pixels(RasterImage* image, int x0, int y0, int x1, int y1, RgbaColor color) {
+    int dx = std::abs(x1 - x0);
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0);
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (true) {
+        set_pixel(image, x0, y0, color);
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        const int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+void draw_thick_line_pixels(RasterImage* image,
+                            int x0,
+                            int y0,
+                            int x1,
+                            int y1,
+                            RgbaColor color,
+                            int radius) {
+    radius = std::max(radius, 0);
+    if (radius == 0) {
+        draw_line_pixels(image, x0, y0, x1, y1, color);
+        return;
+    }
+    for (int oy = -radius; oy <= radius; ++oy) {
+        for (int ox = -radius; ox <= radius; ++ox) {
+            if (ox * ox + oy * oy <= radius * radius) {
+                draw_line_pixels(image, x0 + ox, y0 + oy, x1 + ox, y1 + oy, color);
+            }
+        }
+    }
+}
+
+void draw_disk_pixels(RasterImage* image, int cx, int cy, int radius, RgbaColor color) {
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
+            if (x * x + y * y <= radius * radius) {
+                set_pixel(image, cx + x, cy + y, color);
+            }
+        }
+    }
+}
+
+bool finite_point(const Vec2& point) {
+    return std::isfinite(point.x) && std::isfinite(point.y);
+}
+
+void include_bounds_point(Rect* bounds, bool* has_bounds, const Vec2& point) {
+    if (bounds == nullptr || has_bounds == nullptr || !finite_point(point)) {
+        return;
+    }
+    if (!*has_bounds) {
+        bounds->min_x = bounds->max_x = point.x;
+        bounds->min_y = bounds->max_y = point.y;
+        *has_bounds = true;
+        return;
+    }
+    bounds->min_x = std::min(bounds->min_x, point.x);
+    bounds->min_y = std::min(bounds->min_y, point.y);
+    bounds->max_x = std::max(bounds->max_x, point.x);
+    bounds->max_y = std::max(bounds->max_y, point.y);
+}
+
+double nice_grid_step(double target) {
+    if (!(target > 0.0) || !std::isfinite(target)) {
+        return 0.25;
+    }
+    const double base = std::pow(10.0, std::floor(std::log10(target)));
+    const double frac = target / base;
+    const double nice = frac <= 1.0 ? 1.0 : (frac <= 2.0 ? 2.0 : (frac <= 5.0 ? 5.0 : 10.0));
+    return nice * base;
+}
+
+ImageWorldTransform make_image_world_transform(Rect bounds,
+                                               int width,
+                                               int height,
+                                               int left_margin,
+                                               int top_margin,
+                                               int right_margin,
+                                               int bottom_margin) {
+    const double span_x = std::max(bounds.max_x - bounds.min_x, 0.2);
+    const double span_y = std::max(bounds.max_y - bounds.min_y, 0.2);
+    const double pad = std::max(0.08, 0.08 * std::max(span_x, span_y));
+    bounds.min_x -= pad;
+    bounds.max_x += pad;
+    bounds.min_y -= pad;
+    bounds.max_y += pad;
+
+    const int plot_w = std::max(width - left_margin - right_margin, 64);
+    const int plot_h = std::max(height - top_margin - bottom_margin, 64);
+    double adjusted_span_x = std::max(bounds.max_x - bounds.min_x, 0.2);
+    double adjusted_span_y = std::max(bounds.max_y - bounds.min_y, 0.2);
+    const double plot_aspect = static_cast<double>(plot_w) / static_cast<double>(plot_h);
+    const double data_aspect = adjusted_span_x / adjusted_span_y;
+    if (data_aspect > plot_aspect) {
+        const double desired_y = adjusted_span_x / plot_aspect;
+        const double center_y = 0.5 * (bounds.min_y + bounds.max_y);
+        bounds.min_y = center_y - 0.5 * desired_y;
+        bounds.max_y = center_y + 0.5 * desired_y;
+        adjusted_span_y = desired_y;
+    } else {
+        const double desired_x = adjusted_span_y * plot_aspect;
+        const double center_x = 0.5 * (bounds.min_x + bounds.max_x);
+        bounds.min_x = center_x - 0.5 * desired_x;
+        bounds.max_x = center_x + 0.5 * desired_x;
+        adjusted_span_x = desired_x;
+    }
+
+    ImageWorldTransform tx;
+    tx.bounds = bounds;
+    tx.plot_x = left_margin;
+    tx.plot_y = top_margin;
+    tx.plot_w = plot_w;
+    tx.plot_h = plot_h;
+    tx.scale = std::min(plot_w / adjusted_span_x, plot_h / adjusted_span_y);
+    return tx;
+}
+
+std::pair<int, int> world_to_image(const ImageWorldTransform& tx, const Vec2& point) {
+    const double x = tx.plot_x + (point.x - tx.bounds.min_x) * tx.scale;
+    const double y = tx.plot_y + tx.plot_h - (point.y - tx.bounds.min_y) * tx.scale;
+    return {
+        static_cast<int>(std::lround(x)),
+        static_cast<int>(std::lround(y)),
+    };
+}
+
+void draw_world_line(RasterImage* image,
+                     const ImageWorldTransform& tx,
+                     const Vec2& a,
+                     const Vec2& b,
+                     RgbaColor color,
+                     int radius = 0) {
+    if (!finite_point(a) || !finite_point(b)) {
+        return;
+    }
+    const auto [x0, y0] = world_to_image(tx, a);
+    const auto [x1, y1] = world_to_image(tx, b);
+    draw_thick_line_pixels(image, x0, y0, x1, y1, color, radius);
+}
+
+void draw_world_disk(RasterImage* image,
+                     const ImageWorldTransform& tx,
+                     const Vec2& point,
+                     int radius,
+                     RgbaColor color) {
+    if (!finite_point(point)) {
+        return;
+    }
+    const auto [x, y] = world_to_image(tx, point);
+    draw_disk_pixels(image, x, y, radius, color);
+}
+
+void draw_export_grid(RasterImage* image, const ImageWorldTransform& tx) {
+    const RgbaColor grid_major{126, 126, 126, 255};
+    const RgbaColor border{38, 38, 38, 255};
+    const double step = nice_grid_step(std::max(tx.bounds.max_x - tx.bounds.min_x,
+                                               tx.bounds.max_y - tx.bounds.min_y) / 8.0);
+    const double start_x = std::floor(tx.bounds.min_x / step) * step;
+    const double start_y = std::floor(tx.bounds.min_y / step) * step;
+    for (double x = start_x; x <= tx.bounds.max_x + 1e-9; x += step) {
+        draw_world_line(image, tx, {x, tx.bounds.min_y}, {x, tx.bounds.max_y}, grid_major);
+    }
+    for (double y = start_y; y <= tx.bounds.max_y + 1e-9; y += step) {
+        draw_world_line(image, tx, {tx.bounds.min_x, y}, {tx.bounds.max_x, y}, grid_major);
+    }
+    draw_line_pixels(image, tx.plot_x, tx.plot_y, tx.plot_x + tx.plot_w, tx.plot_y, border);
+    draw_line_pixels(image, tx.plot_x, tx.plot_y + tx.plot_h, tx.plot_x + tx.plot_w, tx.plot_y + tx.plot_h, border);
+    draw_line_pixels(image, tx.plot_x, tx.plot_y, tx.plot_x, tx.plot_y + tx.plot_h, border);
+    draw_line_pixels(image, tx.plot_x + tx.plot_w, tx.plot_y, tx.plot_x + tx.plot_w, tx.plot_y + tx.plot_h, border);
 }
 
 RunQualitySummary summarize_run_quality(const std::vector<TelemetrySample>& history) {
@@ -2579,10 +2929,107 @@ bool write_hardware_lidar_reconstruction_ply(const HardwareViewerState& hardware
     return true;
 }
 
+bool write_hardware_lidar_reconstruction_png(const HardwareViewerState& hardware,
+                                             const std::string& report_path) {
+    Rect bounds{};
+    bool has_bounds = false;
+    if (hardware.has_scene) {
+        const Rect& world_bounds = hardware.scene.world.bounds();
+        if (std::isfinite(world_bounds.min_x) && std::isfinite(world_bounds.min_y) &&
+            std::isfinite(world_bounds.max_x) && std::isfinite(world_bounds.max_y) &&
+            world_bounds.max_x > world_bounds.min_x && world_bounds.max_y > world_bounds.min_y) {
+            include_bounds_point(&bounds, &has_bounds, {world_bounds.min_x, world_bounds.min_y});
+            include_bounds_point(&bounds, &has_bounds, {world_bounds.max_x, world_bounds.max_y});
+        }
+    }
+    for (const HardwareViewerState::LidarReconstructionPoint& point : hardware.lidar_reconstruction) {
+        include_bounds_point(&bounds, &has_bounds, {point.pose_x, point.pose_y});
+        include_bounds_point(&bounds, &has_bounds, {point.hit_x, point.hit_y});
+    }
+    for (const HardwareTelemetrySample& sample : hardware.history) {
+        include_bounds_point(&bounds, &has_bounds, {sample.position_x, sample.position_y});
+    }
+    for (const Vec2& point : hardware.frame.trail) {
+        include_bounds_point(&bounds, &has_bounds, point);
+    }
+    if (!has_bounds) {
+        bounds = {-1.0, -1.0, 1.0, 1.0};
+        has_bounds = true;
+    }
+
+    constexpr int kWidth = 1200;
+    constexpr int kHeight = 900;
+    constexpr int kLeftMargin = 86;
+    constexpr int kTopMargin = 46;
+    constexpr int kRightMargin = 32;
+    constexpr int kBottomMargin = 70;
+    RasterImage image = make_raster_image(kWidth, kHeight, {246, 246, 246, 255});
+    const ImageWorldTransform tx =
+        make_image_world_transform(bounds, kWidth, kHeight, kLeftMargin, kTopMargin, kRightMargin, kBottomMargin);
+
+    const RgbaColor unknown{142, 142, 142, 255};
+    for (int y = tx.plot_y; y <= tx.plot_y + tx.plot_h && y < image.height; ++y) {
+        for (int x = tx.plot_x; x <= tx.plot_x + tx.plot_w && x < image.width; ++x) {
+            set_pixel(&image, x, y, unknown);
+        }
+    }
+
+    const RgbaColor free_space{246, 246, 246, 255};
+    const std::size_t free_stride =
+        hardware.lidar_reconstruction.size() > 220000
+            ? (hardware.lidar_reconstruction.size() / 220000) + 1
+            : 1;
+    for (std::size_t i = 0; i < hardware.lidar_reconstruction.size(); i += free_stride) {
+        const HardwareViewerState::LidarReconstructionPoint& point = hardware.lidar_reconstruction[i];
+        draw_world_line(
+            &image,
+            tx,
+            {point.pose_x, point.pose_y},
+            {point.hit_x, point.hit_y},
+            free_space);
+    }
+
+    draw_export_grid(&image, tx);
+
+    const RgbaColor occupied{18, 18, 18, 255};
+    const int occupied_radius = tx.scale > 420.0 ? 2 : 1;
+    for (const HardwareViewerState::LidarReconstructionPoint& point : hardware.lidar_reconstruction) {
+        draw_world_disk(&image, tx, {point.hit_x, point.hit_y}, occupied_radius, occupied);
+    }
+
+    std::vector<Vec2> estimated_trail;
+    estimated_trail.reserve(!hardware.history.empty() ? hardware.history.size() : hardware.frame.trail.size());
+    if (!hardware.history.empty()) {
+        for (const HardwareTelemetrySample& sample : hardware.history) {
+            estimated_trail.push_back({sample.position_x, sample.position_y});
+        }
+    } else {
+        estimated_trail = hardware.frame.trail;
+    }
+
+    const RgbaColor trail_color{20, 55, 230, 255};
+    for (std::size_t i = 1; i < estimated_trail.size(); ++i) {
+        draw_world_line(&image, tx, estimated_trail[i - 1], estimated_trail[i], trail_color, 2);
+    }
+    if (!estimated_trail.empty()) {
+        draw_world_disk(&image, tx, estimated_trail.front(), 6, {42, 170, 80, 255});
+        draw_world_disk(&image, tx, estimated_trail.back(), 6, {220, 56, 48, 255});
+    }
+
+    const RgbaColor border{32, 32, 32, 255};
+    draw_line_pixels(&image, tx.plot_x, tx.plot_y, tx.plot_x + tx.plot_w, tx.plot_y, border);
+    draw_line_pixels(&image, tx.plot_x, tx.plot_y + tx.plot_h, tx.plot_x + tx.plot_w, tx.plot_y + tx.plot_h, border);
+    draw_line_pixels(&image, tx.plot_x, tx.plot_y, tx.plot_x, tx.plot_y + tx.plot_h, border);
+    draw_line_pixels(&image, tx.plot_x + tx.plot_w, tx.plot_y, tx.plot_x + tx.plot_w, tx.plot_y + tx.plot_h, border);
+
+    return write_png_rgba(report_path, image.width, image.height, image.rgba);
+}
+
 bool write_hardware_lidar_reconstruction_note(const HardwareViewerState& hardware,
                                               const std::string& report_path,
                                               const std::string& csv_path,
-                                              const std::string& ply_path) {
+                                              const std::string& ply_path,
+                                              const std::string& png_path) {
     std::ofstream out(report_path, std::ios::out | std::ios::trunc);
     if (!out.is_open()) {
         return false;
@@ -2591,10 +3038,43 @@ bool write_hardware_lidar_reconstruction_note(const HardwareViewerState& hardwar
     out << "- Points: `" << hardware.lidar_reconstruction.size() << "`\n";
     out << "- CSV: `" << csv_path << "`\n";
     out << "- PLY: `" << ply_path << "`\n";
+    out << "- PNG occupancy map: `" << png_path << "`\n";
     out << "- Pose source: `estimated_onboard_pose`\n\n";
     out << "This export is intentionally passive: it records LiDAR hit points seen during the run without feeding them back into the gate arbiter, planner, or live UI state.\n\n";
-    out << "The point coordinates are not external ground truth. They are LiDAR measurements transformed into the map frame using the onboard estimated pose at each frame. This makes the file useful for offline reconstruction, map consistency checks, and thesis figures, but a zenith camera or motion-capture system is still required for independent ground truth.\n";
+    out << "The PNG rasterizes each estimated-pose-to-hit LiDAR ray as free space and each hit endpoint as occupied space, with the estimated robot trajectory overlaid in blue.\n\n";
+    out << "The point coordinates are not external ground truth. They are LiDAR measurements transformed into the map frame using the onboard estimated pose at each frame. This makes the files useful for offline reconstruction, map consistency checks, and thesis figures, but a zenith camera or motion-capture system is still required for independent ground truth.\n";
     return true;
+}
+
+struct HardwareLidarReconstructionExport {
+    std::string csv_path;
+    std::string ply_path;
+    std::string png_path;
+    std::string note_path;
+};
+
+bool write_hardware_lidar_reconstruction_bundle(const HardwareViewerState& hardware,
+                                                const std::string& json_report_path,
+                                                HardwareLidarReconstructionExport* export_paths) {
+    HardwareLidarReconstructionExport paths;
+    paths.csv_path = append_stem_suffix(json_report_path, "_lidar_reconstruction", ".csv");
+    paths.ply_path = append_stem_suffix(json_report_path, "_lidar_reconstruction", ".ply");
+    paths.png_path = append_stem_suffix(json_report_path, "_lidar_reconstruction", ".png");
+    paths.note_path = append_stem_suffix(json_report_path, "_lidar_reconstruction", ".md");
+
+    const bool csv_ok = write_hardware_lidar_reconstruction_csv(hardware, paths.csv_path);
+    const bool ply_ok = write_hardware_lidar_reconstruction_ply(hardware, paths.ply_path);
+    const bool png_ok = write_hardware_lidar_reconstruction_png(hardware, paths.png_path);
+    const bool note_ok = write_hardware_lidar_reconstruction_note(
+        hardware,
+        paths.note_path,
+        paths.csv_path,
+        paths.ply_path,
+        paths.png_path);
+    if (csv_ok && ply_ok && png_ok && note_ok && export_paths != nullptr) {
+        *export_paths = paths;
+    }
+    return csv_ok && ply_ok && png_ok && note_ok;
 }
 
 bool write_sim_markdown_summary(const PlannerDrivenVehicleSim& sim,
@@ -2701,7 +3181,7 @@ bool write_hardware_markdown_summary(const HardwareViewerState& hardware,
         }
     }
     out << "\n## LiDAR Reconstruction\n\n";
-    out << "The hardware thesis bundle can include passive LiDAR reconstruction files. These points are raw LiDAR hits accumulated over the run and transformed with the onboard estimated pose. They are useful for offline mapping and consistency checks, but they are not external ground truth.\n";
+    out << "The hardware thesis bundle includes passive LiDAR reconstruction files. The CSV/PLY store raw LiDAR hit points accumulated over the run, while the PNG rasterizes an occupancy-style map with free-space rays, occupied endpoints, and the estimated robot trajectory. These files are transformed with the onboard estimated pose, so they are useful for offline mapping and thesis figures but they are not external ground truth.\n";
     return true;
 }
 
@@ -5433,28 +5913,6 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         draw_polyline(draw_list, tx, hardware.frame.planned_trajectory, kColorTrajectory, 3.0f);
     }
 
-    if (show_live_scene && !frame.slam_points.empty()) {
-        const float occupancy_half_extent = std::max(
-            1.5f,
-            static_cast<float>(std::max(frame.occupancy_cell_size_m, 0.01) * tx.scale * 0.5));
-        const size_t slam_stride = frame.slam_points.size() > 3200 ? (frame.slam_points.size() / 3200) + 1 : 1;
-        for (size_t i = 0; i < frame.slam_points.size(); i += slam_stride) {
-            const ImVec2 point_screen = world_to_screen(tx, frame.slam_points[i]);
-            draw_list->AddRectFilled(
-                ImVec2(point_screen.x - occupancy_half_extent, point_screen.y - occupancy_half_extent),
-                ImVec2(point_screen.x + occupancy_half_extent, point_screen.y + occupancy_half_extent),
-                IM_COL32(132, 255, 196, 44));
-        }
-    }
-
-    if (show_live_scene && ui_state->show_lidar_hits && !frame.slam_points.empty()) {
-        const size_t slam_stride = frame.slam_points.size() > 2800 ? (frame.slam_points.size() / 2800) + 1 : 1;
-        for (size_t i = 0; i < frame.slam_points.size(); i += slam_stride) {
-            const ImVec2 point_screen = world_to_screen(tx, frame.slam_points[i]);
-            draw_list->AddCircleFilled(point_screen, 2.2f, IM_COL32(132, 255, 196, 92));
-        }
-    }
-
     if (show_live_scene && hardware.scene.lidar_enabled && (ui_state->show_lidar_rays || ui_state->show_lidar_hits)) {
         const Vec2 lidar_origin = frame.navigation_position;
         const size_t lidar_stride = frame.lidar_hits.size() > 720 ? 2 : 1;
@@ -5606,10 +6064,6 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         }
         if (show_live_scene && hardware.scene.lidar_enabled && ui_state->show_lidar_hits) {
             legend.push_back({"lime/cyan: LiDAR collision points", kColorLidarHit});
-        }
-        if (show_live_scene && !frame.slam_points.empty() && ui_state->show_lidar_hits) {
-            legend.push_back({"mint: occupied LiDAR map cells", IM_COL32(132, 255, 196, 200)});
-            legend.push_back({"empty canvas can still be free space", IM_COL32(170, 179, 185, 255)});
         }
         if (!show_live_scene && ui_state->map_editor_enabled) {
             legend.push_back({"blue: editable preview road", kColorEditorOverlay});
@@ -6905,43 +7359,40 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         }
         if (ImGui::Button("Save Hardware Telemetry", ImVec2(-1.0f, 0.0f))) {
             const std::string report_path = default_hardware_report_path(hardware, *ui_state, "gui_manual");
-            if (write_hardware_json_report(hardware, *ui_state, *hardware_server, report_path)) {
+            HardwareLidarReconstructionExport lidar_export;
+            const bool json_ok = write_hardware_json_report(hardware, *ui_state, *hardware_server, report_path);
+            const bool lidar_ok = write_hardware_lidar_reconstruction_bundle(hardware, report_path, &lidar_export);
+            if (json_ok && lidar_ok) {
                 ui_state->hardware_report_written = true;
                 ui_state->last_hardware_report_path = report_path;
                 ui_state->last_hardware_csv_report_path.clear();
                 ui_state->last_hardware_markdown_report_path.clear();
-                ui_state->last_hardware_lidar_reconstruction_csv_path.clear();
-                ui_state->last_hardware_lidar_reconstruction_ply_path.clear();
+                ui_state->last_hardware_lidar_reconstruction_csv_path = lidar_export.csv_path;
+                ui_state->last_hardware_lidar_reconstruction_ply_path = lidar_export.ply_path;
+                ui_state->last_hardware_lidar_reconstruction_png_path = lidar_export.png_path;
                 ui_state->last_hardware_report_error.clear();
             } else {
                 ui_state->hardware_report_written = false;
-                ui_state->last_hardware_report_error = "Could not write the hardware telemetry report.";
+                ui_state->last_hardware_report_error = "Could not write the hardware telemetry report and LiDAR reconstruction.";
             }
         }
         if (ImGui::Button("Save Thesis Bundle", ImVec2(-1.0f, 0.0f))) {
             const std::string json_path = default_hardware_report_path(hardware, *ui_state, "gui_bundle");
             const std::string csv_path = replace_extension(json_path, ".csv");
             const std::string markdown_path = replace_extension(json_path, ".md");
-            const std::string lidar_csv_path = append_stem_suffix(json_path, "_lidar_reconstruction", ".csv");
-            const std::string lidar_ply_path = append_stem_suffix(json_path, "_lidar_reconstruction", ".ply");
-            const std::string lidar_note_path = append_stem_suffix(json_path, "_lidar_reconstruction", ".md");
+            HardwareLidarReconstructionExport lidar_export;
             const bool json_ok = write_hardware_json_report(hardware, *ui_state, *hardware_server, json_path);
             const bool csv_ok = write_hardware_csv_report(hardware, csv_path);
             const bool markdown_ok = write_hardware_markdown_summary(hardware, *ui_state, *hardware_server, markdown_path);
-            const bool lidar_csv_ok = write_hardware_lidar_reconstruction_csv(hardware, lidar_csv_path);
-            const bool lidar_ply_ok = write_hardware_lidar_reconstruction_ply(hardware, lidar_ply_path);
-            const bool lidar_note_ok = write_hardware_lidar_reconstruction_note(
-                hardware,
-                lidar_note_path,
-                lidar_csv_path,
-                lidar_ply_path);
-            if (json_ok && csv_ok && markdown_ok && lidar_csv_ok && lidar_ply_ok && lidar_note_ok) {
+            const bool lidar_ok = write_hardware_lidar_reconstruction_bundle(hardware, json_path, &lidar_export);
+            if (json_ok && csv_ok && markdown_ok && lidar_ok) {
                 ui_state->hardware_report_written = true;
                 ui_state->last_hardware_report_path = json_path;
                 ui_state->last_hardware_csv_report_path = csv_path;
                 ui_state->last_hardware_markdown_report_path = markdown_path;
-                ui_state->last_hardware_lidar_reconstruction_csv_path = lidar_csv_path;
-                ui_state->last_hardware_lidar_reconstruction_ply_path = lidar_ply_path;
+                ui_state->last_hardware_lidar_reconstruction_csv_path = lidar_export.csv_path;
+                ui_state->last_hardware_lidar_reconstruction_ply_path = lidar_export.ply_path;
+                ui_state->last_hardware_lidar_reconstruction_png_path = lidar_export.png_path;
                 ui_state->last_hardware_report_error.clear();
             } else {
                 ui_state->hardware_report_written = false;
@@ -6971,6 +7422,9 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         }
         if (!ui_state->last_hardware_lidar_reconstruction_ply_path.empty()) {
             ImGui::TextWrapped("LiDAR reconstruction PLY: %s", ui_state->last_hardware_lidar_reconstruction_ply_path.c_str());
+        }
+        if (!ui_state->last_hardware_lidar_reconstruction_png_path.empty()) {
+            ImGui::TextWrapped("LiDAR reconstruction PNG: %s", ui_state->last_hardware_lidar_reconstruction_png_path.c_str());
         }
         if (!ui_state->last_hardware_report_error.empty()) {
             ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.34f, 1.0f), "%s", ui_state->last_hardware_report_error.c_str());
@@ -8286,6 +8740,7 @@ int run_gui(const AppOptions& options) {
             ui_state.last_hardware_report_error.clear();
             ui_state.last_hardware_lidar_reconstruction_csv_path.clear();
             ui_state.last_hardware_lidar_reconstruction_ply_path.clear();
+            ui_state.last_hardware_lidar_reconstruction_png_path.clear();
         }
         if (hardware_updates.frame_received && hardware_updates.frame.has_value()) {
             hardware_view.frame = *hardware_updates.frame;
