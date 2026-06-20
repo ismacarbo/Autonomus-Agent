@@ -284,6 +284,31 @@ bool point_near_world_boundary(const WorldMap& world, const Vec2& point, double 
            point.y >= bounds.max_y - margin;
 }
 
+double distance_to_polyline_m(const std::vector<Vec2>& points, const Vec2& position) {
+    if (points.empty()) {
+        return std::numeric_limits<double>::infinity();
+    }
+    if (points.size() == 1) {
+        return distance(points.front(), position);
+    }
+
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i + 1 < points.size(); ++i) {
+        const Vec2 a = points[i];
+        const Vec2 b = points[i + 1];
+        const Vec2 segment{b.x - a.x, b.y - a.y};
+        const double segment_len_sq = dot_product(segment, segment);
+        if (!(segment_len_sq > 1e-12)) {
+            continue;
+        }
+        const Vec2 from_a{position.x - a.x, position.y - a.y};
+        const double t = clamp_value(dot_product(from_a, segment) / segment_len_sq, 0.0, 1.0);
+        const Vec2 projected{a.x + segment.x * t, a.y + segment.y * t};
+        best_distance_sq = std::min(best_distance_sq, distance_sq(position, projected));
+    }
+    return std::sqrt(best_distance_sq);
+}
+
 Vec2 clamp_point_to_bounds(const WorldMap& world, const Vec2& position, double margin = 0.0) {
     const Rect& bounds = world.bounds();
     const double min_x = bounds.min_x + margin;
@@ -1953,6 +1978,24 @@ bool HardwarePlannerRunner::dynamic_gap_point_allowed(const Vec2& position) cons
     if (!dynamic_gap_mode_enabled()) {
         return is_inside_bounds(world_, position);
     }
+    if (world_is_mixed(world_) &&
+        world_has_structured_reference(world_) &&
+        world_span_m(world_) <= 2.50 &&
+        !world_.road_centerline().empty()) {
+        if (!is_inside_bounds(world_, position, 0.0)) {
+            return false;
+        }
+        for (const Rect& obstacle : world_.obstacles()) {
+            if (point_in_expanded_rect(position, obstacle, 0.025)) {
+                return false;
+            }
+        }
+        const double corridor_half_width = clamp_value(
+            std::max(geometry_.body_width + 0.10, 0.30 * structured_course_span_m(world_)),
+            0.26,
+            0.38);
+        return distance_to_polyline_m(world_.road_centerline(), position) <= corridor_half_width;
+    }
     return is_inside_bounds(
         world_,
         position,
@@ -3194,6 +3237,37 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     if (scan.empty()) {
         return;
+    }
+
+    const bool compact_mixed_reference =
+        world_is_mixed(world_) &&
+        world_has_structured_reference(world_) &&
+        world_span_m(world_) <= 2.50 &&
+        !world_.road_centerline().empty();
+    if (compact_mixed_reference) {
+        const double road_block_score =
+            compute_mixed_road_block_score(mixed_road_gate_lookahead_m());
+        const bool front_obstacle_pressure =
+            estimate_.front_lidar_distance > 0.0 &&
+            estimate_.front_lidar_distance <
+                config_.localization.obstacle_stop_distance_m + 0.05;
+        const bool square_lab_annulus = world_span_m(world_) <= 1.95;
+        const double required_block_score = square_lab_annulus ? 0.42 : 0.18;
+        if ((square_lab_annulus && !front_obstacle_pressure) ||
+            (!square_lab_annulus &&
+             !locked_gap_goal_.has_value() &&
+             road_block_score < required_block_score &&
+             !front_obstacle_pressure)) {
+            clear_locked_gap_goal();
+            dynamic_gap_tracks_.clear();
+            gates_.clear();
+            gate_specs_.clear();
+            visible_gate_indices_.clear();
+            chosen_gate_index_ = -1;
+            diagnostics_.candidate_gates = 0;
+            diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+            return;
+        }
     }
 
     const Vec2 lidar_origin = lidar_origin_world(estimate_.position, estimate_.yaw, config_.localization);

@@ -436,6 +436,83 @@ Vec2 sampled_loop_point(const std::vector<Vec2>& loop, double fraction) {
     return loop[index];
 }
 
+Vec2 sampled_polyline_point(const std::vector<Vec2>& points, double fraction) {
+    if (points.empty()) {
+        return {};
+    }
+    if (points.size() == 1) {
+        return points.front();
+    }
+
+    const double clamped = std::clamp(fraction, 0.0, 1.0);
+    std::vector<double> cumulative(points.size(), 0.0);
+    for (size_t i = 1; i < points.size(); ++i) {
+        cumulative[i] = cumulative[i - 1] + distance(points[i - 1], points[i]);
+    }
+    const double total = cumulative.back();
+    if (!(total > 1e-9)) {
+        return points.front();
+    }
+
+    const double target_s = clamped * total;
+    auto upper = std::upper_bound(cumulative.begin(), cumulative.end(), target_s);
+    if (upper == cumulative.begin()) {
+        return points.front();
+    }
+    if (upper == cumulative.end()) {
+        return points.back();
+    }
+    const size_t index = static_cast<size_t>(std::distance(cumulative.begin(), upper));
+    const double s0 = cumulative[index - 1];
+    const double s1 = cumulative[index];
+    const double alpha = (s1 > s0) ? std::clamp((target_s - s0) / (s1 - s0), 0.0, 1.0) : 0.0;
+    return interpolate(points[index - 1], points[index], alpha);
+}
+
+std::vector<Vec2> make_lab_square_annulus_reference(const Vec2& center,
+                                                    double radius,
+                                                    double start_angle,
+                                                    double lap_angle,
+                                                    double spacing) {
+    const double arc_length = std::abs(lap_angle) * radius;
+    const int samples = std::clamp(
+        static_cast<int>(std::ceil(arc_length / std::max(spacing, 0.012))) + 1,
+        24,
+        220);
+    std::vector<Vec2> path;
+    path.reserve(static_cast<size_t>(samples));
+    for (int i = 0; i < samples; ++i) {
+        const double alpha = static_cast<double>(i) / static_cast<double>(samples - 1);
+        const double angle = start_angle + lap_angle * alpha;
+        path.push_back({
+            center.x + radius * std::cos(angle),
+            center.y + radius * std::sin(angle),
+        });
+    }
+    return path;
+}
+
+std::vector<Rect> make_disc_obstacle_blocks(const Vec2& center, double radius, double strip_height) {
+    std::vector<Rect> blocks;
+    const int strip_count = std::max(5, static_cast<int>(std::ceil((2.0 * radius) / std::max(strip_height, 0.02))));
+    blocks.reserve(static_cast<size_t>(strip_count));
+    const double y_min = center.y - radius;
+    const double actual_strip = (2.0 * radius) / static_cast<double>(strip_count);
+    for (int i = 0; i < strip_count; ++i) {
+        const double y0 = y_min + actual_strip * static_cast<double>(i);
+        const double y1 = y_min + actual_strip * static_cast<double>(i + 1);
+        const double y_mid = 0.5 * (y0 + y1);
+        const double half_width = std::sqrt(std::max(radius * radius - (y_mid - center.y) * (y_mid - center.y), 0.0));
+        blocks.push_back({
+            center.x - half_width,
+            y0,
+            center.x + half_width,
+            y1,
+        });
+    }
+    return blocks;
+}
+
 double polyline_length(const std::vector<Vec2>& points) {
     double length = 0.0;
     for (size_t i = 1; i < points.size(); ++i) {
@@ -1242,41 +1319,43 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::TankCircuit;
-    world.bounds_ = {0.0, 0.0, 1.80, 1.80};
+    world.bounds_ = {0.0, 0.0, 1.70, 1.70};
 
-    const Rect content{0.30, 0.50, 1.50, 1.31};
-    constexpr double kRoadWidth = 0.74;
-    constexpr double kWallBlockSize = 0.052;
+    constexpr double kSide = 1.70;
+    constexpr double kCenter = 0.5 * kSide;
+    constexpr double kInnerDiameter = 0.40;
+    constexpr double kInnerRadius = 0.5 * kInnerDiameter;
+    constexpr double kCenterlineRadius = 0.525;
+    constexpr double kStartAngle = -42.0 * kPi / 180.0;
+    constexpr double kLapAngle = 1.88 * kPi;
+    constexpr double kReferenceSpacing = 0.022;
+    const Vec2 center{kCenter, kCenter};
 
-    world.road_centerline_ = make_closed_obstacle_mixed_loop(content, 0.025);
-    const std::vector<Vec2> marker_loop = world.road_centerline_;
-    if (world.road_centerline_.size() > 2) {
-        std::reverse(world.road_centerline_.begin() + 1, world.road_centerline_.end());
-    }
+    world.road_centerline_ = make_lab_square_annulus_reference(
+        center,
+        kCenterlineRadius,
+        kStartAngle,
+        kLapAngle,
+        kReferenceSpacing);
     world.start_ = world.road_centerline_.front();
-    world.goal_ = world.start_;
+    world.goal_ = world.road_centerline_.back();
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
     world.obstacles_.clear();
-    std::vector<Rect> outer_wall =
-        make_offset_wall_blocks(world.road_centerline_, 0.5 * kRoadWidth, kWallBlockSize);
-    std::vector<Rect> inner_wall =
-        make_offset_wall_blocks(world.road_centerline_, -0.5 * kRoadWidth, kWallBlockSize);
-    world.obstacles_.insert(world.obstacles_.end(), outer_wall.begin(), outer_wall.end());
-    world.obstacles_.insert(world.obstacles_.end(), inner_wall.begin(), inner_wall.end());
+    std::vector<Rect> central_wall =
+        make_disc_obstacle_blocks(center, kInnerRadius, 0.035);
+    world.obstacles_.insert(world.obstacles_.end(), central_wall.begin(), central_wall.end());
 
-    const Vec2 lower_block_center = map_unit_point(content, {0.55, 0.255});
-    const Vec2 upper_block_center = map_unit_point(content, {0.60, 0.785});
     world.perception_obstacles_.clear();
-    world.perception_obstacles_.push_back(centered_rect(lower_block_center, 0.24, 0.16));
-    world.perception_obstacles_.push_back(centered_rect(upper_block_center, 0.26, 0.17));
-
-    const Vec2 first_checkpoint = sampled_loop_point(marker_loop, 0.45);
-    const Vec2 far_checkpoint = sampled_loop_point(marker_loop, 0.72);
+    const Vec2 first_checkpoint = sampled_polyline_point(world.road_centerline_, 0.34);
+    const Vec2 far_checkpoint = sampled_polyline_point(world.road_centerline_, 0.68);
+    const double finish_heading = world.road_centerline_.size() > 1
+        ? angle_to(world.road_centerline_[world.road_centerline_.size() - 2], world.road_centerline_.back())
+        : world.start_heading_;
     world.gate_templates_ = {
         {"checkpoint_1", first_checkpoint, first_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
         {"checkpoint_2", far_checkpoint, far_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
-        {"finish", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, world.start_heading_, true},
+        {"finish", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, finish_heading, true},
     };
     world.gates_ = world.gate_templates_;
     world.gate_behavior_ = GateBehaviorMode::Static;
