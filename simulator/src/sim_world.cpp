@@ -1331,17 +1331,11 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.structured_preset_ = StructuredMapPreset::TankCircuit;
     world.bounds_ = {0.0, 0.0, 0.50, 0.50};
 
-    constexpr double kRealArenaSide = 1.70;
-    constexpr double kPlannerSide = 0.50;
-    constexpr double kScale = kPlannerSide / kRealArenaSide;
-    constexpr double kSide = kPlannerSide;
+    constexpr double kSide = 0.50;
     constexpr double kCenter = 0.5 * kSide;
-    constexpr double kWallThickness = 0.014;
-    constexpr double kInnerDiameter = 0.40 * kScale;
-    constexpr double kInnerRadius = 0.5 * kInnerDiameter;
-    constexpr double kCenterlineRadius = 0.525 * kScale;
+    constexpr double kCenterlineRadius = 0.155;
     constexpr double kStartAngle = -42.0 * kPi / 180.0;
-    constexpr double kLapAngle = 1.70 * kPi;
+    constexpr double kLapAngle = 2.0 * kPi;
     constexpr double kReferenceSpacing = 0.010;
     const Vec2 center{kCenter, kCenter};
 
@@ -1356,13 +1350,6 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
     world.obstacles_.clear();
-    std::vector<Rect> boundary_walls =
-        make_boundary_wall_blocks(world.bounds_, kWallThickness);
-    world.obstacles_.insert(world.obstacles_.end(), boundary_walls.begin(), boundary_walls.end());
-    std::vector<Rect> central_wall =
-        make_disc_obstacle_blocks(center, kInnerRadius, 0.014);
-    world.obstacles_.insert(world.obstacles_.end(), central_wall.begin(), central_wall.end());
-
     world.perception_obstacles_.clear();
     const Vec2 first_checkpoint = sampled_polyline_point(world.road_centerline_, 0.34);
     const Vec2 far_checkpoint = sampled_polyline_point(world.road_centerline_, 0.68);
@@ -1741,6 +1728,10 @@ std::vector<LidarHit> WorldMap::raycast(const Vec2& origin,
     const int beam_count = std::max(beams, 1);
     const double start_angle = heading - fov_rad * 0.5;
     const double angle_step = beam_count > 1 ? fov_rad / static_cast<double>(beam_count - 1) : 0.0;
+    const bool bounds_are_lidar_walls =
+        !(environment_mode_ == EnvironmentMode::MixedRoadGates &&
+          unstructured_preset_ == UnstructuredMapPreset::HardwareLab &&
+          obstacles_.empty());
 
     for (int i = 0; i < beam_count; ++i) {
         const double angle = start_angle + static_cast<double>(i) * angle_step;
@@ -1749,10 +1740,12 @@ std::vector<LidarHit> WorldMap::raycast(const Vec2& origin,
         double best = max_range;
         bool hit = false;
 
-        if (const auto bounds_hit = ray_rect_distance(origin, dir, bounds_)) {
-            if (*bounds_hit >= 0.0 && *bounds_hit <= max_range) {
-                best = std::min(best, *bounds_hit);
-                hit = true;
+        if (bounds_are_lidar_walls) {
+            if (const auto bounds_hit = ray_rect_distance(origin, dir, bounds_)) {
+                if (*bounds_hit >= 0.0 && *bounds_hit <= max_range) {
+                    best = std::min(best, *bounds_hit);
+                    hit = true;
+                }
             }
         }
 

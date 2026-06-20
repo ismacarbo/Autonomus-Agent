@@ -4152,86 +4152,6 @@ double mixed_gate_acceptance_radius_for_world(const WorldMap& world) {
     return span <= 1.25 ? 0.10 : 0.12;
 }
 
-double ray_exit_distance_from_rect(const Rect& bounds,
-                                   const Vec2& origin,
-                                   const Vec2& direction,
-                                   double margin) {
-    const Rect expanded{
-        bounds.min_x - margin,
-        bounds.min_y - margin,
-        bounds.max_x + margin,
-        bounds.max_y + margin,
-    };
-    if (origin.x < expanded.min_x || origin.x > expanded.max_x ||
-        origin.y < expanded.min_y || origin.y > expanded.max_y) {
-        return std::numeric_limits<double>::infinity();
-    }
-
-    double exit_distance = std::numeric_limits<double>::infinity();
-    constexpr double kEps = 1e-9;
-    if (direction.x > kEps) {
-        exit_distance = std::min(exit_distance, (expanded.max_x - origin.x) / direction.x);
-    } else if (direction.x < -kEps) {
-        exit_distance = std::min(exit_distance, (expanded.min_x - origin.x) / direction.x);
-    }
-    if (direction.y > kEps) {
-        exit_distance = std::min(exit_distance, (expanded.max_y - origin.y) / direction.y);
-    } else if (direction.y < -kEps) {
-        exit_distance = std::min(exit_distance, (expanded.min_y - origin.y) / direction.y);
-    }
-    return exit_distance > 0.0 ? exit_distance : std::numeric_limits<double>::infinity();
-}
-
-Vec2 lidar_display_endpoint_for_world(const WorldMap& world,
-                                      const Vec2& origin,
-                                      const LidarHit& hit,
-                                      double active_lidar_range,
-                                      bool* hit_visible) {
-    const double raw_distance = hit.distance > 0.0 ? hit.distance : distance(origin, hit.point);
-    Vec2 direction{
-        hit.point.x - origin.x,
-        hit.point.y - origin.y,
-    };
-    const double direction_norm = std::hypot(direction.x, direction.y);
-    if (!(direction_norm > 1e-9)) {
-        if (hit_visible != nullptr) {
-            *hit_visible = hit.hit;
-        }
-        return hit.point;
-    }
-    direction.x /= direction_norm;
-    direction.y /= direction_norm;
-
-    const Rect& bounds = world.bounds();
-    const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
-    double visual_range = active_lidar_range > 0.0
-                              ? active_lidar_range
-                              : raw_distance;
-    if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
-        if (span <= 0.65) {
-            visual_range = std::min(visual_range, std::clamp(0.58 * span, 0.24, 0.32));
-        } else if (span <= 1.25) {
-            visual_range = std::min(visual_range, 0.72 * span);
-        }
-    }
-
-    double display_distance = std::min(raw_distance, visual_range);
-    if (world.environment_mode() == EnvironmentMode::MixedRoadGates && span <= 1.25) {
-        const double bounds_margin = std::clamp(0.025 * span, 0.008, 0.016);
-        display_distance = std::min(
-            display_distance,
-            ray_exit_distance_from_rect(bounds, origin, direction, bounds_margin));
-    }
-
-    if (hit_visible != nullptr) {
-        *hit_visible = hit.hit && raw_distance <= display_distance + 1e-6;
-    }
-    return {
-        origin.x + direction.x * display_distance,
-        origin.y + direction.y * display_distance,
-    };
-}
-
 void draw_mixed_gate_acceptance_ring(ImDrawList* draw_list,
                                      const CanvasTransform& tx,
                                      const WorldMap& world,
@@ -4968,33 +4888,19 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
         if (ui_state->show_lidar_rays) {
             for (size_t i = 0; i < sim.lidar_hits().size(); i += lidar_stride) {
                 const LidarHit& hit = sim.lidar_hits()[i];
-                bool hit_visible = false;
-                const Vec2 display_endpoint = lidar_display_endpoint_for_world(
-                    sim.world(),
-                    car_pos,
-                    hit,
-                    sim.active_lidar_range(),
-                    &hit_visible);
                 draw_list->AddLine(
                     world_to_screen(tx, car_pos),
-                    world_to_screen(tx, display_endpoint),
-                    hit_visible ? kColorLidar : kColorLidarMiss,
-                    hit_visible ? 2.3f : 1.5f);
+                    world_to_screen(tx, hit.point),
+                    hit.hit ? kColorLidar : kColorLidarMiss,
+                    hit.hit ? 2.3f : 1.5f);
             }
         }
 
         if (ui_state->show_lidar_hits) {
             for (size_t i = 0; i < sim.lidar_hits().size(); i += lidar_stride) {
                 const LidarHit& hit = sim.lidar_hits()[i];
-                bool hit_visible = false;
-                const Vec2 display_endpoint = lidar_display_endpoint_for_world(
-                    sim.world(),
-                    car_pos,
-                    hit,
-                    sim.active_lidar_range(),
-                    &hit_visible);
-                const ImVec2 hit_screen = world_to_screen(tx, display_endpoint);
-                if (hit_visible) {
+                const ImVec2 hit_screen = world_to_screen(tx, hit.point);
+                if (hit.hit) {
                     draw_list->AddCircleFilled(hit_screen, 3.6f, kColorLidarHit);
                     draw_list->AddCircle(hit_screen, 6.2f, IM_COL32(231, 255, 212, 220), 0, 1.4f);
                 } else {
@@ -6019,31 +5925,17 @@ void render_hardware_world_tab(const HardwareViewerState& hardware, UiState* ui_
         if (ui_state->show_lidar_rays) {
             for (size_t i = 0; i < frame.lidar_hits.size(); i += lidar_stride) {
                 const LidarHit& hit = frame.lidar_hits[i];
-                bool hit_visible = false;
-                const Vec2 display_endpoint = lidar_display_endpoint_for_world(
-                    world,
-                    lidar_origin,
-                    hit,
-                    hardware.scene.active_lidar_range,
-                    &hit_visible);
                 draw_list->AddLine(world_to_screen(tx, lidar_origin),
-                                   world_to_screen(tx, display_endpoint),
-                                   hit_visible ? kColorLidar : kColorLidarMiss,
-                                   hit_visible ? 2.3f : 1.5f);
+                                   world_to_screen(tx, hit.point),
+                                   hit.hit ? kColorLidar : kColorLidarMiss,
+                                   hit.hit ? 2.3f : 1.5f);
             }
         }
         if (ui_state->show_lidar_hits) {
             for (size_t i = 0; i < frame.lidar_hits.size(); i += lidar_stride) {
                 const LidarHit& hit = frame.lidar_hits[i];
-                bool hit_visible = false;
-                const Vec2 display_endpoint = lidar_display_endpoint_for_world(
-                    world,
-                    lidar_origin,
-                    hit,
-                    hardware.scene.active_lidar_range,
-                    &hit_visible);
-                const ImVec2 hit_screen = world_to_screen(tx, display_endpoint);
-                if (hit_visible) {
+                const ImVec2 hit_screen = world_to_screen(tx, hit.point);
+                if (hit.hit) {
                     draw_list->AddCircleFilled(hit_screen, 3.6f, kColorLidarHit);
                     draw_list->AddCircle(hit_screen, 6.2f, IM_COL32(231, 255, 212, 220), 0, 1.4f);
                 } else {
