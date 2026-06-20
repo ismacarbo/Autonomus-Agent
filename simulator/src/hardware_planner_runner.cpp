@@ -6929,13 +6929,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
         safety_stop_active_ = false;
         gap_recovery_turn_active_ = true;
-        allow_reverse_recovery_motion = true;
+        allow_reverse_recovery_motion = false;
         use_direct_yaw_rate_command = true;
         direct_yaw_rate_command = clamp_value(
-            stuck_recovery_direction_ * 0.42,
-            -0.55 * config_.drive.max_yaw_rate,
-            0.55 * config_.drive.max_yaw_rate);
-        last_command_.target_speed = -std::min(0.035, 0.28 * geometry_.max_linear_speed);
+            stuck_recovery_direction_ * 0.58,
+            -0.70 * config_.drive.max_yaw_rate,
+            0.70 * config_.drive.max_yaw_rate);
+        last_command_.target_speed = 0.0;
         last_command_.target_curvature = 0.0;
         commanded_speed_ = last_command_.target_speed;
         commanded_steer_angle_ = 0.0;
@@ -7121,22 +7121,27 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         sim_time_ < stuck_recovery_until_s_;
     const bool safety_stuck =
         safety_stop_active_ &&
-        estimate_.front_lidar_distance > 0.0 &&
-        estimate_.front_lidar_distance <
-            config_.localization.obstacle_stop_distance_m + 0.03 &&
-        std::abs(estimate_.speed) < 0.012;
+        std::abs(estimate_.speed) < 0.012 &&
+        ((estimate_.front_lidar_distance > 0.0 &&
+          estimate_.front_lidar_distance <
+              config_.localization.obstacle_stop_distance_m + 0.04) ||
+         diagnostics_.close_lidar_points > 0 ||
+         lidar_side_clearance_blocked);
+    const bool motion_stuck =
+        demanding_motion && robot_is_still;
     const bool timed_stuck_candidate =
         micro_hardware_recovery_world &&
         !goal_reached_ &&
         !timed_recovery_active &&
-        ((demanding_motion && robot_is_still) || safety_stuck);
+        (motion_stuck || safety_stuck);
     if (timed_stuck_candidate) {
         stuck_motion_elapsed_s_ += safe_dt;
     } else {
         stuck_motion_elapsed_s_ = 0.0;
     }
 
-    if (stuck_motion_elapsed_s_ >= 5.0) {
+    const double stuck_recovery_threshold_s = safety_stuck ? 1.20 : 5.0;
+    if (stuck_motion_elapsed_s_ >= stuck_recovery_threshold_s) {
         const double left_clearance = sector_min_clearance(
             lidar_hits_,
             estimate_.yaw,
@@ -7150,7 +7155,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             0.36,
             config_.localization.max_range_m);
         stuck_recovery_direction_ = left_clearance >= right_clearance ? 1.0 : -1.0;
-        stuck_recovery_until_s_ = sim_time_ + 1.40;
+        stuck_recovery_until_s_ = sim_time_ + (safety_stuck ? 1.70 : 1.45);
         stuck_motion_elapsed_s_ = 0.0;
         no_motion_command_cycles_ = 0;
         clear_locked_gap_goal();
