@@ -530,6 +530,9 @@ class HardwarePlannerRunner {
     int encoder_ready_streak_ = 0;
     bool measured_wheel_speeds_valid_ = false;
     int no_motion_command_cycles_ = 0;
+    double stuck_motion_elapsed_s_ = 0.0;
+    double stuck_recovery_until_s_ = -1.0;
+    double stuck_recovery_direction_ = 1.0;
     double last_controller_rearm_time_s_ = -1.0;
     bool use_dynamic_gap_gates_ = false;
     bool gap_recovery_turn_active_ = false;

@@ -1512,6 +1512,9 @@ void HardwarePlannerRunner::reset() {
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
     no_motion_command_cycles_ = 0;
+    stuck_motion_elapsed_s_ = 0.0;
+    stuck_recovery_until_s_ = -1.0;
+    stuck_recovery_direction_ = 1.0;
     last_controller_rearm_time_s_ = -1.0;
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
     gap_recovery_turn_active_ = false;
@@ -1617,18 +1620,21 @@ void HardwarePlannerRunner::initialize_planner_state() {
         compact_mixed_open_road(world_);
     const bool compact_mixed_road =
         compact_mixed_loop || compact_mixed_open;
+    const bool hardware_mixed_lab =
+        compact_hardware_mixed_lab_world(world_);
     const double compact_mixed_road_length =
         compact_mixed_road ? structured_road_length_m(world_) : 0.0;
 
     sim_ = {};
     sim_.W = tiny_indoor_loop ? clamp_value(world_span * 0.36, 0.09, 0.13)
              : micro_structured_world ? clamp_value(world_span * 0.42, 0.10, 0.16)
+             : hardware_mixed_lab ? clamp_value(0.38 * world_span_m(world_), 0.16, 0.22)
              : compact_mixed_road ? clamp_value(geometry_.body_width + 0.06, 0.28, 0.34)
              : (compact_structured_world ? clamp_value(geometry_.body_width + 0.08, 0.28, 0.38)
                                          : (compact_world ? 0.90 : 3.0));
-    sim_.T_max = tiny_indoor_loop ? 2.6 : (micro_structured_world ? 4.0 : (compact_mixed_road ? 4.5 : (compact_world ? 8.0 : 20.0)));
-    sim_.la = tiny_indoor_loop ? 0.16 : (micro_structured_world ? 0.35 : (compact_mixed_road ? 0.38 : (compact_world ? 1.20 : 8.0)));
-    sim_.la_stop = tiny_indoor_loop ? 0.26 : (micro_structured_world ? 0.70 : (compact_mixed_road ? 0.80 : (compact_world ? 2.40 : 18.0)));
+    sim_.T_max = tiny_indoor_loop ? 2.6 : (micro_structured_world ? 4.0 : (hardware_mixed_lab ? 3.4 : (compact_mixed_road ? 4.5 : (compact_world ? 8.0 : 20.0))));
+    sim_.la = tiny_indoor_loop ? 0.16 : (micro_structured_world ? 0.35 : (hardware_mixed_lab ? 0.22 : (compact_mixed_road ? 0.38 : (compact_world ? 1.20 : 8.0))));
+    sim_.la_stop = tiny_indoor_loop ? 0.26 : (micro_structured_world ? 0.70 : (hardware_mixed_lab ? 0.44 : (compact_mixed_road ? 0.80 : (compact_world ? 2.40 : 18.0))));
     sim_.z_coord = 0.1;
     sim_.veh_W = geometry_.body_width;
     sim_.veh_L = geometry_.body_length;
@@ -1636,8 +1642,8 @@ void HardwarePlannerRunner::initialize_planner_state() {
                    : micro_structured_world ? std::max(world_span * 8.0, 3.0)
                    : compact_mixed_road ? std::max(compact_mixed_road_length, 0.50)
                    : (compact_world ? std::max(world_span * 4.0, 6.0) : 200.0);
-    sim_.tol_obst = tiny_indoor_loop ? 0.04 : (micro_structured_world ? 0.06 : (compact_mixed_road ? 0.12 : (compact_world ? 0.18 : 0.25)));
-    sim_.lat_tol = tiny_indoor_loop ? 0.025 : (micro_structured_world ? 0.04 : (compact_mixed_road ? 0.08 : (compact_world ? 0.12 : 0.2)));
+    sim_.tol_obst = tiny_indoor_loop ? 0.04 : (micro_structured_world ? 0.06 : (hardware_mixed_lab ? 0.075 : (compact_mixed_road ? 0.12 : (compact_world ? 0.18 : 0.25))));
+    sim_.lat_tol = tiny_indoor_loop ? 0.025 : (micro_structured_world ? 0.04 : (hardware_mixed_lab ? 0.045 : (compact_mixed_road ? 0.08 : (compact_world ? 0.12 : 0.2))));
     sim_.DT = static_cast<float>(config_.nominal_dt);
     sim_.V_max = config_.cruise_speed_limit;
 
@@ -5957,6 +5963,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         world_span_m(world_) >= 0.90 &&
         structured_course_span_m(world_) >= 0.50;
     bool allow_unlocked_recovery_motion = false;
+    bool allow_reverse_recovery_motion = false;
 
     auto apply_strict_scan_escape = [&]() {
         if (!strict_locked_motion ||
@@ -6762,9 +6769,43 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_mpc_command_.reset();
     }
 
+    const bool micro_hardware_recovery_world =
+        compact_hardware_mixed_lab_world(world_) &&
+        config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
+    if (micro_hardware_recovery_world &&
+        !goal_reached_ &&
+        sim_time_ < stuck_recovery_until_s_) {
+        clear_locked_gap_goal();
+        gates_.clear();
+        gate_specs_.clear();
+        dynamic_gap_tracks_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+
+        safety_stop_active_ = false;
+        gap_recovery_turn_active_ = true;
+        allow_reverse_recovery_motion = true;
+        use_direct_yaw_rate_command = true;
+        direct_yaw_rate_command = clamp_value(
+            stuck_recovery_direction_ * 0.42,
+            -0.55 * config_.drive.max_yaw_rate,
+            0.55 * config_.drive.max_yaw_rate);
+        last_command_.target_speed = -std::min(0.035, 0.28 * geometry_.max_linear_speed);
+        last_command_.target_curvature = 0.0;
+        commanded_speed_ = last_command_.target_speed;
+        commanded_steer_angle_ = 0.0;
+        last_mpc_command_.reset();
+    }
+
+    const double min_target_speed =
+        allow_reverse_recovery_motion
+            ? -std::min(0.040, 0.35 * geometry_.max_linear_speed)
+            : 0.0;
     last_command_.target_speed = clamp_value(
         last_command_.target_speed,
-        0.0,
+        min_target_speed,
         geometry_.max_linear_speed);
     commanded_speed_ = last_command_.target_speed;
     last_command_.target_curvature = clamp_value(
@@ -6930,6 +6971,53 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         ++no_motion_command_cycles_;
     } else {
         no_motion_command_cycles_ = 0;
+    }
+
+    const bool timed_recovery_active =
+        micro_hardware_recovery_world &&
+        sim_time_ < stuck_recovery_until_s_;
+    const bool safety_stuck =
+        safety_stop_active_ &&
+        estimate_.front_lidar_distance > 0.0 &&
+        estimate_.front_lidar_distance <
+            config_.localization.obstacle_stop_distance_m + 0.03 &&
+        std::abs(estimate_.speed) < 0.012;
+    const bool timed_stuck_candidate =
+        micro_hardware_recovery_world &&
+        !goal_reached_ &&
+        !timed_recovery_active &&
+        ((demanding_motion && robot_is_still) || safety_stuck);
+    if (timed_stuck_candidate) {
+        stuck_motion_elapsed_s_ += safe_dt;
+    } else {
+        stuck_motion_elapsed_s_ = 0.0;
+    }
+
+    if (stuck_motion_elapsed_s_ >= 5.0) {
+        const double left_clearance = sector_min_clearance(
+            lidar_hits_,
+            estimate_.yaw,
+            0.78,
+            0.36,
+            config_.localization.max_range_m);
+        const double right_clearance = sector_min_clearance(
+            lidar_hits_,
+            estimate_.yaw,
+            -0.78,
+            0.36,
+            config_.localization.max_range_m);
+        stuck_recovery_direction_ = left_clearance >= right_clearance ? 1.0 : -1.0;
+        stuck_recovery_until_s_ = sim_time_ + 1.40;
+        stuck_motion_elapsed_s_ = 0.0;
+        no_motion_command_cycles_ = 0;
+        clear_locked_gap_goal();
+        gates_.clear();
+        gate_specs_.clear();
+        dynamic_gap_tracks_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
     }
 
     const int stall_boost_cycles_required =

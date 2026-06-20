@@ -1329,20 +1329,20 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::TankCircuit;
-    world.bounds_ = {0.0, 0.0, 0.70, 0.70};
+    world.bounds_ = {0.0, 0.0, 0.50, 0.50};
 
     constexpr double kRealArenaSide = 1.70;
-    constexpr double kPlannerSide = 0.70;
+    constexpr double kPlannerSide = 0.50;
     constexpr double kScale = kPlannerSide / kRealArenaSide;
     constexpr double kSide = kPlannerSide;
     constexpr double kCenter = 0.5 * kSide;
-    constexpr double kWallThickness = 0.018;
+    constexpr double kWallThickness = 0.014;
     constexpr double kInnerDiameter = 0.40 * kScale;
     constexpr double kInnerRadius = 0.5 * kInnerDiameter;
     constexpr double kCenterlineRadius = 0.525 * kScale;
     constexpr double kStartAngle = -42.0 * kPi / 180.0;
     constexpr double kLapAngle = 1.70 * kPi;
-    constexpr double kReferenceSpacing = 0.012;
+    constexpr double kReferenceSpacing = 0.010;
     const Vec2 center{kCenter, kCenter};
 
     world.road_centerline_ = make_lab_square_annulus_reference(
