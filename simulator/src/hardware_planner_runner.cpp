@@ -2660,11 +2660,15 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         }
     }
 
-    double x_on_path = 0.0;
-    double y_on_path = 0.0;
-    cl_.prev_road.eval(fused_constrained_s, x_on_path, y_on_path);
-    estimator_.update_lidar_pose({x_on_path, y_on_path}, measured_yaw, false);
-    sync_estimate_from_ekf_state();
+    const bool keep_pose_free_for_mixed_gate_bypass =
+        compact_hardware_mixed_lab_world(world_);
+    if (!keep_pose_free_for_mixed_gate_bypass) {
+        double x_on_path = 0.0;
+        double y_on_path = 0.0;
+        cl_.prev_road.eval(fused_constrained_s, x_on_path, y_on_path);
+        estimator_.update_lidar_pose({x_on_path, y_on_path}, measured_yaw, false);
+        sync_estimate_from_ekf_state();
+    }
 
     double constrained_n = 0.0;
     double confirmed_s = fused_constrained_s;
