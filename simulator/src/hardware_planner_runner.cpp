@@ -308,7 +308,7 @@ bool lidar_pressure_excluding_static_map(const WorldMap& world,
                                          bool front_only) {
     const double boundary_margin = clamp_value(0.08 * world_span_m(world), 0.025, 0.055);
     const double static_padding = compact_hardware_mixed_lab_world(world)
-        ? clamp_value(0.10 * world_span_m(world), 0.040, 0.080)
+        ? clamp_value(0.150 * world_span_m(world), 0.060, 0.085)
         : clamp_value(0.035 * world_span_m(world), 0.018, 0.035);
     for (const LidarHit& hit : hits) {
         if (!hit.hit ||
@@ -1956,6 +1956,9 @@ double HardwarePlannerRunner::compute_mixed_road_forward_clearance(double lookah
         current_world_span <= 2.50;
     const bool ignore_static_map_walls =
         compact_hardware_mixed_lab_world(world_);
+    const double static_wall_ignore_padding = ignore_static_map_walls
+        ? clamp_value(0.045 * current_world_span, 0.018, 0.030)
+        : 0.0;
     for (double ahead = sample_step; ahead <= lookahead_m + 1e-9; ahead += sample_step) {
         double s_probe = best_s + ahead;
         if (closed_loop) {
@@ -1990,7 +1993,7 @@ double HardwarePlannerRunner::compute_mixed_road_forward_clearance(double lookah
                 continue;
             }
             if (ignore_static_map_walls &&
-                point_near_static_map_obstacle(world_, point, 0.060)) {
+                point_near_static_map_obstacle(world_, point, static_wall_ignore_padding)) {
                 continue;
             }
             if (distance_sq(probe, point) <= corridor_padding_sq) {
@@ -2003,7 +2006,7 @@ double HardwarePlannerRunner::compute_mixed_road_forward_clearance(double lookah
                 continue;
             }
             if (ignore_static_map_walls &&
-                point_near_static_map_obstacle(world_, hit.point, 0.060)) {
+                point_near_static_map_obstacle(world_, hit.point, static_wall_ignore_padding)) {
                 continue;
             }
             if (hit.hit && distance_sq(probe, hit.point) <= corridor_padding_sq) {
@@ -3296,16 +3299,16 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         return;
     }
 
+    const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
+    const double current_world_span = world_span_m(world_);
     const bool compact_mixed_reference =
         world_is_mixed(world_) &&
         world_has_structured_reference(world_) &&
-        world_span_m(world_) <= 2.50 &&
+        current_world_span <= 2.50 &&
         !world_.road_centerline().empty();
     if (compact_mixed_reference) {
         const double road_block_score =
             compute_mixed_road_block_score(mixed_road_gate_lookahead_m());
-        const bool micro_hardware_lab =
-            compact_hardware_mixed_lab_world(world_);
         const double micro_road_start_distance =
             micro_hardware_lab
                 ? clamp_value(0.10 * std::max(structured_road_length_m(world_), world_span_m(world_)),
@@ -3322,13 +3325,13 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                   world_,
                   lidar_hits_,
                   estimate_.yaw,
-                  config_.localization.obstacle_stop_distance_m + 0.05,
+                  config_.localization.obstacle_stop_distance_m + 0.07,
                   config_.localization.front_sector_half_angle_rad,
                   true)
             : (estimate_.front_lidar_distance > 0.0 &&
                estimate_.front_lidar_distance <
                    config_.localization.obstacle_stop_distance_m + 0.05);
-        const bool square_lab_annulus = world_span_m(world_) <= 1.95;
+        const bool square_lab_annulus = current_world_span <= 1.95;
         const double required_block_score = square_lab_annulus ? 0.42 : 0.18;
         if ((micro_hardware_lab && !micro_road_has_started) ||
             (square_lab_annulus && !front_obstacle_pressure) ||
@@ -3452,19 +3455,34 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
-    const double min_target_distance = clamp_value(
-        config_.gap_extraction.min_target_distance_m,
-        std::max(
-            config_.localization.min_valid_range_m + 0.08,
-            std::max(geometry_.cg_to_front + 0.04, 0.20)),
-        planning_range * 0.68);
-    const double max_target_distance = clamp_value(
-        config_.gap_extraction.max_target_distance_m,
-        min_target_distance + 0.05,
-        planning_range * 0.92);
-    const double free_threshold = std::max(
-        config_.gap_extraction.free_distance_threshold_m,
-        config_.localization.obstacle_stop_distance_m + 0.03);
+    const double min_target_distance = micro_hardware_lab
+        ? clamp_value(
+              0.26 * current_world_span,
+              config_.localization.min_valid_range_m + 0.005,
+              config_.localization.min_valid_range_m + 0.080)
+        : clamp_value(
+              config_.gap_extraction.min_target_distance_m,
+              std::max(
+                  config_.localization.min_valid_range_m + 0.08,
+                  std::max(geometry_.cg_to_front + 0.04, 0.20)),
+              planning_range * 0.68);
+    const double max_target_distance = micro_hardware_lab
+        ? clamp_value(
+              0.62 * current_world_span,
+              min_target_distance + 0.06,
+              std::min(planning_range * 0.92, 0.38))
+        : clamp_value(
+              config_.gap_extraction.max_target_distance_m,
+              min_target_distance + 0.05,
+              planning_range * 0.92);
+    const double free_threshold = micro_hardware_lab
+        ? clamp_value(
+              0.36 * current_world_span,
+              config_.localization.min_valid_range_m + 0.04,
+              config_.localization.obstacle_stop_distance_m + 0.02)
+        : std::max(
+              config_.gap_extraction.free_distance_threshold_m,
+              config_.localization.obstacle_stop_distance_m + 0.03);
     const Vec2 global_goal = world_.goal();
     const bool have_global_goal =
         is_inside_bounds(world_, global_goal) &&
@@ -3529,13 +3547,17 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         return 0.85 * (1.0 - clamp_value(target_delta / 0.36, 0.0, 1.0));
     };
 
-    const double grid_resolution = clamp_value(
-        config_.gap_extraction.map_point_resolution_m * 1.5,
-        0.04,
-        0.07);
-    const double inflate_radius = std::max(
-        config_.gap_extraction.target_clearance_radius_m,
-        geometry_.body_width * 0.55);
+    const double grid_resolution = micro_hardware_lab
+        ? clamp_value(0.055 * current_world_span, 0.018, 0.032)
+        : clamp_value(
+              config_.gap_extraction.map_point_resolution_m * 1.5,
+              0.04,
+              0.07);
+    const double inflate_radius = micro_hardware_lab
+        ? clamp_value(0.13 * current_world_span, 0.045, 0.070)
+        : std::max(
+              config_.gap_extraction.target_clearance_radius_m,
+              geometry_.body_width * 0.55);
     const int half_cells = std::max(
         6,
         static_cast<int>(std::ceil((planning_range + inflate_radius + grid_resolution) / grid_resolution)));
@@ -3695,9 +3717,14 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 1.0 * kPi / 180.0);
         }
     }
-    const double required_gap_width = std::max(
-        config_.gap_extraction.min_gap_width_m,
-        geometry_.body_width + 2.0 * config_.gap_extraction.path_clearance_radius_m);
+    const double required_gap_width = micro_hardware_lab
+        ? clamp_value(
+              0.38 * current_world_span,
+              std::max(0.12, 0.50 * geometry_.body_width),
+              0.22)
+        : std::max(
+              config_.gap_extraction.min_gap_width_m,
+              geometry_.body_width + 2.0 * config_.gap_extraction.path_clearance_radius_m);
     const double passed_gap_reject_radius = std::max(
         config_.gap_extraction.gap_goal_acceptance_radius_m,
         std::max(config_.gap_extraction.gap_goal_tolerance_m * 1.15, 0.24));
@@ -3840,9 +3867,11 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
-    const double min_depth_contrast = std::max(
-        config_.gap_extraction.min_gap_depth_contrast_m,
-        0.35 * required_gap_width);
+    const double min_depth_contrast = micro_hardware_lab
+        ? clamp_value(0.16 * current_world_span, 0.045, 0.095)
+        : std::max(
+              config_.gap_extraction.min_gap_depth_contrast_m,
+              0.35 * required_gap_width);
     double nearest_beam_distance = planning_range;
     std::vector<double> beam_distances;
     beam_distances.reserve(beams.size());
@@ -3970,10 +3999,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             if (!std::isfinite(aperture_distance) || aperture_distance <= 0.0) {
                 return;
             }
-            const double aperture_margin = clamp_value(
-                config_.gap_extraction.gap_aperture_target_margin_m,
-                0.03,
-                0.18);
+            const double aperture_margin = micro_hardware_lab
+                ? clamp_value(0.07 * current_world_span, 0.025, 0.050)
+                : clamp_value(
+                      config_.gap_extraction.gap_aperture_target_margin_m,
+                      0.03,
+                      0.18);
             nominal_target_distance = aperture_distance + aperture_margin;
         }
         const double target_distance = clamp_value(
@@ -4110,10 +4141,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             if (!std::isfinite(aperture_distance) || aperture_distance <= 0.0) {
                 return;
             }
-            const double aperture_margin = clamp_value(
-                config_.gap_extraction.gap_aperture_target_margin_m,
-                0.03,
-                0.18);
+            const double aperture_margin = micro_hardware_lab
+                ? clamp_value(0.07 * current_world_span, 0.025, 0.050)
+                : clamp_value(
+                      config_.gap_extraction.gap_aperture_target_margin_m,
+                      0.03,
+                      0.18);
             nominal_target_distance = aperture_distance + aperture_margin;
         }
 
@@ -4267,17 +4300,31 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const bool lab_scale_mixed_world_for_candidates =
         world_is_mixed(world_) && world_span_m(world_) <= 1.25;
     const bool lab_scale_front_pressure_for_candidates =
-        estimate_.front_lidar_distance > 0.0 &&
-        estimate_.front_lidar_distance <
-            config_.localization.obstacle_stop_distance_m + 0.04;
+        micro_hardware_lab
+            ? lidar_pressure_excluding_static_map(
+                  world_,
+                  lidar_hits_,
+                  estimate_.yaw,
+                  config_.localization.obstacle_stop_distance_m + 0.07,
+                  config_.localization.front_sector_half_angle_rad,
+                  true)
+            : (estimate_.front_lidar_distance > 0.0 &&
+               estimate_.front_lidar_distance <
+                   config_.localization.obstacle_stop_distance_m + 0.04);
     if (world_is_mixed(world_) &&
         compute_mixed_road_block_score(mixed_road_gate_lookahead_m()) >= 0.12 &&
         (!lab_scale_mixed_world_for_candidates || lab_scale_front_pressure_for_candidates)) {
         const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
         const Vec2 lateral{-forward.y, forward.x};
         const std::array<double, 2> lateral_signs{{1.0, -1.0}};
-        const std::array<double, 2> lateral_offsets{{0.42, 0.34}};
-        const std::array<double, 2> forward_offsets{{0.52, 0.68}};
+        const std::array<double, 2> lateral_offsets{{
+            micro_hardware_lab ? 0.11 : 0.42,
+            micro_hardware_lab ? 0.08 : 0.34,
+        }};
+        const std::array<double, 2> forward_offsets{{
+            micro_hardware_lab ? 0.14 : 0.52,
+            micro_hardware_lab ? 0.20 : 0.68,
+        }};
         for (double side : lateral_signs) {
             for (double ahead : forward_offsets) {
                 for (double lateral_offset : lateral_offsets) {
@@ -4297,7 +4344,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                     if (std::abs(target_local_heading) > 82.0 * kPi / 180.0) {
                         continue;
                     }
-                    if (!world_.line_of_sight(lidar_origin, target, 0.08)) {
+                    if (!world_.line_of_sight(lidar_origin, target, micro_hardware_lab ? 0.025 : 0.08)) {
                         continue;
                     }
                     const double heading_score =
@@ -5106,7 +5153,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                       world_,
                       lidar_hits_,
                       estimate_.yaw,
-                      config_.localization.obstacle_stop_distance_m,
+                      config_.localization.obstacle_stop_distance_m + 0.06,
                       config_.localization.front_sector_half_angle_rad,
                       false)
                 : (diagnostics_.front_close_lidar_points > 0 ||
@@ -5121,7 +5168,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             bool non_boundary_front_obstacle = false;
             if (compact_mixed_world) {
                 const double front_pressure_distance =
-                    config_.localization.obstacle_stop_distance_m + 0.015;
+                    config_.localization.obstacle_stop_distance_m +
+                    (micro_hardware_lab ? 0.065 : 0.015);
                 if (micro_hardware_lab) {
                     non_boundary_front_obstacle =
                         lidar_pressure_excluding_static_map(
@@ -5160,7 +5208,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 have_close_dynamic_obstacle &&
                 ((estimate_.front_lidar_distance > 0.0 &&
                   estimate_.front_lidar_distance <
-                      config_.localization.obstacle_stop_distance_m + 0.025) ||
+                      config_.localization.obstacle_stop_distance_m +
+                          (micro_hardware_lab ? 0.060 : 0.025)) ||
                  no_motion_command_cycles_ >= 4 ||
                  tracker_heading_error_deg_ >= 70.0);
             const bool road_needs_bypass =
@@ -5298,17 +5347,6 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 lock_existing_dynamic_candidate()) {
                 return;
             }
-            if (micro_hardware_lab && !rejoin_stage) {
-                gates_.clear();
-                gate_specs_.clear();
-                dynamic_gap_tracks_.clear();
-                next_dynamic_gap_track_id_ = 1;
-                visible_gate_indices_.clear();
-                chosen_gate_index_ = -1;
-                diagnostics_.candidate_gates = 0;
-                diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
-                return;
-            }
             {
                 const double left_clearance = sector_min_clearance(
                     lidar_hits_,
@@ -5328,17 +5366,21 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }
 
                 const double target_ahead =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.14 : (compact_mixed_world ? 0.30 : 0.46))
-                                 : (lab_scale_mixed_world ? 0.20 : (compact_mixed_world ? 0.38 : 0.62));
+                    micro_hardware_lab
+                        ? (rejoin_stage ? 0.10 : 0.14)
+                        : (rejoin_stage ? (lab_scale_mixed_world ? 0.14 : (compact_mixed_world ? 0.30 : 0.46))
+                                        : (lab_scale_mixed_world ? 0.20 : (compact_mixed_world ? 0.38 : 0.62)));
                 const double road_offset =
-                    rejoin_stage ? (lab_scale_mixed_world ? 0.04 : (compact_mixed_world ? 0.08 : 0.10))
-                                 : (compact_mixed_world
-                                        ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.045 : 0.19),
-                                                      lab_scale_mixed_world ? 0.15 : 0.26,
-                                                      lab_scale_mixed_world ? 0.17 : 0.32)
-                                        : 0.46);
+                    micro_hardware_lab
+                        ? (rejoin_stage ? 0.045 : 0.075)
+                        : (rejoin_stage ? (lab_scale_mixed_world ? 0.04 : (compact_mixed_world ? 0.08 : 0.10))
+                                        : (compact_mixed_world
+                                               ? clamp_value(0.5 * geometry_.body_width + (lab_scale_mixed_world ? 0.045 : 0.19),
+                                                             lab_scale_mixed_world ? 0.15 : 0.26,
+                                                             lab_scale_mixed_world ? 0.17 : 0.32)
+                                               : 0.46));
                 const double target_bounds_margin =
-                    lab_scale_mixed_world ? 0.10 : 0.18;
+                    micro_hardware_lab ? 0.035 : (lab_scale_mixed_world ? 0.10 : 0.18);
                 if (road_projection.valid && !rejoin_stage) {
                     const auto side_score = [&](double candidate_side) {
                         const Vec2 road_target = point_at_road_s(road_projection.s + target_ahead);
@@ -5406,7 +5448,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 }};
                 const std::array<double, 2> candidate_offsets{{
                     road_offset,
-                    std::max(rejoin_stage ? 0.035 : 0.08, 0.72 * road_offset),
+                    micro_hardware_lab
+                        ? std::max(rejoin_stage ? 0.030 : 0.055, 0.72 * road_offset)
+                        : std::max(rejoin_stage ? 0.035 : 0.08, 0.72 * road_offset),
                 }};
                 for (double candidate_side : candidate_sides) {
                     if (rejoin_stage && candidate_side != side) {
@@ -7313,16 +7357,33 @@ bool HardwarePlannerRunner::perception_map_supports_target(const Vec2& origin, c
         return true;
     }
 
-    const double target_clearance_radius = std::max(
-        config_.gap_extraction.target_clearance_radius_m,
-        geometry_.body_width * 0.55);
-    const double path_clearance_radius = std::max(
-        config_.gap_extraction.path_clearance_radius_m,
-        geometry_.body_width * 0.42);
+    const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
+    const double span = world_span_m(world_);
+    const double target_clearance_radius = micro_hardware_lab
+        ? clamp_value(0.12 * span, 0.040, 0.065)
+        : std::max(
+              config_.gap_extraction.target_clearance_radius_m,
+              geometry_.body_width * 0.55);
+    const double path_clearance_radius = micro_hardware_lab
+        ? clamp_value(0.08 * span, 0.030, 0.050)
+        : std::max(
+              config_.gap_extraction.path_clearance_radius_m,
+              geometry_.body_width * 0.42);
+    const double static_ignore_padding = micro_hardware_lab
+        ? clamp_value(0.035 * span, 0.014, 0.024)
+        : 0.0;
+    const double boundary_ignore_margin = micro_hardware_lab
+        ? clamp_value(0.055 * span, 0.020, 0.035)
+        : 0.0;
     const double target_clearance_sq = target_clearance_radius * target_clearance_radius;
     const double path_clearance_sq = path_clearance_radius * path_clearance_radius;
 
     for (const Vec2& point : lidar_map_points_) {
+        if (micro_hardware_lab &&
+            (point_near_world_boundary(world_, point, boundary_ignore_margin) ||
+             point_near_static_map_obstacle(world_, point, static_ignore_padding))) {
+            continue;
+        }
         if (distance_sq(point, target) <= target_clearance_sq) {
             return false;
         }
@@ -7349,14 +7410,28 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
 
     const double target_angle_world = angle_to(lidar_origin, target);
     const double target_angle_local = wrap_angle(target_angle_world - estimate_.yaw - config_.localization.lidar_yaw_offset);
-    const double target_clearance_radius = std::max(
-        config_.gap_extraction.target_clearance_radius_m,
-        geometry_.body_width * 0.55);
+    const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
+    const double span = world_span_m(world_);
+    const double target_clearance_radius = micro_hardware_lab
+        ? clamp_value(0.12 * span, 0.040, 0.065)
+        : std::max(
+              config_.gap_extraction.target_clearance_radius_m,
+              geometry_.body_width * 0.55);
     const double target_clearance_sq = target_clearance_radius * target_clearance_radius;
-    const double corridor_half_width = std::max(
-        0.5 * geometry_.body_width + config_.gap_extraction.path_clearance_radius_m,
-        config_.gap_extraction.target_clearance_radius_m);
-    const double corridor_margin = std::max(0.04, target_clearance_radius * 0.55);
+    const double corridor_half_width = micro_hardware_lab
+        ? clamp_value(0.17 * span, 0.060, 0.095)
+        : std::max(
+              0.5 * geometry_.body_width + config_.gap_extraction.path_clearance_radius_m,
+              config_.gap_extraction.target_clearance_radius_m);
+    const double corridor_margin = micro_hardware_lab
+        ? clamp_value(0.07 * span, 0.025, 0.040)
+        : std::max(0.04, target_clearance_radius * 0.55);
+    const double static_ignore_padding = micro_hardware_lab
+        ? clamp_value(0.035 * span, 0.014, 0.024)
+        : 0.0;
+    const double boundary_ignore_margin = micro_hardware_lab
+        ? clamp_value(0.055 * span, 0.020, 0.035)
+        : 0.0;
     const Vec2 target_delta{
         target.x - lidar_origin.x,
         target.y - lidar_origin.y,
@@ -7384,6 +7459,11 @@ bool HardwarePlannerRunner::scan_supports_target(const Vec2& target,
             point.distance_m < config_.localization.max_range_m - 0.03;
         if (obstacle_endpoint) {
             const Vec2 hit = scan_point_world_hit(point, estimate_.position, estimate_.yaw);
+            if (micro_hardware_lab &&
+                (point_near_world_boundary(world_, hit, boundary_ignore_margin) ||
+                 point_near_static_map_obstacle(world_, hit, static_ignore_padding))) {
+                continue;
+            }
             if (distance_sq(hit, target) <= target_clearance_sq) {
                 return false;
             }

@@ -108,6 +108,59 @@ double clamp_value(double value, double lo, double hi) {
     return std::max(lo, std::min(value, hi));
 }
 
+double world_span_m(const WorldMap& world) {
+    const Rect& bounds = world.bounds();
+    return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+}
+
+bool compact_hardware_mixed_lab_world(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::MixedRoadGates &&
+           world.unstructured_preset() == UnstructuredMapPreset::HardwareLab &&
+           world_span_m(world) <= 0.85 &&
+           !world.road_centerline().empty();
+}
+
+void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* config) {
+    if (config == nullptr ||
+        world.environment_mode() != EnvironmentMode::MixedRoadGates) {
+        return;
+    }
+
+    config->cruise_speed_limit = 0.16;
+    config->goal_tolerance_m = 0.08;
+    config->localization.max_range_m = 1.80;
+    config->localization.obstacle_stop_distance_m = 0.18;
+    config->gap_extraction.planning_max_range_m = 1.80;
+    config->gap_extraction.max_target_distance_m = 0.50;
+    config->gap_extraction.min_gap_width_m = 0.28;
+    config->gap_extraction.dynamic_bounds_margin_m = 0.08;
+    config->gap_extraction.startup_scan_duration_s = 0.0;
+    config->gap_extraction.strict_locked_gate_motion = false;
+    config->gap_extraction.min_passed_gates_to_complete = 1;
+
+    if (!compact_hardware_mixed_lab_world(world)) {
+        return;
+    }
+
+    const double span = world_span_m(world);
+    config->goal_tolerance_m = clamp_value(0.12 * span, 0.045, 0.070);
+    config->localization.max_range_m = clamp_value(1.55 * span, 0.62, 0.85);
+    config->localization.obstacle_stop_distance_m = clamp_value(0.34 * span, 0.145, 0.18);
+    config->gap_extraction.planning_max_range_m = config->localization.max_range_m;
+    config->gap_extraction.free_distance_threshold_m =
+        clamp_value(0.36 * span, config->localization.min_valid_range_m + 0.04, 0.20);
+    config->gap_extraction.min_gap_width_m = clamp_value(0.38 * span, 0.16, 0.22);
+    config->gap_extraction.min_gap_depth_contrast_m = clamp_value(0.16 * span, 0.055, 0.095);
+    config->gap_extraction.min_target_distance_m =
+        clamp_value(0.26 * span, config->localization.min_valid_range_m + 0.005, 0.18);
+    config->gap_extraction.max_target_distance_m =
+        clamp_value(0.62 * span, config->gap_extraction.min_target_distance_m + 0.06, 0.36);
+    config->gap_extraction.gap_aperture_target_margin_m = clamp_value(0.07 * span, 0.025, 0.050);
+    config->gap_extraction.target_clearance_radius_m = clamp_value(0.12 * span, 0.040, 0.065);
+    config->gap_extraction.path_clearance_radius_m = clamp_value(0.08 * span, 0.030, 0.050);
+    config->gap_extraction.map_point_resolution_m = clamp_value(0.040 * span, 0.018, 0.025);
+}
+
 Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
     return {
         center.x + (point.x - center.x) * scale,
@@ -625,6 +678,15 @@ bool process_stream_control(const AppOptions& options,
             (poll_result.world->environment_mode() != EnvironmentMode::StructuredRoad);
         try {
             runner->apply_world(*poll_result.world);
+            HardwarePlannerConfig next_config = active_config != nullptr ? *active_config : base_config;
+            apply_mixed_hardware_config(*poll_result.world, &next_config);
+            if (next_config.vehicle_model == VehicleModelKind::TrackedVehicle) {
+                next_config.cruise_speed_limit = std::min(next_config.cruise_speed_limit, 0.09);
+            }
+            runner->apply_config(next_config);
+            if (active_config != nullptr) {
+                *active_config = next_config;
+            }
             std::string message = "custom map applied from GUI";
             if (sensor_mode_changed) {
                 message += " (sensor mode changed; restart the runner if the new scenario needs different hardware ports)";
@@ -977,19 +1039,7 @@ int main(int argc, char** argv) {
         planner_config.use_encoder_odometry = true;
         planner_config.planner_safety_stop_enabled = options.planner_safety_stop_enabled;
         planner_config.localization_policy = options.localization_policy;
-        if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
-            planner_config.cruise_speed_limit = 0.16;
-            planner_config.goal_tolerance_m = 0.08;
-            planner_config.localization.max_range_m = 1.80;
-            planner_config.localization.obstacle_stop_distance_m = 0.18;
-            planner_config.gap_extraction.planning_max_range_m = 1.80;
-            planner_config.gap_extraction.max_target_distance_m = 0.50;
-            planner_config.gap_extraction.min_gap_width_m = 0.28;
-            planner_config.gap_extraction.dynamic_bounds_margin_m = 0.08;
-            planner_config.gap_extraction.startup_scan_duration_s = 0.0;
-            planner_config.gap_extraction.strict_locked_gate_motion = false;
-            planner_config.gap_extraction.min_passed_gates_to_complete = 1;
-        }
+        apply_mixed_hardware_config(world, &planner_config);
         const HardwarePlannerConfig base_planner_config = planner_config;
         apply_vehicle_profile(options, &planner_config);
 
