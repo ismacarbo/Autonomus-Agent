@@ -513,6 +513,16 @@ std::vector<Rect> make_disc_obstacle_blocks(const Vec2& center, double radius, d
     return blocks;
 }
 
+std::vector<Rect> make_boundary_wall_blocks(const Rect& bounds, double wall_thickness) {
+    const double t = std::max(wall_thickness, 0.004);
+    return {
+        {bounds.min_x, bounds.min_y, bounds.min_x + t, bounds.max_y},
+        {bounds.max_x - t, bounds.min_y, bounds.max_x, bounds.max_y},
+        {bounds.min_x, bounds.min_y, bounds.max_x, bounds.min_y + t},
+        {bounds.min_x, bounds.max_y - t, bounds.max_x, bounds.max_y},
+    };
+}
+
 double polyline_length(const std::vector<Vec2>& points) {
     double length = 0.0;
     for (size_t i = 1; i < points.size(); ++i) {
@@ -1319,16 +1329,20 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::TankCircuit;
-    world.bounds_ = {0.0, 0.0, 1.70, 1.70};
+    world.bounds_ = {0.0, 0.0, 0.70, 0.70};
 
-    constexpr double kSide = 1.70;
+    constexpr double kRealArenaSide = 1.70;
+    constexpr double kPlannerSide = 0.70;
+    constexpr double kScale = kPlannerSide / kRealArenaSide;
+    constexpr double kSide = kPlannerSide;
     constexpr double kCenter = 0.5 * kSide;
-    constexpr double kInnerDiameter = 0.40;
+    constexpr double kWallThickness = 0.018;
+    constexpr double kInnerDiameter = 0.40 * kScale;
     constexpr double kInnerRadius = 0.5 * kInnerDiameter;
-    constexpr double kCenterlineRadius = 0.525;
+    constexpr double kCenterlineRadius = 0.525 * kScale;
     constexpr double kStartAngle = -42.0 * kPi / 180.0;
-    constexpr double kLapAngle = 1.88 * kPi;
-    constexpr double kReferenceSpacing = 0.022;
+    constexpr double kLapAngle = 1.70 * kPi;
+    constexpr double kReferenceSpacing = 0.012;
     const Vec2 center{kCenter, kCenter};
 
     world.road_centerline_ = make_lab_square_annulus_reference(
@@ -1342,8 +1356,11 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
     world.obstacles_.clear();
+    std::vector<Rect> boundary_walls =
+        make_boundary_wall_blocks(world.bounds_, kWallThickness);
+    world.obstacles_.insert(world.obstacles_.end(), boundary_walls.begin(), boundary_walls.end());
     std::vector<Rect> central_wall =
-        make_disc_obstacle_blocks(center, kInnerRadius, 0.035);
+        make_disc_obstacle_blocks(center, kInnerRadius, 0.014);
     world.obstacles_.insert(world.obstacles_.end(), central_wall.begin(), central_wall.end());
 
     world.perception_obstacles_.clear();
