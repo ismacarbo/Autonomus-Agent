@@ -2699,26 +2699,9 @@ void HardwarePlannerRunner::stabilize_compact_open_gate_odometry(double odom_spe
     x0_.x = fused_s;
     x0_.n = fused_n;
     x0_.b = 0.0;
-
-    const bool longitudinal_lag = fused_s - projected_s > 0.018;
-    const bool lateral_rejoin_correction =
-        rejoin_phase && std::abs(fused_n - projected_n) > 0.006;
-    if (!longitudinal_lag && !lateral_rejoin_correction) {
-        return;
-    }
-
-    double road_x = 0.0;
-    double road_y = 0.0;
-    cl_.prev_road.eval(fused_s, road_x, road_y);
-    const double road_heading = wrap_angle(cl_.prev_road.theta(fused_s));
-    const Vec2 road_normal{-std::sin(road_heading), std::cos(road_heading)};
-    Vec2 corrected_position{
-        road_x + fused_n * road_normal.x,
-        road_y + fused_n * road_normal.y,
-    };
-    corrected_position = clamp_point_to_bounds(world_, corrected_position, 0.015);
-    estimator_.override_pose(corrected_position, estimate_.yaw);
-    sync_estimate_from_ekf_state();
+    // Keep this gate helper progress-only. During a gate bypass the robot may
+    // legitimately leave the structured centerline; overriding the EKF pose here
+    // creates artificial jumps in hardware exactly when the first gate is locked.
 }
 
 void HardwarePlannerRunner::sync_estimate_from_ekf_state() {
