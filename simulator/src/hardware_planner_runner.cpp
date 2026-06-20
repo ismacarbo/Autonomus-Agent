@@ -6772,6 +6772,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             bool allow_direct_yaw_acquire =
                 !closed_structured_loop ||
                 (tiny_indoor_loop ? early_progress : (early_progress || std::abs(estimate_.speed) < 0.02));
+            if (compact_mixed_road && !tracked_vehicle) {
+                allow_direct_yaw_acquire = false;
+            }
             if (!closed_structured_loop && micro_structured_world(world_)) {
                 allow_direct_yaw_acquire = early_progress && std::abs(estimate_.speed) < 0.012;
             }
