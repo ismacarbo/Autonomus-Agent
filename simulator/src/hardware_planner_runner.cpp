@@ -2121,7 +2121,8 @@ bool HardwarePlannerRunner::lidar_pose_correction_enabled_for_current_mode() con
             return true;
         case HardwareLocalizationPolicy::Auto:
         default:
-            return !compact_mixed_open_road(world_);
+            return !compact_mixed_open_road(world_) &&
+                   !compact_hardware_mixed_lab_world(world_);
     }
 }
 
@@ -2666,8 +2667,18 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         }
     }
 
+    const bool compact_hardware_lab = compact_hardware_mixed_lab_world(world_);
+    const bool dynamic_obstacle_pressure =
+        compact_hardware_lab &&
+        lidar_pressure_excluding_static_map(
+            world_,
+            lidar_hits_,
+            estimate_.yaw,
+            config_.localization.obstacle_stop_distance_m + 0.06,
+            config_.localization.front_sector_half_angle_rad,
+            false);
     const bool keep_pose_free_for_mixed_gate_bypass =
-        compact_hardware_mixed_lab_world(world_);
+        compact_hardware_lab && dynamic_obstacle_pressure;
     if (!keep_pose_free_for_mixed_gate_bypass) {
         double x_on_path = 0.0;
         double y_on_path = 0.0;
@@ -6096,6 +6107,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
         mixed_gate_active;
     const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+    const bool compact_hardware_car =
+        compact_hardware_mixed_lab_world(world_) && !tracked_vehicle;
     const bool forward_only_tracked_tracks =
         tracked_vehicle && world_has_structured_reference(world_) && !mixed_gate_active;
     const bool simple_tiny_tracked_loop =
@@ -6419,9 +6432,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const double gap_acquire_clearance = std::max(
         config_.localization.min_valid_range_m + 0.04,
         config_.localization.obstacle_stop_distance_m - 0.01);
-    const double gap_acquire_forward_clearance = std::max(
-        config_.localization.obstacle_stop_distance_m + 0.07,
-        config_.localization.min_valid_range_m + 0.14);
+    const double gap_acquire_forward_clearance = compact_hardware_car
+        ? std::max(config_.localization.obstacle_stop_distance_m - 0.010,
+                   config_.localization.min_valid_range_m + 0.035)
+        : std::max(config_.localization.obstacle_stop_distance_m + 0.07,
+                   config_.localization.min_valid_range_m + 0.14);
     if (!scanning_startup &&
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
@@ -6449,7 +6464,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
             double acquire_speed = 0.0;
             const double turn_in_place_heading = std::max(
-                config_.gap_extraction.gap_acquire_turn_in_place_heading_rad,
+                compact_hardware_car
+                    ? std::max(config_.gap_extraction.gap_acquire_turn_in_place_heading_rad, 1.55)
+                    : config_.gap_extraction.gap_acquire_turn_in_place_heading_rad,
                 heading_threshold + 0.02);
             const double drive_heading_limit = strict_locked_motion
                 ? std::max(config_.gap_extraction.strict_locked_gate_drive_heading_rad, turn_in_place_heading)
@@ -6468,7 +6485,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                     0.0,
                     1.0);
                 const double clearance_scale = clamp_value(
-                    (motion_sector_clearance - gap_acquire_forward_clearance) / 0.40,
+                    (motion_sector_clearance - gap_acquire_forward_clearance) /
+                        (compact_hardware_car ? 0.12 : 0.40),
                     0.0,
                     1.0);
                 const double creep_speed_cap = strict_locked_motion
@@ -6816,15 +6834,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 std::abs(estimate_.speed) < 0.020 &&
                 tracker_cross_track_error_ < 0.030 &&
                 heading_error_abs > deg_to_rad(72.0);
+            const bool car_like_mixed_heading_recovery =
+                suppress_car_like_mixed_direct_yaw &&
+                !mixed_gate_active &&
+                heading_error_abs > deg_to_rad(68.0) &&
+                tracker_cross_track_error_ < 0.16 &&
+                (static_map_front_block_only ||
+                 estimate_.front_lidar_distance >= config_.localization.obstacle_stop_distance_m);
             if ((allow_direct_yaw_acquire &&
                  (heading_error_abs > enter_heading_rad ||
                   (early_progress &&
                    heading_error_abs > deg_to_rad(tiny_indoor_loop ? 32.0 : 40.0)))) ||
                 severe_indoor_heading ||
-                stalled_indoor_heading) {
+                stalled_indoor_heading ||
+                car_like_mixed_heading_recovery) {
                 use_direct_yaw_rate_command = true;
                 const double yaw_rate_limit =
-                    (compact_mixed_road ? 0.55 : 0.85) * config_.drive.max_yaw_rate;
+                    (car_like_mixed_heading_recovery ? 0.42 : (compact_mixed_road ? 0.55 : 0.85)) *
+                    config_.drive.max_yaw_rate;
                 direct_yaw_rate_command = clamp_value(
                     -yaw_gain * heading_error,
                     -yaw_rate_limit,
@@ -6843,9 +6870,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                               0.0,
                               tiny_indoor_loop ? 0.018 : 0.035)
                         : 0.0;
-                commanded_speed_ = tracked_acquire_speed;
+                const double car_mixed_acquire_speed =
+                    car_like_mixed_heading_recovery
+                        ? clamp_value(structured_tracking_speed_floor(world_, speed_limit),
+                                      0.012,
+                                      0.024)
+                        : 0.0;
+                commanded_speed_ = tracked_vehicle ? tracked_acquire_speed : car_mixed_acquire_speed;
                 commanded_steer_angle_ = 0.0;
-                last_command_.target_speed = tracked_acquire_speed;
+                last_command_.target_speed = commanded_speed_;
                 last_command_.target_curvature = 0.0;
             }
         }
@@ -6969,6 +7002,34 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         commanded_speed_ = last_command_.target_speed;
         commanded_steer_angle_ = 0.0;
         last_mpc_command_.reset();
+    }
+
+    if (compact_hardware_car &&
+        !goal_reached_ &&
+        !safety_stop_active_ &&
+        !scanning_startup &&
+        !(sim_time_ < stuck_recovery_until_s_) &&
+        use_direct_yaw_rate_command &&
+        (have_reference_trajectory || mixed_gate_active || chosen_gate_index_ >= 0 ||
+         locked_gap_goal_.has_value())) {
+        const bool gate_target_active = mixed_gate_active || chosen_gate_index_ >= 0 ||
+                                        locked_gap_goal_.has_value();
+        const double relevant_clearance =
+            have_motion_heading ? motion_sector_clearance : estimate_.front_lidar_distance;
+        const double creep_clearance = gate_target_active
+            ? std::max(config_.localization.obstacle_stop_distance_m - 0.020,
+                       config_.localization.min_valid_range_m + 0.025)
+            : std::max(config_.localization.obstacle_stop_distance_m - 0.010,
+                       config_.localization.min_valid_range_m + 0.035);
+        if ((relevant_clearance <= 0.0 || relevant_clearance > creep_clearance) &&
+            std::abs(direct_yaw_rate_command) > 0.015) {
+            const double creep_floor = gate_target_active ? 0.012 : 0.010;
+            const double creep_ceiling = gate_target_active ? 0.026 : 0.022;
+            last_command_.target_speed = std::min(
+                std::max(last_command_.target_speed, creep_floor),
+                creep_ceiling);
+            commanded_speed_ = last_command_.target_speed;
+        }
     }
 
     const double min_target_speed =

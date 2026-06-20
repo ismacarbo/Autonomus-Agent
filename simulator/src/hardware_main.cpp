@@ -163,6 +163,13 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
     config->gap_extraction.gap_goal_acceptance_radius_m = clamp_value(0.12 * span, 0.050, 0.070);
     config->gap_extraction.gap_goal_acceptance_lateral_slack_m = clamp_value(0.08 * span, 0.030, 0.045);
     config->gap_extraction.gap_crossing_margin_m = clamp_value(0.04 * span, 0.012, 0.025);
+    config->gap_extraction.locked_gap_grace_frames = 70;
+    config->gap_extraction.gap_track_confirm_score = 1.25;
+    config->gap_extraction.gap_track_hold_score = 0.58;
+    config->gap_extraction.gap_track_hit_gain = 1.05;
+    config->gap_extraction.gap_track_miss_decay = 0.24;
+    config->gap_extraction.gap_track_min_hits = 1;
+    config->gap_extraction.gap_track_max_misses = 18;
 }
 
 Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
