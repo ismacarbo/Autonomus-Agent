@@ -227,6 +227,55 @@ build/simulator/thesis_planner_sim \
   --max-steps 2400
 ```
 
+## Ground truth con ArUco/AprilTag
+
+Per stimare la posa reale da una foto o da un frame zenitale con quattro marker
+fissi a terra piu un marker sul robot:
+
+```bash
+python -m data_analisys.aruco_pose_analysis \
+  --image path/al/frame.jpg \
+  --dictionary DICT_4X4_50 \
+  --reference-width-m <W> \
+  --reference-height-m <H> \
+  --robot-id <ID_ROBOT> \
+  --output-dir data_analisys/outputs/aruco_pose
+```
+
+Nel setup mixed attuale i reference sono mappati cosi:
+
+```text
+C -------- B
+|          |
+|          |
+D -------- A
+```
+
+con `A=1` basso destra, `B=2` alto destra, `C=3` alto sinistra e `D=4`
+basso sinistra. La convenzione metrica e `C=(0,0)`, `B=(W,0)`, `D=(0,H)`,
+`A=(W,H)`. Se servono ID diversi, usa `--reference-id-a/b/c/d`.
+
+In alternativa puoi passare un JSON con `--config`, come
+`data_analisys/aruco_ground_truth_config.example.json`, che contiene gli ID dei
+marker fissi e la coordinata metrica del centro di ciascun marker nel frame
+mappa. Se il config include anche `size_m` o `corners`, lo script usa i corner
+dei marker per stimare l'omografia; altrimenti usa i centri.
+
+Output:
+
+- JSON con corner, centri, yaw in pixel e, se l'omografia e' disponibile, posa
+  metrica;
+- CSV tabellare per confronto con i report hardware;
+- PNG annotato con contorno marker, asse di orientazione e coordinate.
+- PNG mappa rettificata, se l'omografia e' disponibile, nel frame metrico
+  `C=(0,0)`, `B=(W,0)`, `A=(W,H)`, `D=(0,H)`.
+
+Dipendenze:
+
+```bash
+python -m pip install -r data_analisys/requirements.txt
+```
+
 ## Analisi multilivello finale
 
 Per confrontare tutte e tre le modalita su tre livelli

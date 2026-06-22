@@ -172,6 +172,46 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
     config->gap_extraction.gap_track_max_misses = 18;
 }
 
+void apply_tracked_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* config) {
+    if (config == nullptr ||
+        config->vehicle_model != VehicleModelKind::TrackedVehicle ||
+        world.environment_mode() != EnvironmentMode::MixedRoadGates) {
+        return;
+    }
+
+    const double span = world_span_m(world);
+    const bool lab_scale = span <= 1.35 && !world.road_centerline().empty();
+
+    config->cruise_speed_limit = std::min(config->cruise_speed_limit, lab_scale ? 0.065 : 0.075);
+    config->goal_tolerance_m = lab_scale ? 0.055 : std::min(config->goal_tolerance_m, 0.070);
+    config->goal_stop_speed_mps = std::min(config->goal_stop_speed_mps, 0.075);
+    config->localization.max_range_m = lab_scale ? 1.05 : std::min(config->localization.max_range_m, 1.30);
+    config->localization.obstacle_stop_distance_m = lab_scale ? 0.24 : std::max(config->localization.obstacle_stop_distance_m, 0.22);
+    config->gap_extraction.planning_max_range_m = config->localization.max_range_m;
+    config->gap_extraction.free_distance_threshold_m = lab_scale ? 0.27 : std::max(config->gap_extraction.free_distance_threshold_m, 0.27);
+    config->gap_extraction.min_gap_width_m = lab_scale ? 0.24 : std::min(config->gap_extraction.min_gap_width_m, 0.28);
+    config->gap_extraction.min_gap_depth_contrast_m = lab_scale ? 0.070 : std::min(config->gap_extraction.min_gap_depth_contrast_m, 0.095);
+    config->gap_extraction.min_target_distance_m = lab_scale ? 0.18 : std::min(config->gap_extraction.min_target_distance_m, 0.22);
+    config->gap_extraction.max_target_distance_m = lab_scale ? 0.42 : std::min(config->gap_extraction.max_target_distance_m, 0.55);
+    config->gap_extraction.gap_aperture_target_margin_m = lab_scale ? 0.035 : std::min(config->gap_extraction.gap_aperture_target_margin_m, 0.045);
+    config->gap_extraction.target_clearance_radius_m = lab_scale ? 0.060 : std::min(config->gap_extraction.target_clearance_radius_m, 0.080);
+    config->gap_extraction.path_clearance_radius_m = lab_scale ? 0.035 : std::min(config->gap_extraction.path_clearance_radius_m, 0.045);
+    config->gap_extraction.map_point_resolution_m = lab_scale ? 0.022 : std::min(config->gap_extraction.map_point_resolution_m, 0.026);
+    config->gap_extraction.gap_goal_tolerance_m = lab_scale ? 0.070 : std::min(config->gap_extraction.gap_goal_tolerance_m, 0.090);
+    config->gap_extraction.gap_goal_acceptance_radius_m = lab_scale ? 0.105 : std::min(config->gap_extraction.gap_goal_acceptance_radius_m, 0.14);
+    config->gap_extraction.gap_goal_acceptance_lateral_slack_m = lab_scale ? 0.060 : std::min(config->gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.080);
+    config->gap_extraction.gap_crossing_margin_m = lab_scale ? 0.018 : std::min(config->gap_extraction.gap_crossing_margin_m, 0.025);
+    config->gap_extraction.gap_goal_cruise_speed_mps = std::min(config->gap_extraction.gap_goal_cruise_speed_mps, 0.060);
+    config->gap_extraction.locked_gap_grace_frames = std::max(config->gap_extraction.locked_gap_grace_frames, 90);
+    config->gap_extraction.gap_track_confirm_score = std::min(config->gap_extraction.gap_track_confirm_score, 1.15);
+    config->gap_extraction.gap_track_hold_score = std::min(config->gap_extraction.gap_track_hold_score, 0.55);
+    config->gap_extraction.gap_track_hit_gain = std::max(config->gap_extraction.gap_track_hit_gain, 1.05);
+    config->gap_extraction.gap_track_miss_decay = std::min(config->gap_extraction.gap_track_miss_decay, 0.24);
+    config->gap_extraction.gap_track_min_hits = 1;
+    config->gap_extraction.gap_track_max_misses = std::max(config->gap_extraction.gap_track_max_misses, 18);
+    config->gap_extraction.min_passed_gates_to_complete = std::max(config->gap_extraction.min_passed_gates_to_complete, 2);
+}
+
 Vec2 scale_point_about(const Vec2& point, const Vec2& center, double scale) {
     return {
         center.x + (point.x - center.x) * scale,
@@ -314,10 +354,17 @@ int parse_mixed_preset(const std::string& value) {
         value == "hardware_lab" || value == "hardware-lab" || value == "lab") {
         return 1;
     }
+    if (value == "tank" || value == "tank_lab" || value == "tank-lab" ||
+        value == "tracked" || value == "tracked_lab" || value == "tracked-lab") {
+        return 5;
+    }
     return 0;
 }
 
 WorldMap mixed_hardware_world_from_preset(int preset) {
+    if (preset == 5) {
+        return WorldMap::mixed_tank_hardware_demo();
+    }
     if (preset == 3) {
         return WorldMap::mixed_closed_obstacle_hardware_demo();
     }
@@ -429,7 +476,7 @@ void print_usage(const char* argv0) {
         << "  --scenario MODE           structured | unstructured | mixed\n"
         << "  --structured-map NAME     validation | circle | zigzag | hardware_track | figure_eight | tank_circuit\n"
         << "  --unstructured-map NAME   robot_validation | tight | slalom | lower | hardware_lab\n"
-        << "  --mixed-map NAME          hardware | hardware_aligned | obstacle\n"
+        << "  --mixed-map NAME          hardware | hardware_aligned | tank | obstacle\n"
         << "  --world-file PATH         load a custom exported `.thmap` world file\n"
         << "  --stream-host HOST        send live view snapshots to HOST\n"
         << "  --stream-port N           send live view snapshots to TCP port N\n"
@@ -658,6 +705,7 @@ bool process_stream_control(const AppOptions& options,
             profile_options.vehicle_profile = vehicle_profile_from_model(*poll_result.robot_profile);
             HardwarePlannerConfig next_config = base_config;
             apply_vehicle_profile(profile_options, &next_config);
+            apply_tracked_mixed_hardware_config(runner->world(), &next_config);
             runner->apply_config(next_config);
             if (active_config != nullptr) {
                 *active_config = next_config;
@@ -691,9 +739,7 @@ bool process_stream_control(const AppOptions& options,
             runner->apply_world(*poll_result.world);
             HardwarePlannerConfig next_config = active_config != nullptr ? *active_config : base_config;
             apply_mixed_hardware_config(*poll_result.world, &next_config);
-            if (next_config.vehicle_model == VehicleModelKind::TrackedVehicle) {
-                next_config.cruise_speed_limit = std::min(next_config.cruise_speed_limit, 0.09);
-            }
+            apply_tracked_mixed_hardware_config(*poll_result.world, &next_config);
             runner->apply_config(next_config);
             if (active_config != nullptr) {
                 *active_config = next_config;
@@ -1053,6 +1099,7 @@ int main(int argc, char** argv) {
         apply_mixed_hardware_config(world, &planner_config);
         const HardwarePlannerConfig base_planner_config = planner_config;
         apply_vehicle_profile(options, &planner_config);
+        apply_tracked_mixed_hardware_config(world, &planner_config);
 
         if (options.simulate) {
             return run_simulated(options, world, std::move(bridge_options), base_planner_config, planner_config);

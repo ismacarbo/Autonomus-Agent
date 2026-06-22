@@ -3309,6 +3309,14 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             micro_goal_progress_target > 0.0 &&
             micro_goal_progress_target - structured_progress_s_ <=
                 micro_finish_gate_suppression_m;
+        const bool tracked_lab_scale_mixed =
+            config_.vehicle_model == VehicleModelKind::TrackedVehicle &&
+            current_world_span <= 1.35;
+        const bool tracked_close_obstacle_pressure =
+            tracked_lab_scale_mixed &&
+            estimate_.min_lidar_distance > 0.0 &&
+            estimate_.min_lidar_distance <
+                config_.localization.obstacle_stop_distance_m + 0.060;
         const bool front_obstacle_pressure = micro_hardware_lab
             ? lidar_pressure_from_hits(
                   world_,
@@ -3317,9 +3325,10 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                   config_.localization.obstacle_stop_distance_m + 0.07,
                   config_.localization.front_sector_half_angle_rad,
                   true)
-            : (estimate_.front_lidar_distance > 0.0 &&
-               estimate_.front_lidar_distance <
-                   config_.localization.obstacle_stop_distance_m + 0.05);
+            : ((estimate_.front_lidar_distance > 0.0 &&
+                estimate_.front_lidar_distance <
+                    config_.localization.obstacle_stop_distance_m + 0.05) ||
+               tracked_close_obstacle_pressure);
         const bool square_lab_annulus = current_world_span <= 1.95;
         const double required_block_score = square_lab_annulus ? 0.42 : 0.18;
         if ((micro_hardware_lab && (!micro_road_has_started || micro_near_structured_finish)) ||
@@ -5249,6 +5258,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                         estimate_.front_lidar_distance > 0.0 &&
                         estimate_.front_lidar_distance <
                             config_.localization.obstacle_stop_distance_m + 0.015));
+            const bool tracked_lab_scale_mixed =
+                config_.vehicle_model == VehicleModelKind::TrackedVehicle &&
+                lab_scale_mixed_world;
+            const bool tracked_close_obstacle_pressure =
+                tracked_lab_scale_mixed &&
+                estimate_.min_lidar_distance > 0.0 &&
+                estimate_.min_lidar_distance <
+                    config_.localization.obstacle_stop_distance_m + 0.060;
             const bool compact_close_obstacle_recovery =
                 compact_mixed_world &&
                 have_close_dynamic_obstacle &&
@@ -5259,7 +5276,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                               config_.localization.obstacle_stop_distance_m + 0.060) ||
                          no_motion_command_cycles_ >= 4 ||
                          tracker_heading_error_deg_ >= 70.0))
-                     : ((estimate_.front_lidar_distance > 0.0 &&
+                     : (tracked_close_obstacle_pressure ||
+                        (estimate_.front_lidar_distance > 0.0 &&
                          estimate_.front_lidar_distance <
                              config_.localization.obstacle_stop_distance_m + 0.025) ||
                         no_motion_command_cycles_ >= 4 ||
@@ -8001,12 +8019,25 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             !compact_mixed_open_world ||
             (open_progress_target > 0.0 &&
              structured_progress_s_ + open_progress_margin >= open_progress_target);
+        const int required_mixed_pass_count =
+            compact_mixed_open_world
+                ? std::max(config_.gap_extraction.min_passed_gates_to_complete, 1)
+                : 0;
+        const bool mixed_gate_sequence_complete =
+            !compact_mixed_open_world ||
+            passed_unstructured_gap_count_ >= required_mixed_pass_count;
         if (compact_mixed_open_world && !open_progress_ready) {
             distance_to_goal_ = std::max(
                 distance_to_goal_,
                 std::max(open_progress_target - structured_progress_s_, 0.0));
         }
+        if (compact_mixed_open_world && !mixed_gate_sequence_complete) {
+            distance_to_goal_ = std::max(
+                distance_to_goal_,
+                std::max(config_.gap_extraction.gap_goal_tolerance_m, goal_tolerance));
+        }
         goal_reached_ = !active_dynamic_gate &&
+                        mixed_gate_sequence_complete &&
                         open_progress_ready &&
                         distance_to_goal_ < goal_tolerance &&
                         std::abs(estimate_.speed) < goal_stop_speed;

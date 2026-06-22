@@ -1,0 +1,33 @@
+{
+  "dictionary": "DICT_4X4_50",
+  "robot_id": 99,
+  "reference_box": {
+    "convention": "C=(0,0), B=(W,0), A=(W,H), D=(0,H)",
+    "width_m": 1.0,
+    "height_m": 1.0,
+    "ids": {
+      "A": 1,
+      "B": 2,
+      "C": 3,
+      "D": 4
+    }
+  },
+  "reference_markers": {
+    "3": {
+      "center": [0.0, 0.0],
+      "_label": "C alto sinistra"
+    },
+    "2": {
+      "center": [1.0, 0.0],
+      "_label": "B alto destra"
+    },
+    "1": {
+      "center": [1.0, 1.0],
+      "_label": "A basso destra"
+    },
+    "4": {
+      "center": [0.0, 1.0],
+      "_label": "D basso sinistra"
+    }
+  }
+}

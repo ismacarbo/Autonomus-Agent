@@ -1419,6 +1419,47 @@ WorldMap WorldMap::mixed_hardware_aligned_demo() {
     return world;
 }
 
+WorldMap WorldMap::mixed_tank_hardware_demo() {
+    WorldMap world;
+    world.environment_mode_ = EnvironmentMode::MixedRoadGates;
+    world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
+    world.structured_preset_ = StructuredMapPreset::TankCircuit;
+    world.bounds_ = {0.0, 0.0, 1.25, 0.90};
+    world.start_ = {0.180, 0.450};
+    world.goal_ = {1.060, 0.450};
+    world.start_heading_ = 0.0;
+
+    world.road_centerline_.clear();
+    constexpr int kRoadSamples = 28;
+    world.road_centerline_.reserve(kRoadSamples);
+    for (int i = 0; i < kRoadSamples; ++i) {
+        const double alpha = static_cast<double>(i) / static_cast<double>(kRoadSamples - 1);
+        world.road_centerline_.push_back({
+            world.start_.x + alpha * (world.goal_.x - world.start_.x),
+            world.start_.y,
+        });
+    }
+
+    // Tank mixed smoke map: the obstacle is deliberately centered on the road
+    // so a tracked platform cannot obtain a valid run by simply staying on the
+    // structured reference.
+    world.obstacles_ = {
+        {0.615, 0.400, 0.735, 0.500},
+    };
+
+    world.gate_templates_ = {
+        {"tank_bypass", {0.610, 0.690}, {0.610, 0.690}, {0.08, 0.04}, 0.04, 0.25, -0.30, false},
+        {"tank_rejoin", {0.925, 0.500}, {0.925, 0.500}, {0.06, 0.04}, 0.04, 0.55, -0.65, false},
+        {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
+    };
+    world.gates_ = world.gate_templates_;
+    recompute_gate_headings(&world.gates_, world.goal_);
+    world.gate_templates_ = world.gates_;
+    world.gate_behavior_ = GateBehaviorMode::Static;
+    world.gate_seed_ = 0;
+    return world;
+}
+
 WorldMap WorldMap::mixed_hardware_demo() {
     WorldMap world;
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;

@@ -858,6 +858,8 @@ std::string map_preset_name(const WorldMap& world) {
 
 const char* mixed_map_preset_name(int preset) {
     switch (preset) {
+        case 5:
+            return "Tank Hardware Lab";
         case 4:
             return "Dynamic Obstacle Road";
         case 3:
@@ -874,6 +876,8 @@ const char* mixed_map_preset_name(int preset) {
 
 const char* hardware_mixed_map_preset_name(int preset) {
     switch (preset) {
+        case 5:
+            return "Tank Hardware Lab";
         case 3:
             return "Closed Obstacle Road";
         case 1:
@@ -886,6 +890,8 @@ const char* hardware_mixed_map_preset_name(int preset) {
 
 const char* hardware_mixed_map_cli_name(int preset) {
     switch (preset) {
+        case 5:
+            return "tank";
         case 3:
             return "obstacle";
         case 1:
@@ -897,6 +903,9 @@ const char* hardware_mixed_map_cli_name(int preset) {
 }
 
 WorldMap hardware_mixed_world_from_preset(int preset) {
+    if (preset == 5) {
+        return WorldMap::mixed_tank_hardware_demo();
+    }
     if (preset == 3) {
         return WorldMap::mixed_closed_obstacle_hardware_demo();
     }
@@ -919,7 +928,7 @@ int mixed_preset_from_world(const WorldMap& world) {
         return 2;
     }
     if (world.structured_preset() == StructuredMapPreset::TankCircuit && !world.obstacles().empty()) {
-        return 3;
+        return span <= 1.35 ? 5 : 3;
     }
     return span <= 1.20 && !world.obstacles().empty() ? 1 : 0;
 }
@@ -931,7 +940,7 @@ int hardware_mixed_preset_from_world(const WorldMap& world) {
     const Rect& bounds = world.bounds();
     const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
     if (world.structured_preset() == StructuredMapPreset::TankCircuit && !world.obstacles().empty()) {
-        return 3;
+        return span <= 1.35 ? 5 : 3;
     }
     return span <= 1.20 && !world.obstacles().empty() ? 1 : 0;
 }
@@ -3437,7 +3446,7 @@ const std::array<ValidationPreset, 7>& validation_presets() {
          EnvironmentMode::MixedRoadGates,
          UnstructuredMapPreset::RobotValidation,
          StructuredMapPreset::HardwareTrack,
-         1,
+         5,
          VehicleModelKind::TrackedVehicle,
          true,
          false},
@@ -3560,6 +3569,11 @@ AppOptions parse_args(int argc, char** argv) {
                 options.environment_mode = EnvironmentMode::MixedRoadGates;
                 options.dynamic_lidar_gates = true;
                 options.mixed_preset = 1;
+            } else if (value == "mixed_tank" || value == "mixed-tank" ||
+                       value == "mixed_tank_lab" || value == "mixed-tank-lab") {
+                options.environment_mode = EnvironmentMode::MixedRoadGates;
+                options.dynamic_lidar_gates = true;
+                options.mixed_preset = 5;
             } else if (value == "mixed_obstacle" || value == "mixed-obstacle" ||
                        value == "mixed_closed_obstacle" || value == "mixed-closed-obstacle") {
                 options.environment_mode = EnvironmentMode::MixedRoadGates;
@@ -3587,6 +3601,11 @@ AppOptions parse_args(int argc, char** argv) {
             options.environment_mode = EnvironmentMode::MixedRoadGates;
             options.dynamic_lidar_gates = true;
             options.mixed_preset = 1;
+        } else if (arg == "--scenario=mixed_tank" || arg == "--scenario=mixed-tank" ||
+                   arg == "--scenario=mixed_tank_lab" || arg == "--scenario=mixed-tank-lab") {
+            options.environment_mode = EnvironmentMode::MixedRoadGates;
+            options.dynamic_lidar_gates = true;
+            options.mixed_preset = 5;
         } else if (arg == "--scenario=mixed_obstacle" || arg == "--scenario=mixed-obstacle" ||
                    arg == "--scenario=mixed_closed_obstacle" || arg == "--scenario=mixed-closed-obstacle") {
             options.environment_mode = EnvironmentMode::MixedRoadGates;
@@ -3616,6 +3635,10 @@ AppOptions parse_args(int argc, char** argv) {
                        value == "late-obstacle") {
                 options.mixed_preset = 4;
                 options.dynamic_lidar_gates = true;
+            } else if (value == "tank" || value == "tank_lab" || value == "tank-lab" ||
+                       value == "tracked" || value == "tracked_lab" || value == "tracked-lab") {
+                options.mixed_preset = 5;
+                options.dynamic_lidar_gates = true;
             } else {
                 options.mixed_preset =
                     (value == "hardware" || value == "hardware_aligned" || value == "hardware-aligned" ||
@@ -3637,6 +3660,10 @@ AppOptions parse_args(int argc, char** argv) {
                        value == "dynamic-obstacle-road" || value == "late_obstacle" ||
                        value == "late-obstacle") {
                 options.mixed_preset = 4;
+                options.dynamic_lidar_gates = true;
+            } else if (value == "tank" || value == "tank_lab" || value == "tank-lab" ||
+                       value == "tracked" || value == "tracked_lab" || value == "tracked-lab") {
+                options.mixed_preset = 5;
                 options.dynamic_lidar_gates = true;
             } else {
                 options.mixed_preset =
@@ -3769,6 +3796,9 @@ WorldMap make_world_from_mode(EnvironmentMode mode,
         return WorldMap::structured_demo(structured_preset);
     }
     if (mode == EnvironmentMode::MixedRoadGates) {
+        if (mixed_preset == 5) {
+            return WorldMap::mixed_tank_hardware_demo();
+        }
         if (mixed_preset == 4) {
             return WorldMap::mixed_dynamic_obstacle_demo();
         }
@@ -7194,11 +7224,15 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                 hardware_mixed_map_preset_name(0),
                 hardware_mixed_map_preset_name(1),
                 hardware_mixed_map_preset_name(3),
+                hardware_mixed_map_preset_name(5),
             };
-            int selection = previous_preset == 3 ? 2 : (previous_preset == 1 ? 1 : 0);
+            int selection = previous_preset == 5 ? 3 : (previous_preset == 3 ? 2 : (previous_preset == 1 ? 1 : 0));
             if (ImGui::Combo("Mixed Map", &selection, mixed_items, IM_ARRAYSIZE(mixed_items))) {
                 int next_preset = 0;
                 switch (selection) {
+                    case 3:
+                        next_preset = 5;
+                        break;
                     case 2:
                         next_preset = 3;
                         break;
@@ -7989,6 +8023,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 mixed_map_preset_name(2),
                 mixed_map_preset_name(3),
                 mixed_map_preset_name(4),
+                mixed_map_preset_name(5),
             };
             int mixed_selection = std::clamp(ui_state->mixed_preset, 0, static_cast<int>(IM_ARRAYSIZE(mixed_items)) - 1);
             if (ImGui::Combo("Mixed Map", &mixed_selection, mixed_items, IM_ARRAYSIZE(mixed_items))) {
