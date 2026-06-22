@@ -1440,12 +1440,10 @@ WorldMap WorldMap::mixed_tank_hardware_demo() {
         });
     }
 
-    // Tank mixed smoke map: the obstacle is deliberately centered on the road
-    // so a tracked platform cannot obtain a valid run by simply staying on the
-    // structured reference.
-    world.obstacles_ = {
-        {0.615, 0.400, 0.735, 0.500},
-    };
+    // Hardware tank preset: keep the structured reference fixed, but do not
+    // bake any obstacle into the map. Mixed gates are generated from LiDAR
+    // returns when the real robot meets obstacles along the reference.
+    world.obstacles_.clear();
 
     world.gate_templates_ = {
         {"tank_bypass", {0.610, 0.690}, {0.610, 0.690}, {0.08, 0.04}, 0.04, 0.25, -0.30, false},

@@ -8019,8 +8019,15 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             !compact_mixed_open_world ||
             (open_progress_target > 0.0 &&
              structured_progress_s_ + open_progress_margin >= open_progress_target);
+        const bool obstacle_free_dynamic_open_world =
+            compact_mixed_open_world && world_.obstacles().empty();
+        const bool mixed_gate_sequence_armed =
+            !obstacle_free_dynamic_open_world ||
+            passed_unstructured_gap_count_ > 0 ||
+            locked_gap_goal_.has_value() ||
+            !gate_specs_.empty();
         const int required_mixed_pass_count =
-            compact_mixed_open_world
+            compact_mixed_open_world && mixed_gate_sequence_armed
                 ? std::max(config_.gap_extraction.min_passed_gates_to_complete, 1)
                 : 0;
         const bool mixed_gate_sequence_complete =
