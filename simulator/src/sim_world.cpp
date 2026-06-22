@@ -1424,9 +1424,9 @@ WorldMap WorldMap::mixed_tank_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::TankCircuit;
-    world.bounds_ = {0.0, 0.0, 1.25, 0.90};
-    world.start_ = {0.180, 0.450};
-    world.goal_ = {1.060, 0.450};
+    world.bounds_ = {0.0, 0.0, 1.50, 1.10};
+    world.start_ = {0.200, 0.550};
+    world.goal_ = {1.300, 0.550};
     world.start_heading_ = 0.0;
 
     world.road_centerline_.clear();
@@ -1446,8 +1446,8 @@ WorldMap WorldMap::mixed_tank_hardware_demo() {
     world.obstacles_.clear();
 
     world.gate_templates_ = {
-        {"tank_bypass", {0.610, 0.690}, {0.610, 0.690}, {0.08, 0.04}, 0.04, 0.25, -0.30, false},
-        {"tank_rejoin", {0.925, 0.500}, {0.925, 0.500}, {0.06, 0.04}, 0.04, 0.55, -0.65, false},
+        {"tank_bypass", {0.740, 0.850}, {0.740, 0.850}, {0.08, 0.04}, 0.04, 0.25, -0.30, false},
+        {"tank_rejoin", {1.115, 0.610}, {1.115, 0.610}, {0.06, 0.04}, 0.04, 0.55, -0.65, false},
         {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
     };
     world.gates_ = world.gate_templates_;
