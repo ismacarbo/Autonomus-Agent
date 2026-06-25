@@ -38,10 +38,34 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-jump-m", type=float, default=0.10)
     parser.add_argument("--max-yaw-jump-rad", type=float, default=0.90)
     parser.add_argument(
+        "--video-filter-start-s",
+        type=float,
+        default=None,
+        help="Discard ArUco detections before this absolute video time without forcing manual log alignment.",
+    )
+    parser.add_argument(
+        "--video-filter-end-s",
+        type=float,
+        default=None,
+        help="Discard ArUco detections after this absolute video time without forcing manual log alignment.",
+    )
+    parser.add_argument(
         "--alignment-mode",
         choices=("monotonic", "independent"),
         default="monotonic",
         help="monotonic keeps video segment order in the report; independent picks the best window per segment",
+    )
+    parser.add_argument(
+        "--video-log-start-s",
+        type=float,
+        default=None,
+        help="Absolute video time where report time --report-log-start-s starts. Overrides segment search when provided.",
+    )
+    parser.add_argument(
+        "--report-log-start-s",
+        type=float,
+        default=0.0,
+        help="Report time corresponding to --video-log-start-s.",
     )
     parser.add_argument(
         "--robot-to-marker-x-m",
@@ -63,9 +87,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--report-registration",
-        choices=("none", "similarity", "affine"),
+        choices=("none", "similarity", "affine", "initial_rigid"),
         default="none",
-        help="Fit a report-to-real-map transform from aligned log and ArUco samples.",
+        help="Fit/apply a report-to-real-map transform. initial_rigid uses only the first aligned pose.",
     )
     parser.add_argument(
         "--report-registration-file",
@@ -552,18 +576,52 @@ def segment_points_in_report_frame(
     return rel_times, points, unwrap_angles(yaws)
 
 
+def segment_points_for_alignment(
+    segment: list[dict[str, Any]],
+    config_size: tuple[float, float],
+    world_bounds: tuple[float, float, float, float],
+    report_registration: dict[str, Any] | None = None,
+) -> tuple[list[float], list[tuple[float, float]], list[float]]:
+    if report_registration and report_registration.get("mode") != "none":
+        t0 = float(segment[0]["video_time_s"])
+        rel_times: list[float] = []
+        points: list[tuple[float, float]] = []
+        yaws: list[float] = []
+        for row in segment:
+            rel_times.append(float(row["video_time_s"]) - t0)
+            points.append((float(row["robot_x_m"]), float(row["robot_y_m"])))
+            yaws.append(float(row["robot_yaw_rad"]))
+        return rel_times, points, unwrap_angles(yaws)
+    return segment_points_in_report_frame(segment, config_size, world_bounds)
+
+
 def alignment_cost(
     rel_times: list[float],
     points: list[tuple[float, float]],
     yaws: list[float],
     report_series: dict[str, list[float]],
     log_start_s: float,
+    report_registration: dict[str, Any] | None = None,
+    config_size: tuple[float, float] | None = None,
+    world_bounds: tuple[float, float, float, float] | None = None,
 ) -> float | None:
     report_samples: list[tuple[float, float, float]] = []
     for rel_time in rel_times:
         sample = interp(report_series, log_start_s + rel_time)
         if sample is None:
             return None
+        if report_registration and report_registration.get("mode") != "none":
+            if config_size is None or world_bounds is None:
+                return None
+            x_m, y_m = transform_report_xy(
+                sample[0],
+                sample[1],
+                report_registration,
+                config_size,
+                world_bounds,
+            )
+            yaw_rad = transform_report_yaw(sample[2], report_registration)
+            sample = (x_m, y_m, yaw_rad)
         report_samples.append(sample)
 
     gt0 = points[0]
@@ -600,6 +658,7 @@ def align_segment(
     config_size: tuple[float, float],
     world_bounds: tuple[float, float, float, float],
     search_step_s: float,
+    report_registration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidates = segment_alignment_candidates(
         segment,
@@ -607,6 +666,7 @@ def align_segment(
         config_size,
         world_bounds,
         search_step_s,
+        report_registration,
     )
     if not candidates:
         return {
@@ -618,14 +678,52 @@ def align_segment(
     return candidates[0]
 
 
+def manual_align_segments(
+    segments: list[list[dict[str, Any]]],
+    report_series: dict[str, list[float]],
+    video_log_start_s: float,
+    report_log_start_s: float,
+) -> list[dict[str, Any]]:
+    report_min = report_series["time"][0]
+    report_max = report_series["time"][-1]
+    alignments: list[dict[str, Any]] = []
+    for segment in segments:
+        video_start = float(segment[0]["video_time_s"])
+        video_end = float(segment[-1]["video_time_s"])
+        duration = video_end - video_start
+        log_start = report_log_start_s + (video_start - video_log_start_s)
+        log_end = log_start + duration
+        aligned = log_end >= report_min and log_start <= report_max
+        alignments.append(
+            {
+                "aligned": aligned,
+                "log_start_s": log_start,
+                "video_start_s": video_start,
+                "video_end_s": video_end,
+                "duration_s": duration,
+                "samples": len(segment),
+                "frame_start": int(segment[0]["frame_idx"]),
+                "frame_end": int(segment[-1]["frame_idx"]),
+                "source": "manual_video_log_start",
+            }
+        )
+    return alignments
+
+
 def segment_alignment_candidates(
     segment: list[dict[str, Any]],
     report_series: dict[str, list[float]],
     config_size: tuple[float, float],
     world_bounds: tuple[float, float, float, float],
     search_step_s: float,
+    report_registration: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    rel_times, points, yaws = segment_points_in_report_frame(segment, config_size, world_bounds)
+    rel_times, points, yaws = segment_points_for_alignment(
+        segment,
+        config_size,
+        world_bounds,
+        report_registration,
+    )
     sample_indices = choose_subsample(len(rel_times))
     rel_sub = [rel_times[i] for i in sample_indices]
     points_sub = [points[i] for i in sample_indices]
@@ -638,7 +736,16 @@ def segment_alignment_candidates(
     start = report_min
     latest_start = report_max - duration
     while start <= latest_start + 1e-9:
-        cost = alignment_cost(rel_sub, points_sub, yaws_sub, report_series, start)
+        cost = alignment_cost(
+            rel_sub,
+            points_sub,
+            yaws_sub,
+            report_series,
+            start,
+            report_registration,
+            config_size,
+            world_bounds,
+        )
         if cost is not None:
             candidates.append(
                 {
@@ -798,6 +905,42 @@ def fit_affine_registration(
     }
 
 
+def fit_initial_rigid_registration(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    row = min(rows, key=lambda item: float(item["log_time_s"]))
+    theta = angle_delta(
+        float(row["gt_yaw_with_fitted_offset_rad"]),
+        float(row["log_yaw_rad"]),
+    )
+    c = math.cos(theta)
+    s = math.sin(theta)
+    log_x = float(row["log_x"])
+    log_y = float(row["log_y"])
+    gt_x = float(row["gt_robot_center_x_m"])
+    gt_y = float(row["gt_robot_center_y_m"])
+    tx = gt_x - (c * log_x - s * log_y)
+    ty = gt_y - (s * log_x + c * log_y)
+    return {
+        "mode": "initial_rigid",
+        "matrix": [[c, -s, tx], [s, c, ty]],
+        "scale": 1.0,
+        "rotation_deg": math.degrees(theta),
+        "anchor": {
+            "segment": int(row["segment"]),
+            "frame_idx": int(row["frame_idx"]),
+            "video_time_s": float(row["video_time_s"]),
+            "log_time_s": float(row["log_time_s"]),
+            "log_x": log_x,
+            "log_y": log_y,
+            "log_yaw_rad": float(row["log_yaw_rad"]),
+            "gt_robot_center_x_m": gt_x,
+            "gt_robot_center_y_m": gt_y,
+            "gt_yaw_rad": float(row["gt_yaw_with_fitted_offset_rad"]),
+        },
+    }
+
+
 def fit_report_registration(
     rows: list[dict[str, Any]],
     mode: str,
@@ -806,6 +949,26 @@ def fit_report_registration(
 ) -> dict[str, Any]:
     if mode == "none":
         return {"mode": "none", "source": "arena_scale_from_report_bounds"}
+    if mode == "initial_rigid":
+        registration = fit_initial_rigid_registration(rows)
+        if registration is None:
+            return {
+                "mode": "none",
+                "source": "fallback_after_failed_initial_rigid",
+                "fit_point_count": len(rows),
+            }
+        pairs = [
+            (
+                (float(row["log_x"]), float(row["log_y"])),
+                (float(row["gt_robot_center_x_m"]), float(row["gt_robot_center_y_m"])),
+            )
+            for row in rows
+        ]
+        residuals = registration_residuals(pairs, registration, config_size, world_bounds)
+        registration["source"] = "anchored_to_first_aligned_pose"
+        registration["fit_point_count"] = 1
+        registration["residual_m"] = stats(residuals)
+        return registration
 
     pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
     for row in rows:
@@ -1309,6 +1472,11 @@ def main(argv: list[str] | None = None) -> int:
     report_series = load_report_series(report)
     world_bounds = report_world_bounds(report)
     config_size = reference_box_size(config)
+    provided_report_registration = (
+        read_report_registration(args.report_registration_file)
+        if args.report_registration_file is not None
+        else None
+    )
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1325,6 +1493,31 @@ def main(argv: list[str] | None = None) -> int:
     write_pose_csv(pose_csv, pose_rows)
 
     valid_rows = valid_pose_rows(pose_rows)
+    if args.video_filter_start_s is not None:
+        valid_rows = [
+            row
+            for row in valid_rows
+            if row.get("video_time_s") is not None
+            and float(row["video_time_s"]) >= float(args.video_filter_start_s)
+        ]
+    if args.video_filter_end_s is not None:
+        valid_rows = [
+            row
+            for row in valid_rows
+            if row.get("video_time_s") is not None
+            and float(row["video_time_s"]) <= float(args.video_filter_end_s)
+        ]
+    if args.video_log_start_s is not None:
+        video_log_start_s = float(args.video_log_start_s)
+        report_log_start_s = float(args.report_log_start_s)
+        report_end_s = float(report_series["time"][-1])
+        video_log_end_s = video_log_start_s + max(report_end_s - report_log_start_s, 0.0) + 0.50
+        valid_rows = [
+            row
+            for row in valid_rows
+            if row.get("video_time_s") is not None
+            and video_log_start_s <= float(row["video_time_s"]) <= video_log_end_s
+        ]
     segments = split_segments(
         valid_rows,
         max(args.min_segment_samples, 1),
@@ -1332,9 +1525,23 @@ def main(argv: list[str] | None = None) -> int:
         max(args.max_jump_m, 0.0),
         max(args.max_yaw_jump_rad, 0.0),
     )
-    if args.alignment_mode == "independent":
+    if args.video_log_start_s is not None:
+        alignments = manual_align_segments(
+            segments,
+            report_series,
+            float(args.video_log_start_s),
+            float(args.report_log_start_s),
+        )
+    elif args.alignment_mode == "independent":
         alignments = [
-            align_segment(segment, report_series, config_size, world_bounds, max(args.search_step_s, 0.01))
+            align_segment(
+                segment,
+                report_series,
+                config_size,
+                world_bounds,
+                max(args.search_step_s, 0.01),
+                provided_report_registration,
+            )
             for segment in segments
         ]
     else:
@@ -1345,6 +1552,7 @@ def main(argv: list[str] | None = None) -> int:
                 config_size,
                 world_bounds,
                 max(args.search_step_s, 0.01),
+                provided_report_registration,
             )
             for segment in segments
         ]
@@ -1361,8 +1569,8 @@ def main(argv: list[str] | None = None) -> int:
         else None,
     )
     report_registration = (
-        read_report_registration(args.report_registration_file)
-        if args.report_registration_file is not None
+        provided_report_registration
+        if provided_report_registration is not None
         else fit_report_registration(
             alignment_rows,
             args.report_registration,
@@ -1422,6 +1630,8 @@ def main(argv: list[str] | None = None) -> int:
         "processed_frames": len(pose_rows),
         "visible_ground_truth_frames": len(valid_rows),
         "alignment_mode": args.alignment_mode,
+        "video_log_start_s": args.video_log_start_s,
+        "report_log_start_s": float(args.report_log_start_s),
         "segments": alignments,
         "robot_to_marker_offset_m": {
             "x": float(args.robot_to_marker_x_m),
@@ -1450,6 +1660,7 @@ def main(argv: list[str] | None = None) -> int:
             "Robot-center position error applies the configured robot-to-marker offset after the marker-to-robot yaw offset.",
             "Yaw error uses the fixed marker-to-robot yaw offset when provided; otherwise it is fitted per segment.",
             "When report_registration is not none, real-map report positions are fitted from aligned video/log samples.",
+            "When report_registration is initial_rigid, the report is transformed with rotation+translation from the first aligned pose only.",
             "If the video is a concatenation of clips, each visible segment is aligned independently.",
         ],
     }

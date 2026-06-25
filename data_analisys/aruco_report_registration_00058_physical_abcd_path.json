@@ -1,0 +1,31 @@
+{
+  "report_registration": {
+    "mode": "affine",
+    "source": "independent_physical_path_correspondence_A_B_C_D",
+    "matrix": [
+      [7.374427939536093, 0.3877262274490515, -1.3407423671390437],
+      [0.4494821490144303, -8.603656987745989, 2.738304752398272]
+    ],
+    "planner_points": {
+      "A_start_goal_fraction_0_00": [0.335462, 0.17305],
+      "B_fraction_0_25": [0.32687476236700647, 0.3353754531234021],
+      "C_fraction_0_50": [0.1646513022207375, 0.3268477803783982],
+      "D_fraction_0_75": [0.1731280155967506, 0.164621735211042],
+      "center": [0.25, 0.25]
+    },
+    "real_points_m": {
+      "A_bottom_right_start_goal": [1.2, 1.4],
+      "B_top_right": [1.2, 0.0],
+      "C_top_left": [0.0, 0.0],
+      "D_bottom_left": [0.0, 1.4],
+      "center": [0.6, 0.7]
+    },
+    "measurement_notes": {
+      "reference_center_width_m": 1.2,
+      "reference_center_height_m": 1.4,
+      "path_order": "A -> B -> C -> D -> A",
+      "A_bottom_right_is_start_goal": true,
+      "date": "2026-06-23"
+    }
+  }
+}

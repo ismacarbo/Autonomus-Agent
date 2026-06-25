@@ -1,0 +1,27 @@
+{
+  "report_registration": {
+    "mode": "similarity",
+    "source": "independent_physical_measurements_A_start_and_arena_center",
+    "matrix": [
+      [-0.1956740304886216, -8.014589915446637, 2.6525659864838147],
+      [8.014589915446637, -0.1956740304886216, -1.2547289712395038]
+    ],
+    "scale": 8.0169782236817,
+    "rotation_deg": 91.39858301124984,
+    "planner_points": {
+      "center": [0.25, 0.25],
+      "start_A": [0.335462, 0.17305]
+    },
+    "real_points_m": {
+      "center": [0.6, 0.7],
+      "start_A": [1.2, 1.4]
+    },
+    "measurement_notes": {
+      "reference_center_width_m": 1.2,
+      "reference_center_height_m": 1.4,
+      "A_bottom_right_is_start_goal": true,
+      "arena_center_from_A_m": [-0.6, -0.7],
+      "date": "2026-06-23"
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "dictionary": "DICT_4X4_50",
+  "robot_id": 0,
+  "reference_box": {
+    "convention": "Map origin at top-left reference center C; x right, y down",
+    "width_m": 1.2,
+    "height_m": 1.4,
+    "ids": {
+      "A": 1,
+      "B": 2,
+      "C": 3,
+      "D": 4
+    }
+  },
+  "reference_markers": {
+    "3": {
+      "center": [0.0, 0.0],
+      "size_m": 0.18,
+      "yaw_rad": 0.0,
+      "_label": "C alto sinistra"
+    },
+    "2": {
+      "center": [1.2, 0.0],
+      "size_m": 0.18,
+      "yaw_rad": 0.0,
+      "_label": "B alto destra"
+    },
+    "1": {
+      "center": [1.2, 1.4],
+      "size_m": 0.18,
+      "yaw_rad": 0.0,
+      "_label": "A basso destra"
+    },
+    "4": {
+      "center": [0.0, 1.4],
+      "size_m": 0.18,
+      "yaw_rad": 0.0,
+      "_label": "D basso sinistra"
+    }
+  },
+  "notes": {
+    "reference_center_width_m": 1.2,
+    "reference_center_height_m": 1.4,
+    "marker_side_m": 0.18,
+    "source": "manual measurements provided on 2026-06-23"
+  }
+}

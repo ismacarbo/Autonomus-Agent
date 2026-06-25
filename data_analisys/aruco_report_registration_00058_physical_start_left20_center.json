@@ -1,0 +1,28 @@
+{
+  "report_registration": {
+    "mode": "similarity",
+    "source": "independent_physical_measurements_robot_start_left_20cm_from_A_and_arena_center",
+    "matrix": [
+      [-1.4880995651990863, -6.850889734126634, 2.68474732483143],
+      [6.850889734126634, -1.4880995651990863, -0.640697542231887]
+    ],
+    "scale": 7.010644083471033,
+    "rotation_deg": 102.25499635931209,
+    "planner_points": {
+      "center": [0.25, 0.25],
+      "start": [0.335462, 0.17305]
+    },
+    "real_points_m": {
+      "center": [0.6, 0.7],
+      "start_robot_center": [1.0, 1.4],
+      "A_bottom_right_reference": [1.2, 1.4]
+    },
+    "measurement_notes": {
+      "reference_center_width_m": 1.2,
+      "reference_center_height_m": 1.4,
+      "A_bottom_right_reference_is_near_start": true,
+      "robot_center_offset_from_A_m": [-0.2, 0.0],
+      "date": "2026-06-23"
+    }
+  }
+}

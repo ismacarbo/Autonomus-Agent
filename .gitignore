@@ -1,5 +1,6 @@
 # scripts/utilities
 commiter.sh
+committer.sh
 
 # build artifacts
 build/
@@ -16,7 +17,6 @@ build-ninja/
 reports/
 build-pi-headless/
 serialProtocolValidation.py
-committer.sh
 documentation/
 data_analisys/outputs/
 
@@ -42,6 +42,30 @@ pygame
 # Logs / temp
 *.log
 *.tmp
+*.aux
+*.out
+*.toc
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.zip
+*.tar
+*.tar.gz
+*.7z
+imgui.ini
+
+# Large local media / presentation drafts
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.pptx
+
+# Generated 3D/report artifacts
+*.ply
 
 # Rerun recordings (if you ever save them)
 *.rrd

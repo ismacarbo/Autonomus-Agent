@@ -1,0 +1,38 @@
+{
+  "source": "Approximate obstacle centers measured from 00058 overlay frames and projected with the global ArUco homography.",
+  "coordinate_frame": "ArUco real map, meters, origin at reference C, x right, y down",
+  "notes": [
+    "These obstacles are drawn for thesis visualization only.",
+    "They are not used in the quantitative pose-error metrics."
+  ],
+  "obstacles": [
+    {
+      "label": "O1",
+      "name": "white_green_cylinder",
+      "shape": "circle",
+      "center_m": [0.107, 0.766],
+      "radius_m": 0.115
+    },
+    {
+      "label": "O2",
+      "name": "black_cylinder",
+      "shape": "circle",
+      "center_m": [0.640, 1.194],
+      "radius_m": 0.085
+    },
+    {
+      "label": "O3",
+      "name": "white_box",
+      "shape": "rect",
+      "center_m": [0.663, 0.364],
+      "size_m": [0.235, 0.220]
+    },
+    {
+      "label": "O4",
+      "name": "red_bucket",
+      "shape": "circle",
+      "center_m": [0.428, -0.025],
+      "radius_m": 0.075
+    }
+  ]
+}
