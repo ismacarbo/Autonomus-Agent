@@ -4085,10 +4085,16 @@ void draw_structured_road_map(ImDrawList* draw_list, const CanvasTransform& tx, 
     const ImU32 road_bound_color = IM_COL32(255, 96, 96, 230);
     const ImU32 road_center_color = IM_COL32(122, 232, 158, 190);
     const ImU32 lane_color = IM_COL32(245, 213, 105, 150);
+    const bool aruco_reference_mixed_map =
+        world.environment_mode() == EnvironmentMode::MixedRoadGates &&
+        world.structured_preset() == StructuredMapPreset::TankCircuit &&
+        !world.obstacles().empty();
 
-    draw_polyline(draw_list, tx, make_offset_polyline(centerline, half_width), road_bound_color, 2.4f);
-    draw_polyline(draw_list, tx, make_offset_polyline(centerline, -half_width), road_bound_color, 2.4f);
-    if (road_width >= 1.2) {
+    if (!aruco_reference_mixed_map) {
+        draw_polyline(draw_list, tx, make_offset_polyline(centerline, half_width), road_bound_color, 2.4f);
+        draw_polyline(draw_list, tx, make_offset_polyline(centerline, -half_width), road_bound_color, 2.4f);
+    }
+    if (!aruco_reference_mixed_map && road_width >= 1.2) {
         draw_polyline(draw_list, tx, make_offset_polyline(centerline, road_width / 6.0), lane_color, 1.4f);
         draw_polyline(draw_list, tx, make_offset_polyline(centerline, -road_width / 6.0), lane_color, 1.4f);
     }
@@ -5020,8 +5026,13 @@ void render_world_tab(PlannerDrivenVehicleSim& sim, UiState* ui_state) {
             {"orange: fused state / estimated trail", kColorEstimateTrail},
             {"yellow: selected planner trajectory", kColorTrajectory},
         };
-        if (sim.world().environment_mode() == EnvironmentMode::StructuredRoad ||
-            sim.world().environment_mode() == EnvironmentMode::MixedRoadGates) {
+        const bool aruco_reference_mixed_map =
+            sim.world().environment_mode() == EnvironmentMode::MixedRoadGates &&
+            sim.world().structured_preset() == StructuredMapPreset::TankCircuit &&
+            !sim.world().obstacles().empty();
+        if (!aruco_reference_mixed_map &&
+            (sim.world().environment_mode() == EnvironmentMode::StructuredRoad ||
+             sim.world().environment_mode() == EnvironmentMode::MixedRoadGates)) {
             legend.push_back({"red: structured road bounds", IM_COL32(255, 96, 96, 230)});
         }
         if (sim.lidar_enabled() && ui_state->show_lidar_rays) {

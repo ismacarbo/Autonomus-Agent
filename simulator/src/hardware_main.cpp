@@ -144,7 +144,7 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
 
     const double span = world_span_m(world);
     config->goal_tolerance_m = clamp_value(0.12 * span, 0.045, 0.070);
-    config->localization.max_range_m = clamp_value(1.55 * span, 0.62, 0.85);
+    config->localization.max_range_m = 1.80;
     config->localization.obstacle_stop_distance_m = clamp_value(0.34 * span, 0.145, 0.18);
     config->gap_extraction.planning_max_range_m = config->localization.max_range_m;
     config->gap_extraction.free_distance_threshold_m =

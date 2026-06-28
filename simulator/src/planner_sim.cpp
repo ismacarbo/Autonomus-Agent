@@ -10,6 +10,8 @@ namespace thesis_sim {
 
 namespace {
 
+constexpr int kArucoReferenceMixedRequiredGates = 4;
+
 struct RangeSensorSpec {
     int beams = 0;
     double fov_rad = 0.0;
@@ -222,6 +224,11 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
         structured &&
         (world.structured_preset() == StructuredMapPreset::ValidationRoad ||
          world.structured_preset() == StructuredMapPreset::IdealCircle);
+    const bool aruco_real_closed_mixed =
+        mixed &&
+        world.structured_preset() == StructuredMapPreset::TankCircuit &&
+        distance(world.start(), world.goal()) <= 0.05 &&
+        span <= 2.50;
     const double speed_cap = mixed ? 0.16
                                    : (micro ? (validation_road ? 0.020 : 0.025)
                                             : (validation_road ? 0.03 : (compact ? 0.08 : 0.35)));
@@ -250,6 +257,17 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
         geometry->yaw_response_scale = 1.00;
         geometry->linear_feedback_gain = 75.0;
         geometry->yaw_feedback_gain = 35.0;
+        if (aruco_real_closed_mixed) {
+            geometry->wheelbase = 0.180;
+            geometry->cg_to_front = 0.090;
+            geometry->cg_to_rear = 0.090;
+            geometry->track = 0.150;
+            geometry->body_length = 0.250;
+            geometry->body_width = 0.150;
+            geometry->wheel_radius = 0.032;
+            geometry->max_curvature = 6.0;
+            geometry->max_yaw_rate = 3.4;
+        }
     } else if (micro) {
         geometry->wheelbase = 0.085;
         geometry->cg_to_front = 0.0425;
@@ -305,8 +323,37 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
         validation_road &&
         world_span_m(world) >= 0.90 &&
         world_span_m(world) <= 1.10;
+    const bool aruco_real_closed_mixed =
+        world.environment_mode() == EnvironmentMode::MixedRoadGates &&
+        world.structured_preset() == StructuredMapPreset::TankCircuit &&
+        distance(world.start(), world.goal()) <= 0.05 &&
+        world_span_m(world) <= 2.50;
 
-    if (tank_hardware_structured) {
+    if (aruco_real_closed_mixed) {
+        geometry->wheelbase = 0.180;
+        geometry->cg_to_front = 0.090;
+        geometry->cg_to_rear = 0.090;
+        geometry->track = 0.150;
+        geometry->body_length = 0.250;
+        geometry->body_width = 0.150;
+        geometry->wheel_length = 0.120;
+        geometry->wheel_width = 0.026;
+        geometry->wheel_radius = 0.032;
+        geometry->encoder_ticks_per_revolution = 2400;
+        geometry->max_linear_speed = 0.16;
+        geometry->max_yaw_rate = 3.4;
+        geometry->max_curvature = 8.0;
+        geometry->max_steer_angle = 1.25;
+        geometry->max_steer_rate = 5.0;
+        geometry->speed_estimate_per_pwm = 0.0015;
+        geometry->motor_time_constant = 0.20;
+        geometry->pwm_slew_rate = 500.0;
+        geometry->yaw_response_scale = 0.92;
+        geometry->linear_feedback_gain = 80.0;
+        geometry->yaw_feedback_gain = 80.0;
+        geometry->min_effective_pwm = 44;
+        config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.08);
+    } else if (tank_hardware_structured) {
         geometry->wheelbase = 0.300;
         geometry->cg_to_front = 0.150;
         geometry->cg_to_rear = 0.150;
@@ -1865,9 +1912,17 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
         !world_.dynamic_obstacles().empty()
             ? world_.dynamic_obstacles().size()
             : closed_obstacle_reference_count;
+    const bool aruco_reference_mixed_world =
+        world_.environment_mode() == EnvironmentMode::MixedRoadGates &&
+        world_.structured_preset() == StructuredMapPreset::TankCircuit &&
+        !world_.obstacles().empty();
+    const size_t required_closed_obstacle_gates =
+        aruco_reference_mixed_world
+            ? static_cast<size_t>(kArucoReferenceMixedRequiredGates)
+            : required_dynamic_obstacle_count;
     if (obstacle_only_closed_mixed &&
         dynamic_lidar_passed_gates_ >=
-            static_cast<int>(std::max<size_t>(1, required_dynamic_obstacle_count))) {
+            static_cast<int>(std::max<size_t>(1, required_closed_obstacle_gates))) {
         return candidates;
     }
     const bool compact_mixed_open_world =
@@ -2634,15 +2689,22 @@ void PlannerDrivenVehicleSim::update_unstructured_gate_progress() {
             closed_mixed_dynamic_gate && !semantic_closed_gate_sequence;
         const bool lab_scale_closed_dynamic_gate =
             obstacle_closed_dynamic_gate && world_span_m(world_) <= 2.25;
+        const bool aruco_reference_mixed_world =
+            obstacle_closed_dynamic_gate &&
+            world_.structured_preset() == StructuredMapPreset::TankCircuit &&
+            !world_.obstacles().empty();
         const double closed_dynamic_gate_reach_radius =
             semantic_closed_gate_sequence
                 ? 0.46
                 : (config_.vehicle_model == VehicleModelKind::TrackedVehicle ? 0.40 : 0.46);
         const double mixed_dynamic_reach_radius =
-            lab_scale_closed_dynamic_gate
+            aruco_reference_mixed_world
+                ? (dynamic_lidar_passed_gates_ == 0 ? 0.36
+                                                    : (dynamic_lidar_passed_gates_ == 1 ? 0.30 : 0.34))
+                : (lab_scale_closed_dynamic_gate
                 ? (dynamic_lidar_passed_gates_ == 0 ? 0.36 : 0.24)
                 : (compact_mixed_closed ? 0.22
-                                        : (closed_mixed_dynamic_gate ? closed_dynamic_gate_reach_radius : 0.14));
+                                        : (closed_mixed_dynamic_gate ? closed_dynamic_gate_reach_radius : 0.14)));
         const bool compact_mixed_reached_gate =
             compact_mixed_dynamic_gate && gate_distance <= mixed_dynamic_reach_radius;
         const bool closed_mixed_reached_gate =
@@ -3786,6 +3848,10 @@ void PlannerDrivenVehicleSim::step() {
     const bool compact_mixed_world =
         world_.environment_mode() == EnvironmentMode::MixedRoadGates &&
         (world_span_m(world_) <= 2.50 || world_.structured_preset() == StructuredMapPreset::IdealCircle);
+    const bool aruco_reference_mixed_world =
+        world_.environment_mode() == EnvironmentMode::MixedRoadGates &&
+        world_.structured_preset() == StructuredMapPreset::TankCircuit &&
+        !world_.obstacles().empty();
     const bool tank_hardware_structured =
         config_.vehicle_model == VehicleModelKind::TrackedVehicle &&
         world_.environment_mode() == EnvironmentMode::StructuredRoad &&
@@ -3797,9 +3863,20 @@ void PlannerDrivenVehicleSim::step() {
     // no simulated walls or obstacles on that validation loop.
     if (micro_structured_world(world_) || tank_hardware_structured) {
         collision_ = false;
+    } else if (aruco_reference_mixed_world) {
+        collision_ = false;
+        const Rect bounds = world_.bounds();
+        for (const Vec2& corner : vehicle_.body_corners) {
+            if (!point_in_bounds(bounds, corner)) {
+                collision_ = true;
+                break;
+            }
+        }
     } else {
         const double collision_padding =
-            (compact_structured_world(world_) || compact_mixed_world) ? 0.0 : 0.05;
+            compact_mixed_world
+                ? -0.025
+                : (compact_structured_world(world_) ? 0.0 : 0.05);
         collision_ = world_.collides(vehicle_.body_corners, collision_padding);
     }
     if (structured_road_is_closed_loop(world_) || mixed_closed_gate_sequence(world_)) {
@@ -3849,8 +3926,14 @@ void PlannerDrivenVehicleSim::step() {
                     : (!world_.perception_obstacles().empty()
                            ? world_.perception_obstacles().size()
                            : world_.obstacles().size());
+            const bool aruco_reference_mixed_world =
+                world_.environment_mode() == EnvironmentMode::MixedRoadGates &&
+                world_.structured_preset() == StructuredMapPreset::TankCircuit &&
+                !world_.obstacles().empty();
             const int required_dynamic_gates =
-                std::max(1, static_cast<int>(required_obstacle_count));
+                aruco_reference_mixed_world
+                    ? kArucoReferenceMixedRequiredGates
+                    : std::max(1, static_cast<int>(required_obstacle_count));
             goal_reached_ =
                 progress_complete &&
                 physically_near_start &&

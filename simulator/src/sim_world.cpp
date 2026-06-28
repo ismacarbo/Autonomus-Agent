@@ -16,6 +16,7 @@ constexpr double kEps = 1e-9;
 std::vector<Vec2> close_polyline_loop(std::vector<Vec2> points, double threshold);
 std::vector<Vec2> chaikin_closed_polyline(const std::vector<Vec2>& points, int passes);
 std::vector<Vec2> resample_closed_polyline(const std::vector<Vec2>& points, double spacing);
+Rect centered_rect(const Vec2& center, double width, double height);
 
 double dot(const Vec2& a, const Vec2& b) {
     return a.x * b.x + a.y * b.y;
@@ -378,6 +379,52 @@ std::vector<Rect> make_closed_obstacle_road_blocks(const Rect& content) {
         // must derive a side gate from the obstacle and the road boundary.
         map_unit_rect(content, {0.52, 0.22, 0.58, 0.29}),
         map_unit_rect(content, {0.56, 0.75, 0.64, 0.82}),
+    };
+}
+
+constexpr double kArucoReferenceHeightM = 1.40;
+
+Vec2 aruco_to_sim_point(const Vec2& point) {
+    // ArUco ground-truth maps use image coordinates: x to the right, y down.
+    // The simulator uses x to the right, y up, so the vertical axis is flipped.
+    return {point.x, kArucoReferenceHeightM - point.y};
+}
+
+Rect centered_aruco_rect_as_sim(const Vec2& aruco_center, double width, double height) {
+    return centered_rect(aruco_to_sim_point(aruco_center), width, height);
+}
+
+std::vector<Vec2> make_aruco_real_mixed_loop(double spacing) {
+    const std::vector<Vec2> aruco_track{
+        {1.000, 1.350},
+        {1.180, 0.180},
+        {0.880, 0.055},
+        {0.520, -0.015},
+        {0.220, 0.180},
+        {0.200, 0.760},
+        {0.240, 1.260},
+        {0.640, 1.245},
+        {0.720, 1.390},
+    };
+    std::vector<Vec2> track;
+    track.reserve(aruco_track.size());
+    for (const Vec2& point : aruco_track) {
+        track.push_back(aruco_to_sim_point(point));
+    }
+    track = close_polyline_loop(std::move(track), 0.02);
+    return resample_closed_polyline(track, spacing);
+}
+
+std::vector<Rect> make_aruco_real_obstacle_blocks() {
+    return {
+        // Obstacle positions are expressed in the ArUco reference frame used
+        // for the 00058 ground-truth run: C is the top-left reference center,
+        // x points right, and y points down. They are converted to simulator
+        // coordinates here so A starts in the lower-right of the viewport.
+        centered_aruco_rect_as_sim({0.050, 0.766}, 0.120, 0.120),
+        centered_aruco_rect_as_sim({0.640, 1.194}, 0.170, 0.170),
+        centered_aruco_rect_as_sim({0.663, 0.364}, 0.235, 0.220),
+        centered_aruco_rect_as_sim({0.428, -0.025}, 0.150, 0.150),
     };
 }
 
@@ -1257,15 +1304,14 @@ WorldMap WorldMap::mixed_closed_obstacle_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::TankCircuit;
-    world.bounds_ = {0.0, 0.0, 6.00, 5.00};
+    world.bounds_ = {-0.20, -0.20, 1.35, 1.60};
 
-    const Rect content{0.70, 0.95, 5.30, 4.05};
-    world.road_centerline_ = make_closed_obstacle_mixed_loop(content, 0.045);
+    world.road_centerline_ = make_aruco_real_mixed_loop(0.025);
     world.start_ = world.road_centerline_.front();
     world.goal_ = world.start_;
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
-    world.obstacles_ = make_closed_obstacle_road_blocks(content);
+    world.obstacles_ = make_aruco_real_obstacle_blocks();
     const Vec2 first_checkpoint = sampled_loop_point(world.road_centerline_, 0.45);
     const Vec2 far_checkpoint = sampled_loop_point(world.road_centerline_, 0.72);
     world.gate_templates_ = {
@@ -1329,41 +1375,21 @@ WorldMap WorldMap::mixed_closed_obstacle_hardware_demo() {
     world.environment_mode_ = EnvironmentMode::MixedRoadGates;
     world.unstructured_preset_ = UnstructuredMapPreset::HardwareLab;
     world.structured_preset_ = StructuredMapPreset::TankCircuit;
-    world.bounds_ = {0.0, 0.0, 0.50, 0.50};
+    world.bounds_ = {-0.20, -0.20, 1.35, 1.60};
 
-    constexpr double kSide = 0.50;
-    constexpr double kCenter = 0.5 * kSide;
-    constexpr double kWallThickness = 0.014;
-    constexpr double kCenterlineRadius = 0.115;
-    constexpr double kStartAngle = -42.0 * kPi / 180.0;
-    constexpr double kLapAngle = 2.0 * kPi;
-    constexpr double kReferenceSpacing = 0.010;
-    const Vec2 center{kCenter, kCenter};
-
-    world.road_centerline_ = make_lab_square_annulus_reference(
-        center,
-        kCenterlineRadius,
-        kStartAngle,
-        kLapAngle,
-        kReferenceSpacing);
+    world.road_centerline_ = make_aruco_real_mixed_loop(0.025);
     world.start_ = world.road_centerline_.front();
-    world.goal_ = world.road_centerline_.back();
+    world.goal_ = world.start_;
     world.start_heading_ = angle_to(world.road_centerline_.front(), world.road_centerline_[1]);
 
-    world.obstacles_.clear();
-    std::vector<Rect> boundary_walls =
-        make_boundary_wall_blocks(world.bounds_, kWallThickness);
-    world.obstacles_.insert(world.obstacles_.end(), boundary_walls.begin(), boundary_walls.end());
+    world.obstacles_ = make_aruco_real_obstacle_blocks();
     world.perception_obstacles_.clear();
     const Vec2 first_checkpoint = sampled_polyline_point(world.road_centerline_, 0.34);
     const Vec2 far_checkpoint = sampled_polyline_point(world.road_centerline_, 0.68);
-    const double finish_heading = world.road_centerline_.size() > 1
-        ? angle_to(world.road_centerline_[world.road_centerline_.size() - 2], world.road_centerline_.back())
-        : world.start_heading_;
     world.gate_templates_ = {
         {"checkpoint_1", first_checkpoint, first_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
         {"checkpoint_2", far_checkpoint, far_checkpoint, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
-        {"finish", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, finish_heading, true},
+        {"finish", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, world.start_heading_, true},
     };
     world.gates_ = world.gate_templates_;
     world.gate_behavior_ = GateBehaviorMode::Static;
