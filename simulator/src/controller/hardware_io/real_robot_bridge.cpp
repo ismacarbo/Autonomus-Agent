@@ -147,33 +147,43 @@ std::vector<RPLidarA1::ScanPoint> RealRobotBridge::read_lidar_scan(int min_point
     }
     if (!lidar_.is_connected() || !lidar_.scanning()) {
         std::vector<RPLidarA1::ScanPoint> cached_scan = recent_lidar_scan_or_empty(0.30);
-        refresh_lidar_snapshot(cached_scan);
+        refresh_lidar_snapshot(
+            cached_scan,
+            last_good_lidar_scan_start_time_s_,
+            last_good_lidar_scan_time_s_,
+            true);
         return observation_.lidar_scan;
     }
 
     try {
+        const double scan_start_s = monotonic_seconds();
         std::vector<RPLidarA1::ScanPoint> scan = lidar_.grab_scan(strict_min_points);
         if (scan.empty() && fallback_min_points < strict_min_points) {
             scan = lidar_.grab_scan(fallback_min_points);
         }
         last_lidar_error_.clear();
         if (!scan.empty()) {
+            const double scan_end_s = monotonic_seconds();
             last_good_lidar_scan_ = scan;
-            last_good_lidar_scan_time_s_ = monotonic_seconds();
+            last_good_lidar_scan_start_time_s_ = scan_start_s;
+            last_good_lidar_scan_time_s_ = scan_end_s;
         }
-        refresh_lidar_snapshot(scan);
+        refresh_lidar_snapshot(scan, scan_start_s, monotonic_seconds(), false);
         refresh_observation_timestamp();
         return scan;
     } catch (const LidarError& e) {
         if (fallback_min_points < strict_min_points) {
             try {
+                const double scan_start_s = monotonic_seconds();
                 std::vector<RPLidarA1::ScanPoint> fallback_scan = lidar_.grab_scan(fallback_min_points);
                 last_lidar_error_.clear();
                 if (!fallback_scan.empty()) {
+                    const double scan_end_s = monotonic_seconds();
                     last_good_lidar_scan_ = fallback_scan;
-                    last_good_lidar_scan_time_s_ = monotonic_seconds();
+                    last_good_lidar_scan_start_time_s_ = scan_start_s;
+                    last_good_lidar_scan_time_s_ = scan_end_s;
                 }
-                refresh_lidar_snapshot(fallback_scan);
+                refresh_lidar_snapshot(fallback_scan, scan_start_s, monotonic_seconds(), false);
                 refresh_observation_timestamp();
                 return fallback_scan;
             } catch (const LidarError&) {
@@ -182,7 +192,11 @@ std::vector<RPLidarA1::ScanPoint> RealRobotBridge::read_lidar_scan(int min_point
 
         last_lidar_error_ = e.what();
         std::vector<RPLidarA1::ScanPoint> cached_scan = recent_lidar_scan_or_empty(0.30);
-        refresh_lidar_snapshot(cached_scan);
+        refresh_lidar_snapshot(
+            cached_scan,
+            last_good_lidar_scan_start_time_s_,
+            last_good_lidar_scan_time_s_,
+            true);
         if (!cached_scan.empty()) {
             refresh_observation_timestamp();
             return observation_.lidar_scan;
@@ -219,10 +233,26 @@ void RealRobotBridge::refresh_controller_snapshot() {
     }
 }
 
-void RealRobotBridge::refresh_lidar_snapshot(std::vector<RPLidarA1::ScanPoint> scan) {
+void RealRobotBridge::refresh_lidar_snapshot(std::vector<RPLidarA1::ScanPoint> scan,
+                                             double scan_start_s,
+                                             double scan_end_s,
+                                             bool reused) {
+    const double now_s = monotonic_seconds();
+    if (scan_end_s <= 0.0) {
+        scan_end_s = now_s;
+    }
+    if (scan_start_s <= 0.0 || scan_start_s > scan_end_s) {
+        scan_start_s = scan_end_s;
+    }
     observation_.have_lidar_scan = !scan.empty();
     observation_.min_lidar_range_m = compute_min_range(scan);
     observation_.lidar_scan = std::move(scan);
+    observation_.lidar_scan_start_timestamp_s = scan_start_s;
+    observation_.lidar_scan_end_timestamp_s = scan_end_s;
+    observation_.lidar_scan_mid_timestamp_s = 0.5 * (scan_start_s + scan_end_s);
+    observation_.lidar_scan_duration_s = std::max(0.0, scan_end_s - scan_start_s);
+    observation_.lidar_scan_age_s = std::max(0.0, now_s - scan_end_s);
+    observation_.lidar_scan_reused = reused && observation_.have_lidar_scan;
 }
 
 }  // namespace thesis_sim

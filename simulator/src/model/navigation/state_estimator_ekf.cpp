@@ -14,19 +14,6 @@ double clamp_value(double value, double lo, double hi) {
     return std::max(lo, std::min(value, hi));
 }
 
-double infer_sideslip(const VehicleGeometry& geometry, double speed, double yaw_rate) {
-    if (std::abs(speed) <= 1e-4 || geometry.cg_to_rear <= 1e-6) {
-        return 0.0;
-    }
-
-    const double curvature = clamp_value(
-        yaw_rate / speed,
-        -geometry.max_curvature,
-        geometry.max_curvature);
-    const double beta_arg = clamp_value(geometry.cg_to_rear * curvature, -1.0, 1.0);
-    return std::asin(beta_arg);
-}
-
 }  // namespace
 
 KinematicBicycleEkf::KinematicBicycleEkf(EkfConfig config)
@@ -53,6 +40,11 @@ void KinematicBicycleEkf::reset(const Vec2& position, double yaw) {
     state_.yaw = yaw;
     state_.covariance.setIdentity();
     state_.covariance *= 0.05;
+    last_odom_speed_ = 0.0;
+    last_odom_yaw_rate_ = 0.0;
+    lidar_updates_accepted_ = 0;
+    lidar_updates_rejected_ = 0;
+    consecutive_lidar_rejections_ = 0;
 }
 
 void KinematicBicycleEkf::override_pose(const Vec2& position, double yaw) {
@@ -80,9 +72,13 @@ void KinematicBicycleEkf::predict(double dt, double odom_speed, double odom_yaw_
     Vector5 x;
     x << state_.position.x, state_.position.y, state_.yaw, state_.speed, state_.yaw_rate;
 
-    const double beta = infer_sideslip(geometry_, odom_speed, odom_yaw_rate);
     const double yaw_mid = x(2) + 0.5 * odom_yaw_rate * dt;
-    const double heading_mid = yaw_mid + beta;
+    // Wheel encoders and the gyro observe base-link forward speed and yaw
+    // rate, but do not observe a tire sideslip angle. Injecting one from
+    // curvature alone produced a systematic 10-15 cm position error even in
+    // ideal simulation. Lateral slip belongs in process covariance until a
+    // steering/slip observation is available.
+    const double heading_mid = yaw_mid;
     Vector5 x_pred = x;
     x_pred(0) += odom_speed * std::cos(heading_mid) * dt;
     x_pred(1) += odom_speed * std::sin(heading_mid) * dt;
@@ -97,20 +93,36 @@ void KinematicBicycleEkf::predict(double dt, double odom_speed, double odom_yaw_
     F(0, 2) = -odom_speed * std::sin(heading_mid) * dt;
     F(1, 2) = odom_speed * std::cos(heading_mid) * dt;
 
+    const double turn_scale = 1.0 +
+        std::abs(odom_yaw_rate) *
+            (tracked_vehicle_ ? config_.tracked_turn_process_noise_gain
+                              : config_.turn_process_noise_gain);
     Matrix5 Q = Matrix5::Zero();
-    Q(0, 0) = config_.q_x * dt;
-    Q(1, 1) = config_.q_y * dt;
-    Q(2, 2) = config_.q_yaw * dt;
+    Q(0, 0) = config_.q_x * dt * turn_scale;
+    Q(1, 1) = config_.q_y * dt * turn_scale;
+    Q(2, 2) = config_.q_yaw * dt * turn_scale;
     Q(3, 3) = config_.q_v * dt;
     Q(4, 4) = config_.q_yaw_rate * dt;
 
     state_.covariance = F * state_.covariance * F.transpose() + Q;
     state_.position = {x_pred(0), x_pred(1)};
     state_.yaw = x_pred(2);
+    last_odom_speed_ = odom_speed;
+    last_odom_yaw_rate_ = odom_yaw_rate;
     finalize_predict(odom_speed, odom_yaw_rate, dt);
 }
 
 void KinematicBicycleEkf::update_imu(double measured_yaw, double measured_yaw_rate) {
+    if (std::abs(last_odom_speed_) < 0.015 &&
+        std::abs(last_odom_yaw_rate_) < 0.04 &&
+        std::abs(measured_yaw_rate) < config_.gyro_bias_limit_rad_s) {
+        state_.gyro_bias = clamp_value(
+            (1.0 - config_.gyro_bias_learning_rate) * state_.gyro_bias +
+                config_.gyro_bias_learning_rate * measured_yaw_rate,
+            -config_.gyro_bias_limit_rad_s,
+            config_.gyro_bias_limit_rad_s);
+    }
+    const double corrected_yaw_rate = measured_yaw_rate - state_.gyro_bias;
     Eigen::Matrix<double, 2, 5> H = Eigen::Matrix<double, 2, 5>::Zero();
     H(0, 2) = 1.0;
     H(1, 4) = 1.0;
@@ -123,7 +135,7 @@ void KinematicBicycleEkf::update_imu(double measured_yaw, double measured_yaw_ra
     x << state_.position.x, state_.position.y, state_.yaw, state_.speed, state_.yaw_rate;
 
     Eigen::Matrix<double, 2, 1> z;
-    z << measured_yaw, measured_yaw_rate;
+    z << measured_yaw, corrected_yaw_rate;
 
     Eigen::Matrix<double, 2, 1> h;
     h << state_.yaw, state_.yaw_rate;
@@ -169,6 +181,13 @@ void KinematicBicycleEkf::update_lidar_pose(const Vec2& measured_position,
         y(2) = wrap_angle(y(2));
 
         const Eigen::Matrix<double, 3, 3> S = H * state_.covariance * H.transpose() + R;
+        const double mahalanobis = (y.transpose() * S.inverse() * y)(0, 0);
+        if (!std::isfinite(mahalanobis) ||
+            mahalanobis > config_.lidar_pose_gate_chi2) {
+            ++lidar_updates_rejected_;
+            ++consecutive_lidar_rejections_;
+            return;
+        }
         const Eigen::Matrix<double, 5, 3> K = state_.covariance * H.transpose() * S.inverse();
         x += K * y;
         state_.covariance = (Matrix5::Identity() - K * H) * state_.covariance;
@@ -177,6 +196,8 @@ void KinematicBicycleEkf::update_lidar_pose(const Vec2& measured_position,
         state_.yaw = wrap_angle(x(2));
         state_.speed = x(3);
         state_.yaw_rate = x(4);
+        ++lidar_updates_accepted_;
+        consecutive_lidar_rejections_ = 0;
         return;
     }
 
@@ -199,6 +220,13 @@ void KinematicBicycleEkf::update_lidar_pose(const Vec2& measured_position,
 
     const Eigen::Matrix<double, 2, 1> y = z - h;
     const Eigen::Matrix<double, 2, 2> S = H * state_.covariance * H.transpose() + R;
+    const double mahalanobis = (y.transpose() * S.inverse() * y)(0, 0);
+    if (!std::isfinite(mahalanobis) ||
+        mahalanobis > config_.lidar_position_gate_chi2) {
+        ++lidar_updates_rejected_;
+        ++consecutive_lidar_rejections_;
+        return;
+    }
     const Eigen::Matrix<double, 5, 2> K = state_.covariance * H.transpose() * S.inverse();
     x += K * y;
     state_.covariance = (Matrix5::Identity() - K * H) * state_.covariance;
@@ -207,6 +235,8 @@ void KinematicBicycleEkf::update_lidar_pose(const Vec2& measured_position,
     state_.yaw = wrap_angle(x(2));
     state_.speed = x(3);
     state_.yaw_rate = x(4);
+    ++lidar_updates_accepted_;
+    consecutive_lidar_rejections_ = 0;
 }
 
 }  // namespace thesis_sim

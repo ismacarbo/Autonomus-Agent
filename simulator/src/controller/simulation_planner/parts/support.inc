@@ -20,6 +20,7 @@ constexpr int kArucoReferenceMixedRequiredGates = 4;
 using mvc::model::RangeSensorSpec;
 using mvc::model::ClosedPathProjection;
 using mvc::model::project_closed_path;
+using mvc::model::sample_closed_path;
 using mvc::model::sample_closed_path_span;
 
 mvc::model::SimulatedLidarConfig make_lidar_model_config(const SimConfig& config) {
@@ -260,11 +261,11 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
         geometry->cg_to_front = 0.090;
         geometry->cg_to_rear = 0.090;
         geometry->track = 0.130;
-        geometry->body_length = 0.250;
-        geometry->body_width = 0.150;
-        geometry->wheel_length = 0.060;
+        geometry->body_length = measured_robot::kCarBodyLengthM;
+        geometry->body_width = measured_robot::kCarBodyWidthM;
+        geometry->wheel_length = measured_robot::kCarWheelDiameterM;
         geometry->wheel_width = 0.020;
-        geometry->wheel_radius = 0.032;
+        geometry->wheel_radius = measured_robot::kCarWheelRadiusM;
         geometry->max_steer_angle = 0.950;
         geometry->max_steer_rate = 3.200;
         geometry->max_curvature = 4.200;
@@ -286,11 +287,11 @@ void apply_hardware_like_vehicle_tuning(const WorldMap& world,
         geometry->cg_to_front = 0.090;
         geometry->cg_to_rear = 0.090;
         geometry->track = 0.130;
-        geometry->body_length = 0.250;
-        geometry->body_width = 0.150;
-        geometry->wheel_length = 0.060;
+        geometry->body_length = measured_robot::kCarBodyLengthM;
+        geometry->body_width = measured_robot::kCarBodyWidthM;
+        geometry->wheel_length = measured_robot::kCarWheelDiameterM;
         geometry->wheel_width = 0.020;
-        geometry->wheel_radius = 0.032;
+        geometry->wheel_radius = measured_robot::kCarWheelRadiusM;
         geometry->max_steer_angle = 0.60;
         geometry->max_steer_rate = 2.80;
         geometry->max_curvature = 3.20;
@@ -362,15 +363,15 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
         world_span_m(world) <= 2.50;
 
     if (aruco_real_closed_mixed) {
-        geometry->wheelbase = 0.180;
-        geometry->cg_to_front = 0.090;
-        geometry->cg_to_rear = 0.090;
-        geometry->track = 0.130;
-        geometry->body_length = 0.250;
-        geometry->body_width = 0.150;
-        geometry->wheel_length = 0.120;
-        geometry->wheel_width = 0.026;
-        geometry->wheel_radius = 0.032;
+        geometry->wheelbase = measured_robot::kTankBeltLengthM;
+        geometry->cg_to_front = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->cg_to_rear = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->track = measured_robot::kTankTrackCenterDistanceM;
+        geometry->body_length = measured_robot::kTankBodyLengthM;
+        geometry->body_width = measured_robot::kTankBodyWidthM;
+        geometry->wheel_length = measured_robot::kTankBeltLengthM;
+        geometry->wheel_width = measured_robot::kTankBeltWidthM;
+        geometry->wheel_radius = measured_robot::kTankEffectiveDriveRadiusDefaultM;
         geometry->encoder_ticks_per_revolution = 2400;
         geometry->max_linear_speed = 0.16;
         geometry->max_yaw_rate = 3.4;
@@ -386,15 +387,15 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
         geometry->min_effective_pwm = 44;
         config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.08);
     } else if (normalized_hardware_structured) {
-        geometry->wheelbase = 0.180;
-        geometry->cg_to_front = 0.090;
-        geometry->cg_to_rear = 0.090;
-        geometry->track = 0.130;
-        geometry->body_length = 0.250;
-        geometry->body_width = 0.150;
-        geometry->wheel_length = 0.120;
-        geometry->wheel_width = 0.026;
-        geometry->wheel_radius = 0.032;
+        geometry->wheelbase = measured_robot::kTankBeltLengthM;
+        geometry->cg_to_front = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->cg_to_rear = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->track = measured_robot::kTankTrackCenterDistanceM;
+        geometry->body_length = measured_robot::kTankBodyLengthM;
+        geometry->body_width = measured_robot::kTankBodyWidthM;
+        geometry->wheel_length = measured_robot::kTankBeltLengthM;
+        geometry->wheel_width = measured_robot::kTankBeltWidthM;
+        geometry->wheel_radius = measured_robot::kTankEffectiveDriveRadiusDefaultM;
         geometry->encoder_ticks_per_revolution = 2400;
         geometry->max_linear_speed = 0.14;
         geometry->max_yaw_rate = 1.35;
@@ -410,15 +411,15 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
         geometry->min_effective_pwm = 48;
         config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.08);
     } else if (compact_gate_world) {
-        geometry->wheelbase = 0.180;
-        geometry->cg_to_front = 0.090;
-        geometry->cg_to_rear = 0.090;
-        geometry->track = 0.130;
-        geometry->body_length = 0.250;
-        geometry->body_width = 0.150;
-        geometry->wheel_length = 0.120;
-        geometry->wheel_width = 0.026;
-        geometry->wheel_radius = 0.032;
+        geometry->wheelbase = measured_robot::kTankBeltLengthM;
+        geometry->cg_to_front = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->cg_to_rear = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->track = measured_robot::kTankTrackCenterDistanceM;
+        geometry->body_length = measured_robot::kTankBodyLengthM;
+        geometry->body_width = measured_robot::kTankBodyWidthM;
+        geometry->wheel_length = measured_robot::kTankBeltLengthM;
+        geometry->wheel_width = measured_robot::kTankBeltWidthM;
+        geometry->wheel_radius = measured_robot::kTankEffectiveDriveRadiusDefaultM;
         geometry->encoder_ticks_per_revolution = 2400;
         geometry->max_linear_speed = 0.14;
         geometry->max_yaw_rate = 1.80;
@@ -480,15 +481,15 @@ void apply_tracked_vehicle_tuning(const WorldMap& world,
         geometry->yaw_feedback_gain = 125.0;
         config->cruise_speed_limit = std::min(config->cruise_speed_limit, geometry->max_linear_speed);
     } else {
-        geometry->wheelbase = 0.180;
-        geometry->cg_to_front = 0.090;
-        geometry->cg_to_rear = 0.090;
-        geometry->track = 0.130;
-        geometry->body_length = 0.250;
-        geometry->body_width = 0.150;
-        geometry->wheel_length = 0.120;
-        geometry->wheel_width = 0.026;
-        geometry->wheel_radius = 0.040;
+        geometry->wheelbase = measured_robot::kTankBeltLengthM;
+        geometry->cg_to_front = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->cg_to_rear = 0.5 * measured_robot::kTankBodyLengthM;
+        geometry->track = measured_robot::kTankTrackCenterDistanceM;
+        geometry->body_length = measured_robot::kTankBodyLengthM;
+        geometry->body_width = measured_robot::kTankBodyWidthM;
+        geometry->wheel_length = measured_robot::kTankBeltLengthM;
+        geometry->wheel_width = measured_robot::kTankBeltWidthM;
+        geometry->wheel_radius = measured_robot::kTankEffectiveDriveRadiusDefaultM;
         geometry->max_linear_speed = 0.42;
         geometry->max_yaw_rate = 2.40;
         geometry->max_curvature = 7.0;
@@ -518,6 +519,34 @@ void apply_vehicle_tuning_overrides(const VehicleTuningOverrides& overrides,
                                     SimConfig* config) {
     if (geometry == nullptr || config == nullptr) {
         return;
+    }
+
+    if (overrides.wheelbase.has_value()) {
+        geometry->wheelbase = *overrides.wheelbase;
+        geometry->cg_to_front = 0.5 * geometry->wheelbase;
+        geometry->cg_to_rear = 0.5 * geometry->wheelbase;
+    }
+    if (overrides.track.has_value()) {
+        geometry->track = *overrides.track;
+    }
+    if (overrides.body_length.has_value()) {
+        geometry->body_length = *overrides.body_length;
+    }
+    if (overrides.body_width.has_value()) {
+        geometry->body_width = *overrides.body_width;
+    }
+    if (overrides.wheel_length.has_value()) {
+        geometry->wheel_length = *overrides.wheel_length;
+    }
+    if (overrides.wheel_width.has_value()) {
+        geometry->wheel_width = *overrides.wheel_width;
+    }
+    if (overrides.wheel_radius.has_value()) {
+        geometry->wheel_radius = *overrides.wheel_radius;
+    }
+    if (overrides.encoder_ticks_per_revolution.has_value()) {
+        geometry->encoder_ticks_per_revolution = static_cast<std::int32_t>(
+            std::llround(*overrides.encoder_ticks_per_revolution));
     }
 
     if (overrides.min_effective_pwm.has_value()) {

@@ -34,7 +34,7 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 2;
+const uint8_t FW_MINOR = 3;
 const bool BOOT_DIAG_ASCII = true;
 
 const uint16_t BNO080_REPORT_INTERVAL_MS = 20U;
@@ -56,6 +56,12 @@ const uint16_t DEFAULT_MOTOR_TELEMETRY_MS = 60U;
 const uint16_t DEFAULT_HEARTBEAT_MS = 500U;
 const uint16_t RX_IDLE_TIMEOUT_MS = 80U;
 const uint8_t DEFAULT_SLEW_STEP = 16U;
+const uint16_t VELOCITY_CONTROL_PERIOD_MS = 20U;
+const uint16_t DEFAULT_VELOCITY_KP_Q8 = 90U;   // 0.352 PWM/(mm/s)
+const uint16_t DEFAULT_VELOCITY_KI_Q8 = 128U;  // 0.500 PWM/(mm/s*s)
+const uint16_t DEFAULT_VELOCITY_FF_Q8 = 160U;  // 0.625 PWM/(mm/s)
+const uint16_t DEFAULT_ENCODER_TICKS_PER_REV = 360U;
+const uint32_t DEFAULT_WHEEL_RADIUS_UM = 32700UL;
 
 const uint16_t ENCODER_ARM_DELAY_MS = 350U;
 const uint16_t ENCODER_MIN_SPAN_DEFAULT = 120U;
@@ -105,6 +111,7 @@ const uint8_t ERR_NOT_IMPLEMENTED = 0x0D;
 
 const uint8_t CONTROL_MODE_DIRECT_PWM = 0x00;
 const uint8_t CONTROL_MODE_SAFE_DIRECT_PWM = 0x01;
+const uint8_t CONTROL_MODE_WHEEL_VELOCITY = 0x02;
 
 const uint8_t STOP_REASON_USER_REQUEST = 0x00;
 const uint8_t STOP_REASON_HOST_TIMEOUT = 0x01;
@@ -134,6 +141,11 @@ const uint8_t PARAM_HEARTBEAT_MS = 0x05;
 const uint8_t PARAM_SLEW_STEP = 0x08;
 const uint8_t PARAM_SAFETY_BYPASS = 0x09;
 const uint8_t PARAM_ENCODER_TELEMETRY_MS = 0x0A;
+const uint8_t PARAM_VELOCITY_KP_Q8 = 0x0B;
+const uint8_t PARAM_VELOCITY_KI_Q8 = 0x0C;
+const uint8_t PARAM_ENCODER_TICKS_PER_REV = 0x0D;
+const uint8_t PARAM_WHEEL_RADIUS_UM = 0x0E;
+const uint8_t PARAM_VELOCITY_FF_Q8 = 0x0F;
 
 const uint16_t SAFETY_FLAG_ULTRA_VALID = 1U << 0;       // non usato
 const uint16_t SAFETY_FLAG_IR_LEFT_ALERT = 1U << 1;     // non usato
@@ -147,6 +159,7 @@ const uint16_t MOTOR_FLAG_STBY_HIGH = 1U << 1;
 const uint16_t MOTOR_FLAG_CMD_TIMEOUT = 1U << 2;
 const uint16_t MOTOR_FLAG_SLEW_LIMITING = 1U << 3;
 const uint16_t MOTOR_FLAG_STOP_REQUESTED = 1U << 4;
+const uint16_t MOTOR_FLAG_VELOCITY_CLOSED_LOOP = 1U << 5;
 
 const uint16_t STATUS_FLAG_IMU_READY = 1U << 0;
 const uint16_t STATUS_FLAG_ULTRA_READY = 1U << 1;   // lasciato per compatibilità, rimane 0
@@ -182,6 +195,22 @@ int16_t target_pwm_l = 0;
 int16_t target_pwm_r = 0;
 int16_t current_pwm_l = 0;
 int16_t current_pwm_r = 0;
+bool velocity_control_active = false;
+int16_t target_velocity_l_mm_s = 0;
+int16_t target_velocity_r_mm_s = 0;
+float measured_velocity_l_mm_s = 0.0f;
+float measured_velocity_r_mm_s = 0.0f;
+float velocity_integral_l = 0.0f;
+float velocity_integral_r = 0.0f;
+uint16_t velocity_kp_q8 = DEFAULT_VELOCITY_KP_Q8;
+uint16_t velocity_ki_q8 = DEFAULT_VELOCITY_KI_Q8;
+uint16_t velocity_ff_q8 = DEFAULT_VELOCITY_FF_Q8;
+uint16_t velocity_encoder_ticks_per_rev = DEFAULT_ENCODER_TICKS_PER_REV;
+uint32_t velocity_wheel_radius_um = DEFAULT_WHEEL_RADIUS_UM;
+uint32_t last_velocity_control_ms = 0U;
+int32_t last_velocity_ticks_l = 0;
+int32_t last_velocity_ticks_r = 0;
+bool velocity_snapshot_valid = false;
 
 uint8_t controller_mode = MODE_IDLE;
 uint8_t tx_seq = 0U;
@@ -580,13 +609,80 @@ void hard_stop_motors() {
   target_pwm_r = 0;
   current_pwm_l = 0;
   current_pwm_r = 0;
+  velocity_control_active = false;
+  target_velocity_l_mm_s = 0;
+  target_velocity_r_mm_s = 0;
+  measured_velocity_l_mm_s = 0.0f;
+  measured_velocity_r_mm_s = 0.0f;
+  velocity_integral_l = 0.0f;
+  velocity_integral_r = 0.0f;
+  velocity_snapshot_valid = false;
   set_motor_hw(0, 0);
 }
 
 void set_targets(int16_t pwm_l, int16_t pwm_r) {
+  velocity_control_active = false;
   target_pwm_l = (int16_t)clampi((int)pwm_l, -255, 255);
   target_pwm_r = (int16_t)clampi((int)pwm_r, -255, 255);
   last_cmd_ms = millis();
+}
+
+void set_velocity_targets(int16_t left_mm_s, int16_t right_mm_s) {
+  target_velocity_l_mm_s = (int16_t)clampi((int)left_mm_s, -2000, 2000);
+  target_velocity_r_mm_s = (int16_t)clampi((int)right_mm_s, -2000, 2000);
+  velocity_control_active = true;
+  last_cmd_ms = millis();
+}
+
+int16_t velocity_pid_output(int16_t target_mm_s,
+                            float measured_mm_s,
+                            float dt_s,
+                            float* integral) {
+  if (abs(target_mm_s) < 2) {
+    *integral = 0.0f;
+    return 0;
+  }
+  const float error = (float)target_mm_s - measured_mm_s;
+  *integral += error * dt_s;
+  const float ki = (float)velocity_ki_q8 / 256.0f;
+  const float integral_limit = ki > 0.001f ? 120.0f / ki : 0.0f;
+  *integral = constrain(*integral, -integral_limit, integral_limit);
+  const float ff = ((float)velocity_ff_q8 / 256.0f) * (float)target_mm_s;
+  const float feedback = ((float)velocity_kp_q8 / 256.0f) * error + ki * *integral;
+  return (int16_t)clampi((int)lroundf(ff + feedback), -255, 255);
+}
+
+void update_velocity_control() {
+  if (!velocity_control_active) return;
+  const uint32_t now = millis();
+  if ((uint32_t)(now - last_velocity_control_ms) < VELOCITY_CONTROL_PERIOD_MS) return;
+  const uint32_t dt_ms = (uint32_t)(now - last_velocity_control_ms);
+  last_velocity_control_ms = now;
+  const int32_t ticks_l = left_ticks_total();
+  const int32_t ticks_r = right_ticks_total();
+  if (!velocity_snapshot_valid) {
+    last_velocity_ticks_l = ticks_l;
+    last_velocity_ticks_r = ticks_r;
+    velocity_snapshot_valid = true;
+    return;
+  }
+  const int32_t delta_l_abs = ticks_l - last_velocity_ticks_l;
+  const int32_t delta_r_abs = ticks_r - last_velocity_ticks_r;
+  last_velocity_ticks_l = ticks_l;
+  last_velocity_ticks_r = ticks_r;
+  const float distance_per_tick_mm =
+      6.28318531f * ((float)velocity_wheel_radius_um / 1000.0f) /
+      (float)max((uint16_t)1U, velocity_encoder_ticks_per_rev);
+  const float inv_dt = 1000.0f / (float)max((uint32_t)1U, dt_ms);
+  measured_velocity_l_mm_s =
+      (target_velocity_l_mm_s < 0 ? -1.0f : 1.0f) * delta_l_abs * distance_per_tick_mm * inv_dt;
+  measured_velocity_r_mm_s =
+      (target_velocity_r_mm_s < 0 ? -1.0f : 1.0f) * delta_r_abs * distance_per_tick_mm * inv_dt;
+  const float dt_s = (float)dt_ms * 0.001f;
+  target_pwm_l = velocity_pid_output(
+      target_velocity_l_mm_s, measured_velocity_l_mm_s, dt_s, &velocity_integral_l);
+  target_pwm_r = velocity_pid_output(
+      target_velocity_r_mm_s, measured_velocity_r_mm_s, dt_s, &velocity_integral_r);
 }
 
 void update_imu() {
@@ -766,6 +862,26 @@ bool apply_config(uint8_t param_id, uint8_t value_type, int32_t value) {
       if (!(value_type == VALUE_TYPE_UINT16 || value_type == VALUE_TYPE_UINT32)) return false;
       encoder_telemetry_ms = clampu16((uint32_t)value, 20U, 2000U);
       return true;
+    case PARAM_VELOCITY_KP_Q8:
+      if (!(value_type == VALUE_TYPE_UINT16 || value_type == VALUE_TYPE_UINT32)) return false;
+      velocity_kp_q8 = clampu16((uint32_t)value, 0U, 2048U);
+      return true;
+    case PARAM_VELOCITY_KI_Q8:
+      if (!(value_type == VALUE_TYPE_UINT16 || value_type == VALUE_TYPE_UINT32)) return false;
+      velocity_ki_q8 = clampu16((uint32_t)value, 0U, 4096U);
+      return true;
+    case PARAM_ENCODER_TICKS_PER_REV:
+      if (!(value_type == VALUE_TYPE_UINT16 || value_type == VALUE_TYPE_UINT32)) return false;
+      velocity_encoder_ticks_per_rev = clampu16((uint32_t)value, 1U, 30000U);
+      return true;
+    case PARAM_WHEEL_RADIUS_UM:
+      if (value_type != VALUE_TYPE_UINT32 || value < 5000L || value > 250000L) return false;
+      velocity_wheel_radius_um = (uint32_t)value;
+      return true;
+    case PARAM_VELOCITY_FF_Q8:
+      if (!(value_type == VALUE_TYPE_UINT16 || value_type == VALUE_TYPE_UINT32)) return false;
+      velocity_ff_q8 = clampu16((uint32_t)value, 0U, 2048U);
+      return true;
     default:
       return false;
   }
@@ -818,7 +934,9 @@ void handle_motor_cmd(uint8_t seq, bool ack_req, const uint8_t* payload) {
     reject_frame(RSP_MSG_MOTOR_CMD, seq, ack_req, ERR_INVALID_VALUE, reserved);
     return;
   }
-  if (control_mode != CONTROL_MODE_DIRECT_PWM && control_mode != CONTROL_MODE_SAFE_DIRECT_PWM) {
+  if (control_mode != CONTROL_MODE_DIRECT_PWM &&
+      control_mode != CONTROL_MODE_SAFE_DIRECT_PWM &&
+      control_mode != CONTROL_MODE_WHEEL_VELOCITY) {
     reject_frame(RSP_MSG_MOTOR_CMD, seq, ack_req, ERR_INVALID_VALUE, control_mode);
     return;
   }
@@ -833,7 +951,11 @@ void handle_motor_cmd(uint8_t seq, bool ack_req, const uint8_t* payload) {
 
   // SAFE_DIRECT_PWM qui non blocca più per sensori inesistenti.
   stop_requested = false;
-  set_targets(pwm_l, pwm_r);
+  if (control_mode == CONTROL_MODE_WHEEL_VELOCITY) {
+    set_velocity_targets(pwm_l, pwm_r);
+  } else {
+    set_targets(pwm_l, pwm_r);
+  }
 
   if (ack_req) send_ack(seq, RSP_MSG_MOTOR_CMD, ACK_STATUS_COMPLETED, 0U);
 }
@@ -1022,6 +1144,7 @@ uint16_t build_motor_flags() {
   if (timeout) flags |= MOTOR_FLAG_CMD_TIMEOUT;
   if (slew_active) flags |= MOTOR_FLAG_SLEW_LIMITING;
   if (stop_active) flags |= MOTOR_FLAG_STOP_REQUESTED;
+  if (velocity_control_active) flags |= MOTOR_FLAG_VELOCITY_CLOSED_LOOP;
   return flags;
 }
 
@@ -1146,6 +1269,8 @@ void update_motors() {
     target_pwm_r = 0;
   }
 
+  if (allow_motion && !timeout) update_velocity_control();
+
   current_pwm_l = step_towards(current_pwm_l, target_pwm_l, slew_step);
   current_pwm_r = step_towards(current_pwm_r, target_pwm_r, slew_step);
   set_motor_hw(current_pwm_l, current_pwm_r);
@@ -1225,8 +1350,8 @@ void setup() {
 void loop() {
   poll_serial();
   update_imu();
-  update_motors();
   update_encoders();
+  update_motors();
   send_imu_telemetry();
   send_safety_telemetry();
   send_encoder_telemetry();

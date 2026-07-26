@@ -220,6 +220,21 @@ int HardwarePlannerRunner::wheel_speed_to_pwm(double wheel_speed_mps, double sca
         config_.pwm.wheel_speed_to_pwm_bias);
 }
 
+void HardwarePlannerRunner::send_last_control_command(bool force) {
+    if (config_.use_mcu_velocity_closed_loop) {
+        bridge_.send_wheel_velocity_mps(
+            last_command_.target_left_wheel_speed_mps,
+            last_command_.target_right_wheel_speed_mps,
+            force);
+        return;
+    }
+    bridge_.send_pwm(
+        static_cast<std::int16_t>(last_command_.pwm_left),
+        static_cast<std::int16_t>(last_command_.pwm_right),
+        force,
+        MotorControlMode::SafeDirectPwm);
+}
+
 void HardwarePlannerRunner::step() {
     if (!connected_) {
         throw ProtocolResponseError("HardwarePlannerRunner not connected");
@@ -230,11 +245,7 @@ void HardwarePlannerRunner::step() {
         if (previous_observation.have_controller_telemetry) {
             rearm_controller_if_needed(previous_observation.controller);
         }
-        bridge_.send_pwm(
-            static_cast<std::int16_t>(last_command_.pwm_left),
-            static_cast<std::int16_t>(last_command_.pwm_right),
-            true,
-            MotorControlMode::SafeDirectPwm);
+        send_last_control_command(true);
     }
 
     const int lidar_acquisition_min_points =
@@ -263,7 +274,40 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                                                   bool send_pwm) {
     const double bounded_dt = clamp_value(dt, 0.01, 0.25);
     const bool lidar_enabled = lidar_enabled_for_current_mode();
-    if (observation.have_controller_telemetry) {
+    RealRobotObservation synchronized_observation = observation;
+    const double observation_now = observation.host_timestamp_s;
+    const double controller_age =
+        observation.have_controller_telemetry &&
+                observation.controller.rx_timestamp_s > 0.0
+            ? std::max(0.0, observation_now - observation.controller.rx_timestamp_s)
+            : 0.0;
+    const double lidar_age = observation.have_lidar_scan
+                                 ? std::max(
+                                       observation.lidar_scan_age_s,
+                                       std::max(
+                                           0.0,
+                                           observation_now -
+                                               observation.lidar_scan_end_timestamp_s))
+                                 : 0.0;
+    diagnostics_.controller_age_s = controller_age;
+    diagnostics_.lidar_age_s = lidar_age;
+    diagnostics_.lidar_scan_duration_s = observation.lidar_scan_duration_s;
+    diagnostics_.lidar_scan_reused = observation.lidar_scan_reused;
+    if (synchronized_observation.have_controller_telemetry &&
+        controller_age > config_.localization.max_controller_age_s) {
+        synchronized_observation.have_controller_telemetry = false;
+        ++diagnostics_.stale_controller_drops;
+    }
+    if (synchronized_observation.have_lidar_scan &&
+        lidar_age > config_.localization.max_lidar_age_s) {
+        synchronized_observation.have_lidar_scan = false;
+        ++diagnostics_.stale_lidar_drops;
+    }
+    active_lidar_scan_duration_s_ =
+        synchronized_observation.have_lidar_scan
+            ? synchronized_observation.lidar_scan_duration_s
+            : 0.0;
+    if (synchronized_observation.have_controller_telemetry) {
         telemetry_ready_ = true;
     }
 
@@ -275,20 +319,20 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     }
 
     const auto estimator_start = std::chrono::steady_clock::now();
-    update_estimate_from_observation(observation, bounded_dt);
+    update_estimate_from_observation(synchronized_observation, bounded_dt);
     estimator_compute_ms_ = elapsed_ms(estimator_start, std::chrono::steady_clock::now());
 
     const auto lidar_start = std::chrono::steady_clock::now();
-    if (lidar_enabled && observation.have_lidar_scan) {
-        correct_pose_with_lidar(observation.lidar_scan);
-        update_lidar_hits_world(observation.lidar_scan);
+    if (lidar_enabled && synchronized_observation.have_lidar_scan) {
+        correct_pose_with_lidar(synchronized_observation.lidar_scan);
+        update_lidar_hits_world(synchronized_observation.lidar_scan);
         if (dynamic_gap_mode_enabled()) {
             // Validate the currently locked gate before rebuilding candidates.
             // Once the aperture is behind the robot it may legitimately lose
             // scan support; rebuilding first used to discard that gate before
             // its physical crossing could be counted.
             count_mixed_gate_crossing_if_needed();
-            rebuild_dynamic_gap_gates(observation.lidar_scan);
+            rebuild_dynamic_gap_gates(synchronized_observation.lidar_scan);
             update_unstructured_gap_workflow(bounded_dt);
         }
     } else {
@@ -586,11 +630,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     push_history();
 
     if (send_pwm && connected_ && bridge_.controller_connected()) {
-        bridge_.send_pwm(
-            static_cast<std::int16_t>(last_command_.pwm_left),
-            static_cast<std::int16_t>(last_command_.pwm_right),
-            false,
-            MotorControlMode::SafeDirectPwm);
+        send_last_control_command(false);
     }
 }
 

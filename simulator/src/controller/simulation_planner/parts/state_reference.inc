@@ -121,6 +121,11 @@ void PlannerDrivenVehicleSim::reset() {
     dynamic_lidar_stable_steps_ = 0;
     dynamic_lidar_active_gate_width_ = 0.0;
     dynamic_lidar_active_gate_score_ = 0.0;
+    dynamic_lidar_active_gate_confidence_ = 0.0;
+    active_dynamic_lidar_gate_track_id_ = -1;
+    next_dynamic_lidar_gate_track_id_ = 1;
+    dynamic_lidar_gate_target_switches_ = 0;
+    dynamic_lidar_gate_tracks_.clear();
     dynamic_lidar_passed_gate_positions_.clear();
     mixed_gate_mode_active_ = false;
     mixed_gate_rejoin_cooldown_steps_ = 0;
@@ -129,8 +134,14 @@ void PlannerDrivenVehicleSim::reset() {
     mixed_gate_score_ = 0.0;
     mixed_structured_score_ = 1.0;
     mixed_gate_confidence_ = 0.0;
+    mixed_rejoin_active_ = false;
+    mixed_rejoin_started_time_s_ = -1.0;
+    mixed_rejoin_progress_start_s_ = 0.0;
+    mixed_rejoin_road_lateral_error_ = std::numeric_limits<double>::infinity();
+    mixed_rejoin_road_heading_error_deg_ = std::numeric_limits<double>::infinity();
     goal_reached_ = false;
     collision_ = false;
+    collision_cause_.clear();
     distance_to_goal_ = distance(world_.start(), world_.goal());
     min_lidar_distance_ = active_lidar_range();
     navigation_position_ = world_.start();
@@ -353,6 +364,9 @@ void PlannerDrivenVehicleSim::sync_gate_specs_from_world(bool reset_flags) {
             dynamic_lidar_stable_steps_ = 0;
             dynamic_lidar_active_gate_width_ = 0.0;
             dynamic_lidar_active_gate_score_ = 0.0;
+            dynamic_lidar_active_gate_confidence_ = 0.0;
+            active_dynamic_lidar_gate_track_id_ = -1;
+            dynamic_lidar_gate_tracks_.clear();
             dynamic_lidar_candidate_count_ = 0;
         }
         if (mixed_closed_semantic_gate_sequence(world_) &&
@@ -427,9 +441,10 @@ void PlannerDrivenVehicleSim::update_navigation_state(double dt) {
         estimator_.update_imu(measured_yaw, measured_yaw_rate);
     }
 
-    // Scan-to-map correction is only observable in the obstacle-rich
-    // unstructured scene. Structured and mixed modes keep encoder/IMU primary;
-    // their LiDAR stream is still available for mapping and gate perception.
+    // The lightweight local matcher is intentionally limited to unstructured
+    // maps. The closed mixed loop contains repeated/symmetric geometry that can
+    // produce a locally better but globally wrong association; mixed hardware
+    // correction is supplied by the gated SLAM Toolbox bridge instead.
     const bool lidar_pose_correction_enabled =
         world_.environment_mode() == EnvironmentMode::UnstructuredGates;
     if (config_.lidar_enabled &&
@@ -528,6 +543,25 @@ void PlannerDrivenVehicleSim::update_planner_references(double dt) {
         0.0,
         config_.cruise_speed_limit);
 
+    if (mixed_mode_enabled() && (mixed_gate_mode_active_ || mixed_rejoin_active_)) {
+        const double usable_clearance =
+            min_lidar_distance_ > 0.0 ? min_lidar_distance_ : active_lidar_range();
+        const double clearance_scale = clamp_value(
+            (usable_clearance - 0.50 * geometry_.body_width) /
+                std::max(0.45, 2.5 * geometry_.body_width),
+            0.25,
+            1.0);
+        const double curvature_scale = 1.0 / (
+            1.0 + 0.45 * std::abs(navigation_curvature_));
+        const double mode_cap =
+            config_.vehicle_model == VehicleModelKind::TrackedVehicle
+                ? (mixed_gate_mode_active_ ? 0.060 : 0.070)
+                : (mixed_gate_mode_active_ ? 0.095 : 0.110);
+        planner_speed_ref_ = std::min(
+            planner_speed_ref_,
+            mode_cap * clearance_scale * curvature_scale);
+    }
+
     if (use_dynamic_lidar_gates() &&
         !mixed_mode_enabled() &&
         active_gate_indices().empty()) {
@@ -604,4 +638,3 @@ void PlannerDrivenVehicleSim::refresh_gate_diagnostics() {
         }
     }
 }
-

@@ -63,7 +63,11 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
                 {"gap_entry", {12.6, 12.0}, {12.6, 12.0}, {0.12, 0.30}, 0.07, 0.20, 0.0, false},
                 {"upper_bypass", {17.3, 17.1}, {17.3, 17.1}, {0.22, 0.16}, 0.05, 1.40, 0.0, false},
                 {"exit_gap", {28.1, 16.1}, {28.1, 16.1}, {0.18, 0.24}, 0.06, 2.20, 0.0, false},
-                {"goal_approach", {33.0, 18.4}, {33.0, 18.4}, {0.20, 0.18}, 0.05, 2.90, 0.0, false},
+                // Stay below and to the right of the final block before
+                // turning toward the goal.  The previous anchor intersected
+                // the block once the definitive 25 x 15 cm car footprint was
+                // applied, even though its centreline remained outside.
+                {"goal_approach", {33.5, 16.7}, {33.5, 16.7}, {0.20, 0.18}, 0.05, 2.90, 0.0, false},
                 {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
             };
             break;
@@ -166,4 +170,3 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
 
     return world;
 }
-

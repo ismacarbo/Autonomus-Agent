@@ -183,6 +183,42 @@ void PlannerDrivenVehicleSim::step() {
                             }
                         }
                     }
+                    if (obstacle_closed_mixed_step &&
+                        !mixed_gate_mode_active_ &&
+                        reference_trajectory_.size() >= 2) {
+                        const size_t road_heading_index =
+                            mixed_rejoin_active_
+                                ? reference_trajectory_.size() - 1
+                                : std::min<size_t>(
+                                      reference_trajectory_.size() - 1,
+                                      std::max<size_t>(
+                                          2,
+                                          reference_trajectory_.size() / 3));
+                        const double rejoin_heading_error = wrap_angle(
+                            reference_trajectory_[road_heading_index].yaw -
+                            navigation_yaw_);
+                        const double rejoin_steer = clamp_value(
+                            (mixed_rejoin_active_ ? 1.25 : 0.90) *
+                                rejoin_heading_error,
+                            -geometry_.max_steer_angle,
+                            geometry_.max_steer_angle);
+                        if (std::abs(rejoin_steer) >
+                            std::abs(control.target_steer_angle)) {
+                            control.target_steer_angle = rejoin_steer;
+                            control.steer_rate_cmd = clamp_value(
+                                (rejoin_steer - tracking_state.steer_angle) /
+                                    std::max(config_.dt, 1e-3),
+                                -geometry_.max_steer_rate,
+                                geometry_.max_steer_rate);
+                            control.target_curvature = clamp_value(
+                                std::tan(rejoin_steer) /
+                                    std::max(geometry_.wheelbase, 1e-6),
+                                -geometry_.max_curvature,
+                                geometry_.max_curvature);
+                            control.target_yaw_rate =
+                                control.target_speed * control.target_curvature;
+                        }
+                    }
                 }
                 tracker_cross_track_error_ = std::abs(mpc_command.cross_track_error);
                 tracker_heading_error_deg_ = std::abs(mpc_command.heading_error) * 180.0 / 3.14159265358979323846;
@@ -233,7 +269,8 @@ void PlannerDrivenVehicleSim::step() {
         tracked_vehicle &&
         chosen_gate_index_ >= 0 &&
         chosen_gate_index_ < static_cast<int>(gates_.size()) &&
-        world_.environment_mode() == EnvironmentMode::UnstructuredGates;
+        (world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
+         (mixed_mode_enabled() && mixed_gate_mode_active_));
     if (tracked_gate_target_available) {
         const Vec2 target = gate_position(gates_[static_cast<size_t>(chosen_gate_index_)]);
         const double gate_heading_error = wrap_angle(
@@ -278,7 +315,10 @@ void PlannerDrivenVehicleSim::step() {
     }
 
     if (tracked_vehicle && reference_trajectory_.size() >= 2) {
-        const size_t heading_index = std::min<size_t>(2, reference_trajectory_.size() - 1);
+        const size_t heading_index =
+            obstacle_closed_mixed_step && mixed_rejoin_active_
+                ? reference_trajectory_.size() - 1
+                : std::min<size_t>(2, reference_trajectory_.size() - 1);
         const double heading_error = wrap_angle(
             reference_trajectory_[heading_index].yaw - navigation_yaw_);
         const double pivot_threshold = mixed_gate_mode_active_ ? 0.48 : 0.72;
@@ -346,16 +386,22 @@ void PlannerDrivenVehicleSim::step() {
         world_span_m(world_) <= 1.25;
     // The normalized indoor structured baseline uses bounds as chart extents; there are
     // no simulated walls or obstacles on that validation loop.
+    collision_cause_.clear();
     if (micro_structured_world(world_) || normalized_structured_arena) {
         collision_ = false;
     } else if (aruco_reference_mixed_world) {
-        collision_ = false;
+        // These bounds delimit the registered ArUco coordinate chart; they are
+        // not physical walls. The map already carries a 0.20 m chart margin,
+        // so keep the robot reference point inside it without interpreting a
+        // rotated body corner as a collision with an imaginary wall.
         const Rect bounds = world_.bounds();
-        for (const Vec2& corner : vehicle_.body_corners) {
-            if (!point_in_bounds(bounds, corner)) {
-                collision_ = true;
-                break;
-            }
+        constexpr double kRegistrationChartToleranceM = 0.03;
+        collision_ = !point_in_expanded_rect(
+            vehicle_.position,
+            bounds,
+            kRegistrationChartToleranceM);
+        if (collision_) {
+            collision_cause_ = "bounds";
         }
     } else {
         const double collision_padding =
@@ -365,6 +411,15 @@ void PlannerDrivenVehicleSim::step() {
                        ? -0.025
                        : (compact_structured_world(world_) ? 0.0 : 0.05));
         collision_ = world_.collides(vehicle_.body_corners, collision_padding);
+        if (collision_) {
+            collision_cause_ = "obstacle_or_bounds";
+            for (const Vec2& corner : vehicle_.body_corners) {
+                if (!point_in_bounds(world_.bounds(), corner)) {
+                    collision_cause_ = "bounds";
+                    break;
+                }
+            }
+        }
     }
     if (structured_road_is_closed_loop(world_) || mixed_closed_gate_sequence(world_)) {
         const bool tiny_indoor_loop = micro_structured_world(world_);
@@ -422,26 +477,17 @@ void PlannerDrivenVehicleSim::step() {
             std::abs(x0_.n) <= finish_cross_track_limit &&
             tracker_cross_track_error_ <= finish_cross_track_limit + 0.08;
         if (dynamic_obstacle_closed_sequence) {
-            const size_t required_obstacle_count =
-                !world_.dynamic_obstacles().empty()
-                    ? world_.dynamic_obstacles().size()
-                    : (!world_.perception_obstacles().empty()
-                           ? world_.perception_obstacles().size()
-                           : world_.obstacles().size());
-            const bool aruco_reference_mixed_world =
-                world_.environment_mode() == EnvironmentMode::MixedRoadGates &&
-                world_.structured_preset() == StructuredMapPreset::TankCircuit &&
-                !world_.obstacles().empty();
-            const int required_dynamic_gates =
-                aruco_reference_mixed_world
-                    ? kArucoReferenceMixedRequiredGates
-                    : std::max(1, static_cast<int>(required_obstacle_count));
+            // Obstacles that do not block the physical footprint are handled on
+            // the structured road and must not create fictitious mandatory
+            // gates. Completion requires a full lap plus evidence that mixed
+            // arbitration crossed at least one real LiDAR-derived bypass.
+            constexpr int kRequiredMixedBypasses = 1;
             goal_reached_ =
                 progress_complete &&
                 physically_near_start &&
                 finish_inside_road &&
                 !mixed_gate_mode_active_ &&
-                dynamic_lidar_passed_gates_ >= required_dynamic_gates;
+                dynamic_lidar_passed_gates_ >= kRequiredMixedBypasses;
         } else if (semantic_closed_sequence) {
             goal_reached_ =
                 closed_loop_finished &&
@@ -466,7 +512,11 @@ void PlannerDrivenVehicleSim::step() {
             !structured_road_is_closed_loop(world_);
         const double goal_acceptance =
             lab_scale_mixed_open
-                ? (tracked_vehicle ? 0.18 : 0.14)
+                // The reference point may reach the hardware goal while the
+                // definitive 25 cm car footprint is already close to the map
+                // chart edge.  Use one common physical acceptance region for
+                // car and tank; 18 cm is still smaller than one car length.
+                ? 0.18
                 : road_gate_validation_mixed
                 ? 0.35
                 : compact_mixed

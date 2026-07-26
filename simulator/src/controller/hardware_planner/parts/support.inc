@@ -481,6 +481,8 @@ VehicleGeometry make_vehicle_geometry(const HardwarePlannerConfig& config) {
     geometry.track = config.drive.track_width;
     geometry.body_length = config.drive.body_length;
     geometry.body_width = config.drive.body_width;
+    geometry.wheel_length = config.drive.wheel_or_belt_length;
+    geometry.wheel_width = config.drive.wheel_or_belt_width;
     geometry.wheel_radius = config.drive.wheel_radius;
     geometry.max_steer_angle = config.drive.max_steer_angle;
     geometry.max_steer_rate = config.drive.max_steer_rate;

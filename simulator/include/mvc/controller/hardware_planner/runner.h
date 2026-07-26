@@ -23,9 +23,11 @@ struct DifferentialDriveGeometry {
     double cg_to_front = 0.09;
     double cg_to_rear = 0.09;
     double track_width = 0.13;
-    double body_length = 0.25;
-    double body_width = 0.15;
-    double wheel_radius = 0.032;
+    double body_length = measured_robot::kCarBodyLengthM;
+    double body_width = measured_robot::kCarBodyWidthM;
+    double wheel_or_belt_length = measured_robot::kCarWheelDiameterM;
+    double wheel_or_belt_width = 0.020;
+    double wheel_radius = measured_robot::kCarWheelRadiusM;
     std::int32_t encoder_ticks_per_revolution = 360;
     double max_steer_angle = 0.52;
     double max_steer_rate = 1.8;
@@ -69,6 +71,9 @@ struct LidarLocalizationConfig {
     double yaw_search_step_rad = 0.03;
     double front_sector_half_angle_rad = 0.35;
     double obstacle_stop_distance_m = 0.28;
+    double max_controller_age_s = 0.25;
+    double max_lidar_age_s = 0.35;
+    bool motion_compensate_scan = true;
 };
 
 struct GapExtractionConfig {
@@ -172,6 +177,13 @@ struct HardwarePlannerConfig {
     bool use_encoder_odometry = true;
     bool planner_safety_stop_enabled = false;
     bool mapping_lidar_enabled = false;
+    // Opt-in until firmware 1.3 (car) / 1.11 (tank) has been flashed.
+    bool use_mcu_velocity_closed_loop = false;
+    std::string calibration_profile_name = "builtin_defaults";
+    std::string calibration_profile_version = "0";
+    std::string calibration_profile_path;
+    std::string calibration_profile_hash = "builtin";
+    bool wheel_radius_calibrated = false;
     HardwareLocalizationPolicy localization_policy = HardwareLocalizationPolicy::Auto;
     VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     DifferentialDriveGeometry drive{};
@@ -198,6 +210,8 @@ struct HardwareControlCommand {
     double target_speed = 0.0;
     double target_yaw_rate = 0.0;
     double target_curvature = 0.0;
+    double target_left_wheel_speed_mps = 0.0;
+    double target_right_wheel_speed_mps = 0.0;
     bool safety_stop = false;
 };
 
@@ -272,6 +286,21 @@ struct HardwareTelemetrySample {
     double external_pose_age_s = 0.0;
     double external_position_error_m = 0.0;
     double external_yaw_error_deg = 0.0;
+    double controller_age_s = 0.0;
+    double lidar_age_s = 0.0;
+    double lidar_scan_duration_s = 0.0;
+    double lidar_scan_reused = 0.0;
+    double mcu_clock_offset_s = 0.0;
+    double mcu_clock_jitter_s = 0.0;
+    double imu_age_s = 0.0;
+    double encoder_age_s = 0.0;
+    double slam_pose_valid = 0.0;
+    double slam_pose_x = 0.0;
+    double slam_pose_y = 0.0;
+    double slam_pose_yaw = 0.0;
+    double slam_position_innovation_m = 0.0;
+    double slam_yaw_innovation_deg = 0.0;
+    double slam_correction_accepted = 0.0;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -286,6 +315,12 @@ struct HardwarePlannerDiagnostics {
     int accumulated_lidar_points = 0;
     int no_motion_command_cycles = 0;
     double chosen_gate_distance = std::numeric_limits<double>::infinity();
+    double controller_age_s = 0.0;
+    double lidar_age_s = 0.0;
+    double lidar_scan_duration_s = 0.0;
+    bool lidar_scan_reused = false;
+    int stale_controller_drops = 0;
+    int stale_lidar_drops = 0;
 };
 
 struct HardwarePlannerReport {
@@ -362,6 +397,7 @@ class HardwarePlannerRunner {
     const std::vector<GateSpec>& gate_specs() const { return gate_specs_; }
     const std::vector<int>& visible_gate_indices() const { return visible_gate_indices_; }
     const HardwarePlannerDiagnostics& diagnostics() const { return diagnostics_; }
+    bool apply_slam_pose_correction(const Vec2& position, double yaw);
     RealRobotBridge& bridge() { return bridge_; }
     const RealRobotBridge& bridge() const { return bridge_; }
 
@@ -436,6 +472,7 @@ class HardwarePlannerRunner {
     void update_planner_references(double dt);
     void update_selected_trajectory();
     void compute_control_command(double dt);
+    void send_last_control_command(bool force);
     void push_history();
 
     double compute_min_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const;
@@ -561,6 +598,7 @@ class HardwarePlannerRunner {
     double stuck_recovery_until_s_ = -1.0;
     double stuck_recovery_direction_ = 1.0;
     double last_controller_rearm_time_s_ = -1.0;
+    double active_lidar_scan_duration_s_ = 0.0;
     bool use_dynamic_gap_gates_ = false;
     bool gap_recovery_turn_active_ = false;
     int locked_gap_invalid_streak_ = 0;
@@ -571,6 +609,12 @@ class HardwarePlannerRunner {
     int passed_unstructured_gap_count_ = 0;
     bool safety_stop_active_ = false;
     int next_dynamic_gap_track_id_ = 1;
+    bool slam_pose_valid_ = false;
+    bool last_slam_correction_accepted_ = false;
+    Vec2 last_slam_position_{};
+    double last_slam_yaw_ = 0.0;
+    double last_slam_position_innovation_m_ = 0.0;
+    double last_slam_yaw_innovation_rad_ = 0.0;
 };
 
 }  // namespace thesis_sim

@@ -6,6 +6,7 @@ HardwarePlannerRunner::HardwarePlannerRunner(WorldMap world,
       geometry_(make_vehicle_geometry(config_)),
       bridge_(std::move(bridge_options)) {
     estimator_.set_geometry(geometry_);
+    estimator_.set_tracked_vehicle(config_.vehicle_model == VehicleModelKind::TrackedVehicle);
     initialize_planner_state();
     reset();
 }
@@ -115,6 +116,27 @@ void HardwarePlannerRunner::connect() {
         throw ProtocolResponseError("Controller telemetry not ready after connect");
     }
 
+    if (config_.use_mcu_velocity_closed_loop) {
+        const ControllerTelemetry& telemetry = bridge_.observation().controller;
+        const std::uint8_t required_minor =
+            config_.vehicle_model == VehicleModelKind::TrackedVehicle ? 11U : 3U;
+        if (telemetry.fw_major != 1U || telemetry.fw_minor < required_minor) {
+            throw ProtocolResponseError(
+                "--mcu-wheel-pid requires firmware >= 1." +
+                std::to_string(required_minor) +
+                "; detected " + std::to_string(telemetry.fw_major) + "." +
+                std::to_string(telemetry.fw_minor));
+        }
+        bridge_.config_set(
+            static_cast<std::uint8_t>(ConfigParamId::EncoderTicksPerRevolution),
+            ConfigValueType::Uint16,
+            config_.drive.encoder_ticks_per_revolution);
+        bridge_.config_set(
+            static_cast<std::uint8_t>(ConfigParamId::WheelRadiusMicrometers),
+            ConfigValueType::Uint32,
+            static_cast<std::int64_t>(std::llround(config_.drive.wheel_radius * 1.0e6)));
+    }
+
     reset();
     bridge_.send_pwm(0, 0, true);
 }
@@ -174,6 +196,7 @@ void HardwarePlannerRunner::reset() {
         geometry_.max_curvature = std::max(geometry_.max_curvature, 5.50);
     }
     estimator_.set_geometry(geometry_);
+    estimator_.set_tracked_vehicle(config_.vehicle_model == VehicleModelKind::TrackedVehicle);
     MpcFollowerConfig mpc_config{};
     if (tiny_indoor_loop) {
         mpc_config.horizon_steps = 5;
@@ -276,6 +299,13 @@ void HardwarePlannerRunner::reset() {
     stuck_recovery_until_s_ = -1.0;
     stuck_recovery_direction_ = 1.0;
     last_controller_rearm_time_s_ = -1.0;
+    active_lidar_scan_duration_s_ = 0.0;
+    slam_pose_valid_ = false;
+    last_slam_correction_accepted_ = false;
+    last_slam_position_ = {};
+    last_slam_yaw_ = 0.0;
+    last_slam_position_innovation_m_ = 0.0;
+    last_slam_yaw_innovation_rad_ = 0.0;
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
     gap_recovery_turn_active_ = false;
     stall_boost_active_ = false;
@@ -303,6 +333,7 @@ void HardwarePlannerRunner::reset() {
     initialize_planner_state();
     sync_road_from_world();
     estimator_.set_geometry(geometry_);
+    estimator_.set_tracked_vehicle(config_.vehicle_model == VehicleModelKind::TrackedVehicle);
     estimator_.reset(world_.start(), world_.start_heading());
     reset_pose(world_.start(), world_.start_heading());
 }
@@ -869,4 +900,3 @@ bool HardwarePlannerRunner::lidar_pose_correction_enabled_for_current_mode() con
                    !compact_hardware_mixed_lab_world(world_);
     }
 }
-

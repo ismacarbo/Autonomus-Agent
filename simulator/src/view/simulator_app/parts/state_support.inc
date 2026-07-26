@@ -15,6 +15,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,7 @@
 #include "mvc/controller/simulation_planner/simulator.h"
 #include "mvc/controller/slam/slam_toolbox_bridge.h"
 #include "mvc/model/reporting/slam_reference_exporter.h"
+#include "mvc/model/navigation/robot_calibration_profile.h"
 #include "mvc/model/world/scenario_model.h"
 #include "mvc/view/canvas/world_canvas_view.h"
 #include "mvc/view/live_stream/live_view_stream.h"
@@ -68,6 +70,8 @@ using thesis_sim::mvc::controller::parse_app_options;
 using thesis_sim::mvc::controller::report_status_string;
 using thesis_sim::mvc::controller::write_json_report;
 using thesis_sim::mvc::model::fit_hardware_structured_world;
+using thesis_sim::mvc::model::load_robot_calibration_profile;
+using thesis_sim::mvc::model::RobotCalibrationProfile;
 using thesis_sim::mvc::model::fit_simulation_structured_world;
 using thesis_sim::mvc::model::hardware_mixed_preset_from_world;
 using thesis_sim::mvc::model::hardware_mixed_world_from_preset;

@@ -74,6 +74,21 @@ void HardwarePlannerRunner::push_history() {
         external_pose_valid
             ? std::abs(wrap_angle(estimate_.yaw - external_pose_reference_.yaw)) * 180.0 / kPi
             : 0.0;
+    const double controller_age_s =
+        observation.have_controller_telemetry &&
+                observation.controller.rx_timestamp_s > 0.0
+            ? std::max(0.0, observation.host_timestamp_s - observation.controller.rx_timestamp_s)
+            : -1.0;
+    const double imu_age_s =
+        observation.have_controller_telemetry &&
+                observation.controller.imu_host_timestamp_s > 0.0
+            ? std::max(0.0, observation.host_timestamp_s - observation.controller.imu_host_timestamp_s)
+            : -1.0;
+    const double encoder_age_s =
+        observation.have_controller_telemetry &&
+                observation.controller.encoder_host_timestamp_s > 0.0
+            ? std::max(0.0, observation.host_timestamp_s - observation.controller.encoder_host_timestamp_s)
+            : -1.0;
 
     history_.push_back({
         sim_time_,
@@ -138,6 +153,25 @@ void HardwarePlannerRunner::push_history() {
         external_pose_age_s,
         external_position_error_m,
         external_yaw_error_deg,
+        controller_age_s,
+        observation.have_lidar_scan ? observation.lidar_scan_age_s : -1.0,
+        observation.lidar_scan_duration_s,
+        observation.lidar_scan_reused ? 1.0 : 0.0,
+        observation.have_controller_telemetry
+            ? observation.controller.mcu_to_host_offset_s
+            : 0.0,
+        observation.have_controller_telemetry
+            ? observation.controller.mcu_clock_jitter_s
+            : 0.0,
+        imu_age_s,
+        encoder_age_s,
+        slam_pose_valid_ ? 1.0 : 0.0,
+        last_slam_position_.x,
+        last_slam_position_.y,
+        last_slam_yaw_,
+        last_slam_position_innovation_m_,
+        last_slam_yaw_innovation_rad_ * 180.0 / kPi,
+        last_slam_correction_accepted_ ? 1.0 : 0.0,
     });
 
     if (static_cast<int>(history_.size()) > config_.max_history) {

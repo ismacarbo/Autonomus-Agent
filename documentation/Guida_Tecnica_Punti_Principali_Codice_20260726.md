@@ -184,13 +184,25 @@ Le geometrie sono divise in:
 `fit_hardware_structured_world` e `fit_simulation_structured_world` passano
 entrambi da `normalize_structured_world`. Per i preset structured non custom:
 
-```text
-arena              1.20 x 1.20 m
-span della strada  0.90 m
-body robot         0.25 x 0.15 m
-wheelbase          0.18 m
-track              0.13 m
-```
+Le dimensioni definitive sono centralizzate in
+`model/navigation/vehicle_dynamics.h`, namespace `measured_robot`, e vengono
+riusate da simulatore, runner hardware, collisioni, self-hit LiDAR e profili:
+
+| Grandezza | Car | Tank |
+| --- | ---: | ---: |
+| body, lunghezza x larghezza | 0.250 x 0.150 m | 0.165 x 0.146 m |
+| ruota / cingolo | diametro 0.0654 m | 0.158 x 0.0447 m |
+| raggio ruota / raggio efficace | 0.0327 m, misurato | 0.032 m, provvisorio |
+| distanza fra centri cingoli | - | 0.1013 m |
+
+Per il tank `0.1013 = 0.146 - 0.0447`. La misura 0.032 m non e' una
+dimensione esterna del cingolo: e' il raggio cinematico efficace ancora da
+identificare con encoder e distanza reale. Il profilo lo dichiara infatti con
+`wheel_radius_calibrated=false`.
+
+I preset structured usati sono normalizzati in un'arena 1.20 x 1.20 m, con
+span utile della strada pari a 0.90 m. Wheelbase e limiti cinematici restano
+parametri del modello e del profilo, non vengono ricavati dal disegno GUI.
 
 Le mappe unstructured e mixed non vengono miniaturizzate ciecamente: devono
 preservare varchi compatibili con il footprint fisico. `validate_hardware_world`
@@ -254,6 +266,28 @@ Il risultato e' un `RealRobotObservation` contenente timestamp host,
 `ControllerTelemetry`, scan LiDAR e flag di validita'. Una scansione buona viene
 conservata per un breve fallback; se lo stream cade, il bridge prova letture
 meno restrittive, usa temporaneamente la cache e programma la riconnessione.
+
+### Sincronizzazione temporale
+
+La sincronizzazione non usa l'istante in cui il planner legge lo snapshot come
+timestamp di tutte le misure:
+
+1. `RSPSerialBridge::synchronize_mcu_time` stima l'offset MCU-host da
+   `mcu_time_ms` e timestamp monotono di ricezione;
+2. l'offset viene filtrato e il residuo alimenta `mcu_clock_jitter_s`;
+3. IMU, encoder, motor state, safety e heartbeat conservano sia timestamp di
+   ricezione sia timestamp host sincronizzato;
+4. `RealRobotBridge::capture_lidar_scan` conserva start, end, midpoint e durata
+   originale dello scan;
+5. `step_with_observation` misura l'eta' effettiva e scarta controller o LiDAR
+   oltre `max_controller_age_s` / `max_lidar_age_s`;
+6. `update_lidar_hits_world` interpola indietro posa e yaw per ogni beam lungo
+   la durata della scansione quando `motion_compensate_scan=true`.
+
+Le metriche `controller_age_s`, `lidar_age_s`, `lidar_scan_duration_s`,
+`mcu_clock_offset_s`, `mcu_clock_jitter_s`, `stale_controller_drops` e
+`stale_lidar_drops` sono disponibili nella diagnostica hardware. Una scansione
+riutilizzata e' marcata esplicitamente; non viene fatta passare per nuova.
 
 ### Trasformazione base-link -> world
 
@@ -326,6 +360,18 @@ File: `model/navigation/state_estimator_ekf.cpp`.
 - `update_lidar_pose` corregge posizione e, quando autorizzato, yaw;
 - `sync_estimate_from_ekf_state` pubblica il risultato al runner.
 
+Il bias giroscopico e' uno stato adattivo separato: viene appreso soltanto
+quando encoder e yaw-rate indicano robot quasi fermo, poi viene sottratto alla
+misura. Il rumore di processo cresce con `abs(yaw_rate)`; per il tank usa
+`tracked_turn_process_noise_gain`, perche' skid e rotazioni sul posto hanno
+incertezza strutturalmente maggiore. Le correzioni LiDAR sono protette da gate
+di Mahalanobis e contatori accepted/rejected; una sequenza di rifiuti abilita
+solo un recovery piccolo e controllato.
+
+Il predict integra la velocita' nel frame del base-link. Non introduce uno
+sideslip dedotto soltanto dalla curvatura: encoder e gyro non osservano tale
+variabile e l'iniezione precedente produceva deriva anche in Sim-Ideal.
+
 ### Correzione LiDAR
 
 `HardwarePlannerRunner::correct_pose_with_lidar` esegue una ricerca locale
@@ -338,6 +384,21 @@ longitudinale/laterale e' limitato esplicitamente.
 In unstructured la point map nasce dalla stessa posa stimata: per evitare un
 feedback circolare, le correzioni sono piccole e ammesse soprattutto durante
 avanzamento reale.
+
+### SLAM Toolbox
+
+Il client opzionale e' in `controller/slam/slam_toolbox_bridge.cpp`; il sidecar
+ROS 2 e la configurazione sono sotto `tools/slam_toolbox_bridge/`. Il runner
+invia odometria, timestamp midpoint e scan, e riceve occupancy, posa corretta e
+diagnostica del grafo.
+
+Senza `--slam-pose-feedback` il canale e' soltanto diagnostico. Con
+`--slam-bridge-port 9760 --slam-pose-feedback`,
+`HardwarePlannerRunner::apply_slam_pose_correction` limita ogni innovazione a
+6 cm e 0.08 rad, passa ancora dal gate statistico dell'EKF e rifiuta divergenze
+oltre 0.75 m / 0.90 rad. Il recovery, dopo rifiuti consecutivi, e' limitato a
+1.5 cm e 0.02 rad. La posa motion-capture rimane comunque indipendente e non
+entra in questa catena.
 
 ### Posa esterna
 
@@ -367,18 +428,26 @@ File: `controller/simulation_planner/parts/dynamic_gates.inc`.
 `update_dynamic_lidar_gates` riceve i candidati estratti dagli hit, ordina per
 score e pubblica o aggiorna il gate attivo. Applica:
 
-- match spaziale con il gate precedente;
+- identita' numerica persistente `DynamicLidarGateTrack::id`;
+- match spaziale con hit/miss e confidenza del track;
 - smoothing di posizione, heading, larghezza e score;
-- hold temporale quando il candidato scompare per pochi frame;
-- regole specifiche di mixed per non perdere il bypass attivo;
-- distinzione tra gate intermedio e target finale.
+- stabilita' minima prima della selezione;
+- lock del track scelto fino all'attraversamento fisico;
+- cambio soltanto verso candidati stabilmente migliori;
+- rimozione immediata del track passato, per non ripubblicarlo;
+- regole specifiche mixed per non perdere il bypass attivo.
 
-Un candidato coincidente con il goal e' marcato `final`: resta selezionabile ma
-non viene contato come gate attraversato con la tolleranza larga degli
-intermedi.
+Il target coincidente con il goal e' riconosciuto dalla posizione. Resta un
+target selezionabile dal planner legacy, ma
+`update_unstructured_gate_progress` lo esclude dal conteggio degli intermedi.
+La traiettoria finale ha un fallback locale dedicato: il planner non puo'
+rifiutare il goal e lasciare il robot in coast verso i bounds.
 
 `update_unstructured_gate_progress` considera il passaggio lungo l'asse della
-rotta e la distanza laterale, non soltanto un raggio dal centro.
+rotta e la distanza laterale, non soltanto un raggio dal centro. Nei preset
+deterministici gli anchor semantici vengono pubblicati soltanto quando almeno
+tre beam LiDAR confermano spazio libero oltre il target; non vengono mescolati
+con settori arbitrari che cambierebbero il numero di gate della mappa.
 
 ### Gap extraction sul robot
 
@@ -448,6 +517,21 @@ File: `controller/simulation_planner/parts/mixed_arbitration.inc`.
 - gate mode: target LiDAR locale;
 - rejoin: ritorno graduale alla strada dopo il gate.
 
+Per Closed Obstacle Road la pipeline completa e':
+
+```text
+LiDAR -> gate track persistente -> mixed score/hysteresis -> gate lock
+      -> traiettoria locale -> attraversamento -> rejoin sempre in avanti
+      -> centerline -> MPC
+```
+
+La selezione rispetta il contratto del detector: score numerico minore significa
+candidato migliore. Durante gate e rejoin la velocita' viene ridotta usando
+clearance e curvatura. Il rejoin usa una cubica locale con endpoint davanti al
+progresso corrente, non la proiezione globale piu' vicina. Hardware Lab, che ha
+una strada aperta, usa un rejoin distinto verso `road_rejoin` e non applica il
+wrap dei circuiti chiusi.
+
 ### Hardware
 
 `compute_mixed_road_forward_clearance` e
@@ -457,13 +541,13 @@ Quando il fronte e' bloccato, `gap_detection.inc` cerca un bypass e
 `gap_workflow.inc` lo blocca fino all'attraversamento. Terminato il gate,
 `trajectory.inc` ricostruisce il riferimento sulla strada.
 
-Il wandering della car su Closed Obstacle Road va quindi cercato in tre punti,
-in quest'ordine:
+Se ricompare wandering su Closed Obstacle Road, l'ordine diagnostico e':
 
-1. stabilita' del candidato in `gap_detection.inc`;
-2. durata del lock/rejoin in `gap_workflow.inc`;
-3. transizione strada-gate in `mixed_arbitration.inc` per simulazione o nei
-   block score hardware.
+1. `dynamic_gate_track_id`, confidenza e target switch;
+2. `mixed_gate_score` contro `mixed_structured_score`;
+3. stato road/gate/rejoin e durata del rejoin;
+4. progresso structured prima/dopo il rejoin;
+5. target curvature, heading error MPC e clearance minima.
 
 Non va corretto nel mapping PWM finche' il target selezionato cambia posizione
 o modalità: il PWM e' uno strato successivo.
@@ -569,6 +653,25 @@ limiti di accelerazione, velocita', sterzo e ruote.
 Il footprint orientato pubblicato dal modello viene passato a
 `WorldMap::collides`.
 
+## Profili calibrated versionati
+
+I profili sono:
+
+- `config/robots/car_calibrated.json`;
+- `config/robots/tank_calibrated.json`.
+
+Il loader e' `model/navigation/robot_calibration_profile.cpp`. Valida schema,
+modello e valori positivi, calcola un hash FNV-1a del contenuto e applica in un
+solo punto geometria, encoder, attuazione, ritardo, rumori IMU/LiDAR e limiti.
+Il simulatore carica automaticamente il profilo del robot in Sim-Calibrated;
+il runner hardware permette override con `--calibration-profile PATH`.
+
+Report e live scene conservano `profile_name`, `profile_version`, path e hash.
+Il JSON simulato salva anche `configuration_hash`, seed e provenance del
+planner. I parametri di attuazione attuali sono baseline iniziali: il campo
+`measurement_status` dichiara esplicitamente che PWM, costante motore e raggio
+efficace tank richiedono ancora identificazione con dati reali.
+
 ## Da target cinematici a PWM
 
 Il punto principale e' `HardwarePlannerRunner::compute_control_command` in
@@ -626,6 +729,38 @@ Il firmware applica direzione, ramping e `analogWrite` nei file sotto
 `low_level/`. I cambiamenti al mapping host non devono essere confusi con il
 ramping implementato dal controller fisico.
 
+### Controllo ruote chiuso sul microcontrollore
+
+I firmware principali sono:
+
+- car: `low_level/car/rspV1_arduino/rspV1_arduino.ino`;
+- tank: `low_level/tank/rspV1_tank/rspV1_tank.ino`;
+- copia tank mantenuta identica: `low_level/tank/tank_firmware/tank_firmware.ino`.
+
+Con l'opzione host `--mcu-wheel-pid`, il payload `MOTOR_CMD` usa
+`CONTROL_MODE_WHEEL_VELOCITY = 0x02` e i due `int16` sono target firmati in
+mm/s, non PWM. Il firmware esegue ogni 20 ms:
+
+```text
+target velocita' ruota
+  -> feed-forward
+  + Kp * errore encoder
+  + Ki * integrale anti-windup
+  -> target PWM
+  -> ramping, safety e analogWrite
+```
+
+I parametri RSP `0x0B..0x0F` configurano `Kp`, `Ki`, ticks/giro, raggio in
+micrometri e feed-forward. Al connect il runner invia ticks/giro e raggio del
+profilo; inoltre rifiuta firmware troppo vecchi. Stop, timeout e cambio modalita'
+azzerano target, integrali e snapshot encoder. `MOTOR_FLAG` bit 5 segnala che
+l'anello chiuso e' attivo.
+
+Il mapping PWM host resta disponibile come modalita' legacy e come riferimento
+feed-forward/calibrazione. Prima del flash occorre compilare con Arduino CLI o
+IDE per la scheda reale e verificare segno encoder, ticks/giro e direzione di
+entrambe le ruote su cavalletto.
+
 ## Safety e gestione degli errori
 
 La sicurezza e' distribuita su più livelli:
@@ -660,9 +795,13 @@ equivale a completare la missione.
 
 ### Unstructured
 
-Il goal e' raggiunto dopo il numero richiesto di varchi fisicamente attraversati.
 Un gate locked deve essere superato longitudinalmente e restare entro il
 corridoio laterale. Dopo ogni passaggio il sistema riparte dalla fase di scan.
+Nel simulatore il conteggio degli intermedi non sostituisce la distanza dal
+goal. Sul runner hardware, dopo almeno un varco reale, il goal globale viene
+ammesso come target successivo soltanto se scan corrente, occupancy e mappa di
+percezione confermano libero l'intero segmento: la missione termina quindi
+nella regione fisica del goal, non su un secondo settore libero arbitrario.
 
 ### Mixed
 
@@ -689,6 +828,27 @@ soltanto se entrambi gli artefatti sono stati scritti.
 
 Il PNG contiene free-space rays, occupancy, ostacoli/strada di riferimento,
 trail stimato, start, goal e posizione finale.
+
+### Robustezza statistica
+
+`scripts/run_statistical_robustness_matrix.sh` esegue di default 20 seed per
+ogni combinazione primaria car/tank e ideal/calibrated. Le variabili
+`SEEDS`, `FIRST_SEED`, `MAX_STEPS`, `TIMEOUT_SECONDS`, `MIN_SUCCESS_RATE` e
+`OUTPUT_DIR` permettono di estendere la campagna a 50 seed senza cambiare il
+codice.
+
+`runs.tsv` conserva combinazione, seed, status, return code e report; ogni
+report contiene hash configurazione/profilo, collision cause, minimum clearance,
+gate switch, tempo road/gate/rejoin, path length, errore laterale, variazione
+steering e timing planner. `aggregate.tsv` calcola success rate per famiglia e
+fallisce sotto la soglia, 0.95 di default. Gli artefatti JSON e PNG restano la
+sorgente per analisi piu' severe, ad esempio 99%, zero collisioni e p95 sotto il
+periodo del ciclo.
+
+La regressione breve e riproducibile e'
+`scripts/run_primary_mvc_regression_matrix.sh`: usa soltanto Structured
+Validation/Circle, tutte le Unstructured deterministiche e Mixed
+Closed-Obstacle/Hardware, con limite 4000 step.
 
 ### Hardware
 
@@ -811,10 +971,16 @@ Baseline al 2026-07-26:
 ```text
 CTest                                  4/4
 Structured Validation + Circle         8/8
-Matrice primaria                       31 goal / 9 collisioni note
+Unstructured deterministiche          24/24
+Mixed Closed Obstacle + Hardware        8/8
+Matrice primaria                       40/40 goal reached
 JSON + SLAM PNG                        40/40
 Hardware Lab runner sintetico          4/4 goal reached
+Closed Obstacle multi-seed             20/20 (5 seed per combinazione)
 ```
 
-Le nove collisioni note non sono state introdotte dal refactor: sono i casi
-gia' classificati di bordo finale, Tight Corridor e Closed Obstacle Road car.
+La campagna statistica completa resta configurata a 20 seed per combinazione e
+va eseguita separatamente prima della raccolta dati definitiva. I firmware PID
+sono stati controllati strutturalmente ma non compilati in questa workstation:
+`arduino-cli` non e' installato e il core/board reali devono essere selezionati
+prima del flash.

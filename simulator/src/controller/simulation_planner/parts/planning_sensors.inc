@@ -186,6 +186,25 @@ void PlannerDrivenVehicleSim::plan_if_needed() {
         chosen_gate_global = active_indices[static_cast<size_t>(chosen_gate)];
     }
 
+    // The legacy primitive selector may decline a target flagged by the
+    // perception layer as the physical mission goal, especially after a
+    // tracked vehicle has already moved slightly beyond its ideal approach
+    // tangent.  The goal is not an optional intermediate gate: keep it as the
+    // selected target and let the local trajectory/MPC close the remaining
+    // distance instead of coasting toward the map boundary.
+    if (chosen_gate_global < 0 && use_dynamic_lidar_gates()) {
+        for (int index : active_indices) {
+            if (index >= 0 &&
+                index < static_cast<int>(gates_.size()) &&
+                distance(gate_position(gates_[static_cast<size_t>(index)]),
+                         world_.goal()) <= 0.02) {
+                chosen_gate_global = index;
+                next_j = std::max(next_j, 0.0);
+                break;
+            }
+        }
+    }
+
     commit_planner_command(next_j, next_r);
     refresh_gate_diagnostics();
     if (chosen_gate_global >= 0 && chosen_gate_global < static_cast<int>(gates_.size())) {
@@ -477,4 +496,3 @@ void PlannerDrivenVehicleSim::regenerate_gate_layout(std::uint32_t seed) {
     world_.update_gate_layout(sim_time_);
     sync_gate_specs_from_world(false);
 }
-

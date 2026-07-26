@@ -5,6 +5,9 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
         dynamic_lidar_stable_steps_ = 0;
         dynamic_lidar_active_gate_width_ = 0.0;
         dynamic_lidar_active_gate_score_ = 0.0;
+        dynamic_lidar_active_gate_confidence_ = 0.0;
+        active_dynamic_lidar_gate_track_id_ = -1;
+        dynamic_lidar_gate_tracks_.clear();
         return;
     }
 
@@ -24,11 +27,123 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
         dynamic_lidar_stable_steps_ = 0;
         dynamic_lidar_active_gate_width_ = 0.0;
         dynamic_lidar_active_gate_score_ = 0.0;
+        dynamic_lidar_active_gate_confidence_ = 0.0;
+        active_dynamic_lidar_gate_track_id_ = -1;
+        dynamic_lidar_gate_tracks_.clear();
         return;
     }
 
-    const std::vector<DynamicLidarGateCandidate> candidates =
+    const std::vector<DynamicLidarGateCandidate> raw_candidates =
         extract_dynamic_lidar_gate_candidates();
+    const double span = world_span_m(world_);
+    const double track_match_radius =
+        span <= 2.25 ? 0.20 : (span <= 5.0 ? 0.45 : 1.00);
+    const int track_max_misses = span <= 5.0 ? 10 : 7;
+    const int track_min_hits = mixed_mode_enabled() ? 3 : 2;
+    std::vector<bool> track_matched(dynamic_lidar_gate_tracks_.size(), false);
+
+    for (const DynamicLidarGateCandidate& raw : raw_candidates) {
+        int best_track = -1;
+        double best_distance = track_match_radius;
+        for (size_t i = 0; i < dynamic_lidar_gate_tracks_.size(); ++i) {
+            if (track_matched[i]) {
+                continue;
+            }
+            const double candidate_distance =
+                distance(dynamic_lidar_gate_tracks_[i].position, raw.position);
+            if (candidate_distance <= best_distance) {
+                best_distance = candidate_distance;
+                best_track = static_cast<int>(i);
+            }
+        }
+
+        if (best_track < 0) {
+            DynamicLidarGateTrack track;
+            track.id = next_dynamic_lidar_gate_track_id_++;
+            track.position = raw.position;
+            track.heading = raw.heading;
+            track.score = raw.score;
+            track.width = raw.width;
+            track.hits = 1;
+            track.last_seen_step = step_count_;
+            dynamic_lidar_gate_tracks_.push_back(track);
+            track_matched.push_back(true);
+            continue;
+        }
+
+        DynamicLidarGateTrack& track =
+            dynamic_lidar_gate_tracks_[static_cast<size_t>(best_track)];
+        const bool locked_track =
+            track.id == active_dynamic_lidar_gate_track_id_ &&
+            (!mixed_mode_enabled() || mixed_gate_mode_active_);
+        const double alpha = locked_track ? 0.12 : 0.24;
+        track.position = {
+            (1.0 - alpha) * track.position.x + alpha * raw.position.x,
+            (1.0 - alpha) * track.position.y + alpha * raw.position.y,
+        };
+        track.heading = wrap_angle(
+            track.heading + 0.18 * wrap_angle(raw.heading - track.heading));
+        track.width = 0.75 * track.width + 0.25 * raw.width;
+        track.score = 0.75 * track.score + 0.25 * raw.score;
+        track.hits = std::min(track.hits + 1, 1000000);
+        track.misses = 0;
+        track.last_seen_step = step_count_;
+        track_matched[static_cast<size_t>(best_track)] = true;
+    }
+
+    for (size_t i = 0; i < dynamic_lidar_gate_tracks_.size(); ++i) {
+        if (i >= track_matched.size() || !track_matched[i]) {
+            ++dynamic_lidar_gate_tracks_[i].misses;
+        }
+    }
+    dynamic_lidar_gate_tracks_.erase(
+        std::remove_if(
+            dynamic_lidar_gate_tracks_.begin(),
+            dynamic_lidar_gate_tracks_.end(),
+            [&](const DynamicLidarGateTrack& track) {
+                return track.misses > track_max_misses &&
+                       track.id != active_dynamic_lidar_gate_track_id_;
+            }),
+        dynamic_lidar_gate_tracks_.end());
+
+    std::vector<DynamicLidarGateCandidate> candidates;
+    candidates.reserve(dynamic_lidar_gate_tracks_.size());
+    for (const DynamicLidarGateTrack& track : dynamic_lidar_gate_tracks_) {
+        if (track.hits < track_min_hits || track.misses > 2) {
+            continue;
+        }
+        DynamicLidarGateCandidate filtered;
+        filtered.track_id = track.id;
+        filtered.position = track.position;
+        filtered.heading = track.heading;
+        filtered.score = track.score;
+        filtered.width = track.width;
+        filtered.confidence = clamp_value(
+            static_cast<double>(track.hits - track_min_hits + 1) / 6.0,
+            0.0,
+            1.0) *
+            clamp_value(1.0 - static_cast<double>(track.misses) / 3.0, 0.0, 1.0);
+        candidates.push_back(filtered);
+    }
+    std::stable_sort(
+        candidates.begin(),
+        candidates.end(),
+        [&](const DynamicLidarGateCandidate& lhs,
+            const DynamicLidarGateCandidate& rhs) {
+            const bool selection_locked =
+                !mixed_mode_enabled() || mixed_gate_mode_active_;
+            const bool lhs_locked = selection_locked &&
+                                    lhs.track_id == active_dynamic_lidar_gate_track_id_;
+            const bool rhs_locked = selection_locked &&
+                                    rhs.track_id == active_dynamic_lidar_gate_track_id_;
+            if (lhs_locked != rhs_locked) {
+                return lhs_locked;
+            }
+            // Candidate extraction defines lower scores as better (all raw
+            // candidate lists are sorted ascending). Reversing that order here
+            // selected the farthest/worst bypass in Closed Obstacle Road.
+            return lhs.score < rhs.score;
+        });
     dynamic_lidar_candidate_count_ = static_cast<int>(candidates.size());
     if (std::getenv("THESIS_TRACE_GATES") != nullptr &&
         step_count_ % 20 == 0) {
@@ -47,6 +162,11 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
     }
 
     auto publish_gate = [&](const DynamicLidarGateCandidate& candidate) {
+        if (active_dynamic_lidar_gate_track_id_ >= 0 &&
+            active_dynamic_lidar_gate_track_id_ != candidate.track_id) {
+            ++dynamic_lidar_gate_target_switches_;
+        }
+        active_dynamic_lidar_gate_track_id_ = candidate.track_id;
         gate g{};
         g.x_pos = candidate.position.x;
         g.y_pos = candidate.position.y;
@@ -55,19 +175,18 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
         g.passed = false;
         g.choose = false;
         g.too_far = false;
-        // A clear line of sight to the configured goal is represented as a
-        // final navigation target, not as another intermediate gap. Final
-        // targets remain available to action selection but are not marked as
-        // passed by the deliberately wider dynamic-gate acceptance radius.
-        g.final =
-            world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
-            distance(candidate.position, world_.goal()) <= 0.02;
+        // Keep a LiDAR-confirmed goal selectable by the legacy gate planner.
+        // That planner intentionally excludes GateSpec::final from primitive
+        // selection. update_unstructured_gate_progress() recognises this
+        // target by position and never counts it as an intermediate gate.
+        g.final = false;
         gates_.clear();
         gates_.push_back(g);
         dynamic_lidar_gate_hold_steps_ = 0;
         dynamic_lidar_stable_steps_ = 1;
         dynamic_lidar_active_gate_width_ = candidate.width;
         dynamic_lidar_active_gate_score_ = candidate.score;
+        dynamic_lidar_active_gate_confidence_ = candidate.confidence;
     };
 
     auto first_unpassed_gate_index = [&]() {
@@ -89,14 +208,20 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
             gate& active_gate = gates_[static_cast<size_t>(mixed_active_index)];
             const double best_distance = distance(gate_position(active_gate), candidate.position);
             if (best_distance <= 1.20) {
-                if (!mixed_closed_gate_sequence(world_)) {
-                    constexpr double kMixedAcquireAlpha = 0.60;
+                if (!mixed_closed_semantic_gate_sequence(world_)) {
+                    const double kMixedAcquireAlpha =
+                        mixed_closed_gate_sequence(world_) ? 0.55 : 0.60;
                     active_gate.x_pos =
                         (1.0 - kMixedAcquireAlpha) * active_gate.x_pos + kMixedAcquireAlpha * candidate.position.x;
                     active_gate.y_pos =
                         (1.0 - kMixedAcquireAlpha) * active_gate.y_pos + kMixedAcquireAlpha * candidate.position.y;
                     active_gate.road.PSI_end =
                         wrap_angle(0.75 * active_gate.road.PSI_end + 0.25 * candidate.heading);
+                    // This gate has not been selected yet: follow the best
+                    // stable track during acquisition. Once arbitration enters
+                    // gate mode the branch below freezes both ID and position
+                    // until the physical crossing.
+                    active_dynamic_lidar_gate_track_id_ = candidate.track_id;
                 }
                 active_gate.passed = false;
                 active_gate.final = false;
@@ -107,6 +232,8 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
                     0.70 * dynamic_lidar_active_gate_width_ + 0.30 * candidate.width;
                 dynamic_lidar_active_gate_score_ =
                     0.70 * dynamic_lidar_active_gate_score_ + 0.30 * candidate.score;
+                dynamic_lidar_active_gate_confidence_ =
+                    0.70 * dynamic_lidar_active_gate_confidence_ + 0.30 * candidate.confidence;
                 return;
             }
         }
@@ -148,6 +275,13 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
             }
         } else {
             for (size_t i = 0; i < candidates.size(); ++i) {
+                if (candidates[i].track_id == active_dynamic_lidar_gate_track_id_) {
+                    best_match = static_cast<int>(i);
+                    best_match_distance = distance(
+                        gate_position(active_gate),
+                        candidates[i].position);
+                    break;
+                }
                 const double d = distance(gate_position(active_gate), candidates[i].position);
                 if (d < best_match_distance) {
                     best_match_distance = d;
@@ -179,6 +313,8 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
                 0.75 * dynamic_lidar_active_gate_width_ + 0.25 * candidate.width;
             dynamic_lidar_active_gate_score_ =
                 0.75 * dynamic_lidar_active_gate_score_ + 0.25 * candidate.score;
+            dynamic_lidar_active_gate_confidence_ =
+                0.75 * dynamic_lidar_active_gate_confidence_ + 0.25 * candidate.confidence;
             return;
         }
 
@@ -195,8 +331,14 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
             pure_closed_dynamic_gate
                 ? 700
                 : (compact_open_mixed_gate
-                       ? 100
-                       : (compact_unstructured_world(world_) ? 28
+                       ? 700
+                       // A semantic anchor has already been validated by the
+                       // LiDAR before it is published.  Keep that identity
+                       // locked while the robot physically crosses it: close
+                       // to the anchor there may no longer be three beams
+                       // extending beyond the target, which is not evidence
+                       // that a different gate should be selected.
+                       : (compact_unstructured_world(world_) ? 700
                                                              : (mixed_mode_enabled() ? 12 : 36)));
         if (dynamic_lidar_gate_hold_steps_ <= hold_limit) {
             active_gate.too_far = false;
@@ -222,6 +364,8 @@ void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
         dynamic_lidar_stable_steps_ = 0;
         dynamic_lidar_active_gate_width_ = 0.0;
         dynamic_lidar_active_gate_score_ = 0.0;
+        dynamic_lidar_active_gate_confidence_ = 0.0;
+        active_dynamic_lidar_gate_track_id_ = -1;
     }
 
     if (!candidates.empty()) {
@@ -253,6 +397,13 @@ void PlannerDrivenVehicleSim::update_unstructured_gate_progress() {
         }
 
         const Vec2 current_gate = gate_position(candidate);
+        const bool dynamic_goal_target =
+            use_dynamic_lidar_gates() &&
+            world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+            distance(current_gate, world_.goal()) <= 0.02;
+        if (dynamic_goal_target) {
+            continue;
+        }
         const Vec2 previous_anchor = (i == 0) ? world_.start() : gate_position(gates_[i - 1]);
         const Vec2 next_anchor =
             (i + 1 < gates_.size()) ? gate_position(gates_[i + 1]) : world_.goal();
@@ -317,7 +468,7 @@ void PlannerDrivenVehicleSim::update_unstructured_gate_progress() {
         const bool dynamic_unstructured_reached_gate =
             dynamic_gates &&
             world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
-            gate_distance <= (compact_world ? std::max(pass_radius, 0.40) : pass_radius);
+            gate_distance <= (compact_world ? std::max(pass_radius, 0.20) : pass_radius);
         const bool compact_mixed_dynamic_gate =
             dynamic_gates && mixed_mode_enabled() && compact_world;
         const bool compact_mixed_closed =
@@ -384,31 +535,13 @@ void PlannerDrivenVehicleSim::update_unstructured_gate_progress() {
         if (lab_scale_open_dynamic_gate &&
             config_.vehicle_model == VehicleModelKind::CarLikeBicycle &&
             !world_.obstacles().empty()) {
-            Vec2 road_axis = subtract(world_.goal(), world_.start());
-            const double road_axis_norm = std::hypot(road_axis.x, road_axis.y);
-            if (road_axis_norm > 1e-6) {
-                road_axis.x /= road_axis_norm;
-                road_axis.y /= road_axis_norm;
-                for (const Rect& obstacle : world_.obstacles()) {
-                    const std::array<Vec2, 4> corners{{
-                        {obstacle.min_x, obstacle.min_y},
-                        {obstacle.max_x, obstacle.min_y},
-                        {obstacle.max_x, obstacle.max_y},
-                        {obstacle.min_x, obstacle.max_y},
-                    }};
-                    double farthest_obstacle_progress =
-                        -std::numeric_limits<double>::infinity();
-                    for (const Vec2& corner : corners) {
-                        farthest_obstacle_progress = std::max(
-                            farthest_obstacle_progress,
-                            dot_product(subtract(corner, vehicle_position), road_axis));
-                    }
-                    if (farthest_obstacle_progress > -0.5 * geometry_.body_length) {
-                        car_body_cleared_compact_obstacle = false;
-                        break;
-                    }
-                }
-            }
+            // A bypass may clear the block laterally while its centre is
+            // still behind the obstacle's far longitudinal edge.  Testing
+            // only road-axis progress therefore kept the car gate locked
+            // after the actual opening had been crossed.  Use the same
+            // oriented footprint contract as collision detection instead.
+            car_body_cleared_compact_obstacle =
+                !world_.collides(vehicle_.body_corners, -0.025);
         }
 
         if (car_body_cleared_compact_obstacle &&
@@ -419,6 +552,7 @@ void PlannerDrivenVehicleSim::update_unstructured_gate_progress() {
             candidate.choose = false;
             candidate.too_far = false;
             if (use_dynamic_lidar_gates()) {
+                const int passed_track_id = active_dynamic_lidar_gate_track_id_;
                 ++dynamic_lidar_passed_gates_;
                 dynamic_lidar_passed_gate_positions_.push_back(current_gate);
                 chosen_gate_index_ = -1;
@@ -429,6 +563,16 @@ void PlannerDrivenVehicleSim::update_unstructured_gate_progress() {
                 dynamic_lidar_stable_steps_ = 0;
                 dynamic_lidar_active_gate_width_ = 0.0;
                 dynamic_lidar_active_gate_score_ = 0.0;
+                dynamic_lidar_active_gate_confidence_ = 0.0;
+                active_dynamic_lidar_gate_track_id_ = -1;
+                dynamic_lidar_gate_tracks_.erase(
+                    std::remove_if(
+                        dynamic_lidar_gate_tracks_.begin(),
+                        dynamic_lidar_gate_tracks_.end(),
+                        [&](const DynamicLidarGateTrack& track) {
+                            return track.id == passed_track_id;
+                        }),
+                    dynamic_lidar_gate_tracks_.end());
                 if (mixed_mode_enabled()) {
                     leave_mixed_gate_mode(false);
                     if (mixed_closed_semantic_gate_sequence(world_)) {
@@ -514,4 +658,3 @@ std::vector<int> PlannerDrivenVehicleSim::active_gate_indices() const {
     }
     return indices;
 }
-

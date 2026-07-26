@@ -496,6 +496,21 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.external_pose_age_s);
     write_pod(out, sample.external_position_error_m);
     write_pod(out, sample.external_yaw_error_deg);
+    write_pod(out, sample.controller_age_s);
+    write_pod(out, sample.lidar_age_s);
+    write_pod(out, sample.lidar_scan_duration_s);
+    write_pod(out, sample.lidar_scan_reused);
+    write_pod(out, sample.mcu_clock_offset_s);
+    write_pod(out, sample.mcu_clock_jitter_s);
+    write_pod(out, sample.imu_age_s);
+    write_pod(out, sample.encoder_age_s);
+    write_pod(out, sample.slam_pose_valid);
+    write_pod(out, sample.slam_pose_x);
+    write_pod(out, sample.slam_pose_y);
+    write_pod(out, sample.slam_pose_yaw);
+    write_pod(out, sample.slam_position_innovation_m);
+    write_pod(out, sample.slam_yaw_innovation_deg);
+    write_pod(out, sample.slam_correction_accepted);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
@@ -561,7 +576,22 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->external_pose_quality) &&
            read_pod(data, offset, &sample->external_pose_age_s) &&
            read_pod(data, offset, &sample->external_position_error_m) &&
-           read_pod(data, offset, &sample->external_yaw_error_deg);
+           read_pod(data, offset, &sample->external_yaw_error_deg) &&
+           read_pod(data, offset, &sample->controller_age_s) &&
+           read_pod(data, offset, &sample->lidar_age_s) &&
+           read_pod(data, offset, &sample->lidar_scan_duration_s) &&
+           read_pod(data, offset, &sample->lidar_scan_reused) &&
+           read_pod(data, offset, &sample->mcu_clock_offset_s) &&
+           read_pod(data, offset, &sample->mcu_clock_jitter_s) &&
+           read_pod(data, offset, &sample->imu_age_s) &&
+           read_pod(data, offset, &sample->encoder_age_s) &&
+           read_pod(data, offset, &sample->slam_pose_valid) &&
+           read_pod(data, offset, &sample->slam_pose_x) &&
+           read_pod(data, offset, &sample->slam_pose_y) &&
+           read_pod(data, offset, &sample->slam_pose_yaw) &&
+           read_pod(data, offset, &sample->slam_position_innovation_m) &&
+           read_pod(data, offset, &sample->slam_yaw_innovation_deg) &&
+           read_pod(data, offset, &sample->slam_correction_accepted);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {
@@ -578,6 +608,11 @@ std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {
     write_string(&out, scene.range_sensor_name);
     write_string(&out, scene.vehicle_model_name);
     write_string(&out, scene.tracking_controller_name);
+    write_string(&out, scene.calibration_profile_name);
+    write_string(&out, scene.calibration_profile_version);
+    write_string(&out, scene.calibration_profile_hash);
+    write_bool(&out, scene.wheel_radius_calibrated);
+    write_bool(&out, scene.mcu_velocity_closed_loop);
     write_pod(&out, scene.active_lidar_beams);
     write_pod(&out, scene.active_lidar_fov_rad);
     write_pod(&out, scene.active_lidar_range);
@@ -601,6 +636,11 @@ bool deserialize_scene(const std::vector<std::uint8_t>& data, LiveSceneSnapshot*
         !read_string(data, &offset, &parsed.range_sensor_name) ||
         !read_string(data, &offset, &parsed.vehicle_model_name) ||
         !read_string(data, &offset, &parsed.tracking_controller_name) ||
+        !read_string(data, &offset, &parsed.calibration_profile_name) ||
+        !read_string(data, &offset, &parsed.calibration_profile_version) ||
+        !read_string(data, &offset, &parsed.calibration_profile_hash) ||
+        !read_bool(data, &offset, &parsed.wheel_radius_calibrated) ||
+        !read_bool(data, &offset, &parsed.mcu_velocity_closed_loop) ||
         !read_pod(data, &offset, &parsed.active_lidar_beams) ||
         !read_pod(data, &offset, &parsed.active_lidar_fov_rad) ||
         !read_pod(data, &offset, &parsed.active_lidar_range) ||

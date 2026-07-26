@@ -273,6 +273,21 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"external_pose_age_s\":" << sample.external_pose_age_s
         << ",\"external_position_error_m\":" << sample.external_position_error_m
         << ",\"external_yaw_error_deg\":" << sample.external_yaw_error_deg
+        << ",\"controller_age_s\":" << sample.controller_age_s
+        << ",\"lidar_age_s\":" << sample.lidar_age_s
+        << ",\"lidar_scan_duration_s\":" << sample.lidar_scan_duration_s
+        << ",\"lidar_scan_reused\":" << sample.lidar_scan_reused
+        << ",\"mcu_clock_offset_s\":" << sample.mcu_clock_offset_s
+        << ",\"mcu_clock_jitter_s\":" << sample.mcu_clock_jitter_s
+        << ",\"imu_age_s\":" << sample.imu_age_s
+        << ",\"encoder_age_s\":" << sample.encoder_age_s
+        << ",\"slam_pose_valid\":" << sample.slam_pose_valid
+        << ",\"slam_pose_x\":" << sample.slam_pose_x
+        << ",\"slam_pose_y\":" << sample.slam_pose_y
+        << ",\"slam_pose_yaw\":" << sample.slam_pose_yaw
+        << ",\"slam_position_innovation_m\":" << sample.slam_position_innovation_m
+        << ",\"slam_yaw_innovation_deg\":" << sample.slam_yaw_innovation_deg
+        << ",\"slam_correction_accepted\":" << sample.slam_correction_accepted
         << "}";
 }
 
@@ -331,6 +346,11 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
         out << "    \"range_sensor_name\": \"" << json_escape(hardware.scene.range_sensor_name) << "\",\n";
         out << "    \"vehicle_model_name\": \"" << json_escape(hardware.scene.vehicle_model_name) << "\",\n";
         out << "    \"tracking_controller_name\": \"" << json_escape(hardware.scene.tracking_controller_name) << "\",\n";
+        out << "    \"calibration_profile_name\": \"" << json_escape(hardware.scene.calibration_profile_name) << "\",\n";
+        out << "    \"calibration_profile_version\": \"" << json_escape(hardware.scene.calibration_profile_version) << "\",\n";
+        out << "    \"calibration_profile_hash\": \"" << json_escape(hardware.scene.calibration_profile_hash) << "\",\n";
+        out << "    \"wheel_radius_calibrated\": " << (hardware.scene.wheel_radius_calibrated ? "true" : "false") << ",\n";
+        out << "    \"mcu_velocity_closed_loop\": " << (hardware.scene.mcu_velocity_closed_loop ? "true" : "false") << ",\n";
         out << "    \"active_lidar_beams\": " << hardware.scene.active_lidar_beams << ",\n";
         out << "    \"active_lidar_fov_rad\": " << hardware.scene.active_lidar_fov_rad << ",\n";
         out << "    \"active_lidar_range\": " << hardware.scene.active_lidar_range << ",\n";
@@ -543,7 +563,10 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
            "controller_left_encoder_ticks,controller_right_encoder_ticks,controller_left_encoder_delta,controller_right_encoder_delta,controller_encoder_dt_ms,"
            "chosen_gate_index,chosen_gate_distance,candidate_gates,safety_stop_active,planner_has_reference,dynamic_gap_gates,"
            "external_pose_valid,external_pose_source_timestamp_s,external_pose_x,external_pose_y,external_pose_yaw,"
-           "external_pose_quality,external_pose_age_s,external_position_error_m,external_yaw_error_deg\n";
+           "external_pose_quality,external_pose_age_s,external_position_error_m,external_yaw_error_deg,"
+           "controller_age_s,lidar_age_s,lidar_scan_duration_s,lidar_scan_reused,mcu_clock_offset_s,mcu_clock_jitter_s,"
+           "imu_age_s,encoder_age_s,slam_pose_valid,slam_pose_x,slam_pose_y,slam_pose_yaw,"
+           "slam_position_innovation_m,slam_yaw_innovation_deg,slam_correction_accepted\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
             << sample.position_x << ','
@@ -592,7 +615,22 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.external_pose_quality << ','
             << sample.external_pose_age_s << ','
             << sample.external_position_error_m << ','
-            << sample.external_yaw_error_deg << '\n';
+            << sample.external_yaw_error_deg << ','
+            << sample.controller_age_s << ','
+            << sample.lidar_age_s << ','
+            << sample.lidar_scan_duration_s << ','
+            << sample.lidar_scan_reused << ','
+            << sample.mcu_clock_offset_s << ','
+            << sample.mcu_clock_jitter_s << ','
+            << sample.imu_age_s << ','
+            << sample.encoder_age_s << ','
+            << sample.slam_pose_valid << ','
+            << sample.slam_pose_x << ','
+            << sample.slam_pose_y << ','
+            << sample.slam_pose_yaw << ','
+            << sample.slam_position_innovation_m << ','
+            << sample.slam_yaw_innovation_deg << ','
+            << sample.slam_correction_accepted << '\n';
     }
     return true;
 }
@@ -837,4 +875,3 @@ bool write_hardware_markdown_summary(const HardwareViewerState& hardware,
     out << "The hardware thesis bundle includes passive LiDAR reconstruction files. The CSV/PLY store raw LiDAR hit points accumulated over the run, while the PNG rasterizes an occupancy-style map with free-space rays, occupied endpoints, and the estimated robot trajectory. These files are transformed with the onboard estimated pose, so they are useful for offline mapping and thesis figures but they are not external ground truth.\n";
     return true;
 }
-

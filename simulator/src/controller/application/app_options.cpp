@@ -77,8 +77,6 @@ void select_mixed_map(const std::string& value, AppOptions* options) {
     options->dynamic_lidar_gates = true;
     if (value == "ideal" || value == "perfect") {
         options->mixed_preset = 2;
-        options->ideal_simulation = true;
-        options->calibrated_simulation = false;
     } else if (value == "obstacle" || value == "closed_obstacle" ||
                value == "closed-obstacle" || value == "obstacle_road" || value == "obstacle-road") {
         options->mixed_preset = 3;
@@ -110,8 +108,6 @@ void select_unstructured_map(const std::string& value, AppOptions* options) {
     } else if (value == "ideal" || value == "perfect" ||
                value == "ideal_validation" || value == "perfect_validation") {
         options->unstructured_preset = UnstructuredMapPreset::IdealValidation;
-        options->ideal_simulation = true;
-        options->calibrated_simulation = false;
         options->dynamic_lidar_gates = true;
     } else {
         options->unstructured_preset = UnstructuredMapPreset::RobotValidation;
@@ -132,8 +128,6 @@ void select_structured_map(const std::string& value, AppOptions* options) {
     } else if (value == "ideal" || value == "perfect" ||
                value == "ideal_circle" || value == "perfect_circle") {
         options->structured_preset = StructuredMapPreset::IdealCircle;
-        options->ideal_simulation = true;
-        options->calibrated_simulation = false;
     } else {
         options->structured_preset = StructuredMapPreset::ValidationRoad;
     }
@@ -178,6 +172,15 @@ AppOptions parse_app_options(int argc, char** argv) {
             select_structured_map(value, &options);
         } else if (read_option_value(argument, "vehicle-model", &i, argc, argv, &value)) {
             select_vehicle(value, &options);
+        } else if (read_option_value(argument, "calibration-profile", &i, argc, argv, &value)) {
+            options.calibration_profile_path = value;
+        } else if (read_option_value(argument, "simulation-seed", &i, argc, argv, &value) ||
+                   read_option_value(argument, "seed", &i, argc, argv, &value)) {
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(value.c_str(), &end, 10);
+            if (end != value.c_str() && end != nullptr && *end == '\0') {
+                options.simulation_seed = static_cast<std::uint32_t>(parsed);
+            }
         } else if (read_double_option(argument, &i, argc, argv, "min-effective-pwm", &options.tuning_overrides.min_effective_pwm) ||
                    read_double_option(argument, &i, argc, argv, "speed-estimate-per-pwm", &options.tuning_overrides.speed_estimate_per_pwm) ||
                    read_double_option(argument, &i, argc, argv, "pwm-slew-rate", &options.tuning_overrides.pwm_slew_rate) ||

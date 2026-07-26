@@ -66,7 +66,7 @@ enum class ErrorCode : std::uint8_t {
 enum class MotorControlMode : std::uint8_t {
     DirectPwm = 0x00,
     SafeDirectPwm = 0x01,
-    VelocityReserved = 0x02,
+    WheelVelocityMmPerSecond = 0x02,
     Reserved = 0x03,
 };
 
@@ -106,6 +106,11 @@ enum class ConfigParamId : std::uint8_t {
     SlewStep = 0x08,
     SafetyBypass = 0x09,
     EncoderTelemetryMs = 0x0A,
+    VelocityKpQ8 = 0x0B,
+    VelocityKiQ8 = 0x0C,
+    EncoderTicksPerRevolution = 0x0D,
+    WheelRadiusMicrometers = 0x0E,
+    VelocityFeedforwardQ8 = 0x0F,
     IrAlertThreshold = LegacyIrAlertThreshold,
     FrontAlertCm = LegacyFrontAlertCm,
 };
@@ -129,6 +134,7 @@ enum class MotorFlag : std::uint16_t {
     CmdTimeout = 1U << 2,
     SlewLimiting = 1U << 3,
     StopRequested = 1U << 4,
+    VelocityClosedLoop = 1U << 5,
 };
 
 enum class StatusFlag : std::uint16_t {

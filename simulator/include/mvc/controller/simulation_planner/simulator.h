@@ -105,6 +105,17 @@ struct TelemetrySample {
     double mixed_gate_confidence = 0.0;
     double mixed_switches = 0.0;
     double mixed_aborts = 0.0;
+    double dynamic_gate_track_id = -1.0;
+    double dynamic_gate_track_confidence = 0.0;
+    double dynamic_gate_target_switches = 0.0;
+    double mixed_state = 0.0;  // 0 road, 1 gate, 2 rejoin
+    double structured_track_s = 0.0;
+    double structured_progress_s = 0.0;
+    double mixed_rejoin_elapsed_s = 0.0;
+    double mixed_rejoin_progress_start_s = 0.0;
+    double mixed_rejoin_road_lateral_error = 0.0;
+    double mixed_rejoin_road_heading_error_deg = 0.0;
+    double target_curvature = 0.0;
 };
 
 struct SimConfig {
@@ -126,6 +137,12 @@ struct SimConfig {
     VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
     TrackingControllerMode tracking_controller = TrackingControllerMode::MpcPathFollower;
     std::uint32_t simulation_seed = 20260711U;
+    bool calibration_profile_loaded = false;
+    std::string calibration_profile_name = "builtin_defaults";
+    std::string calibration_profile_version = "0";
+    std::string calibration_profile_path;
+    std::string calibration_profile_hash = "builtin";
+    bool wheel_radius_calibrated = false;
 
     // Deterministic hardware-derived perturbations used by Sim-Calibrated.
     // Values are explicit in reports so a later identification campaign can
@@ -145,6 +162,14 @@ struct SimConfig {
 };
 
 struct VehicleTuningOverrides {
+    std::optional<double> wheelbase;
+    std::optional<double> track;
+    std::optional<double> body_length;
+    std::optional<double> body_width;
+    std::optional<double> wheel_length;
+    std::optional<double> wheel_width;
+    std::optional<double> wheel_radius;
+    std::optional<double> encoder_ticks_per_revolution;
     std::optional<double> min_effective_pwm;
     std::optional<double> speed_estimate_per_pwm;
     std::optional<double> pwm_slew_rate;
@@ -197,6 +222,7 @@ class PlannerDrivenVehicleSim {
 
     bool goal_reached() const { return goal_reached_; }
     bool collision() const { return collision_; }
+    const std::string& collision_cause() const { return collision_cause_; }
     int step_count() const { return step_count_; }
     double sim_time() const { return sim_time_; }
     double last_j() const { return last_j_; }
@@ -244,10 +270,23 @@ class PlannerDrivenVehicleSim {
 
   private:
     struct DynamicLidarGateCandidate {
+        int track_id = -1;
         Vec2 position;
         double heading = 0.0;
         double score = 0.0;
         double width = 0.0;
+        double confidence = 0.0;
+    };
+
+    struct DynamicLidarGateTrack {
+        int id = 0;
+        Vec2 position;
+        double heading = 0.0;
+        double score = 0.0;
+        double width = 0.0;
+        int hits = 0;
+        int misses = 0;
+        int last_seen_step = -1;
     };
 
     void rebuild_vehicle_model();
@@ -305,6 +344,7 @@ class PlannerDrivenVehicleSim {
     std::unordered_set<std::uint64_t> slam_voxels_;
     std::vector<ReferenceWaypoint> reference_trajectory_;
     std::vector<int> visible_gate_indices_;
+    std::vector<DynamicLidarGateTrack> dynamic_lidar_gate_tracks_;
 
     VehicleSnapshot vehicle_{};
 
@@ -349,6 +389,10 @@ class PlannerDrivenVehicleSim {
     int dynamic_lidar_stable_steps_ = 0;
     double dynamic_lidar_active_gate_width_ = 0.0;
     double dynamic_lidar_active_gate_score_ = 0.0;
+    double dynamic_lidar_active_gate_confidence_ = 0.0;
+    int active_dynamic_lidar_gate_track_id_ = -1;
+    int next_dynamic_lidar_gate_track_id_ = 1;
+    int dynamic_lidar_gate_target_switches_ = 0;
     std::vector<Vec2> dynamic_lidar_passed_gate_positions_;
     bool mixed_gate_mode_active_ = false;
     int mixed_gate_rejoin_cooldown_steps_ = 0;
@@ -357,8 +401,16 @@ class PlannerDrivenVehicleSim {
     double mixed_gate_score_ = 0.0;
     double mixed_structured_score_ = 1.0;
     double mixed_gate_confidence_ = 0.0;
+    bool mixed_rejoin_active_ = false;
+    double mixed_rejoin_started_time_s_ = -1.0;
+    double mixed_rejoin_progress_start_s_ = 0.0;
+    double mixed_rejoin_road_lateral_error_ =
+        std::numeric_limits<double>::infinity();
+    double mixed_rejoin_road_heading_error_deg_ =
+        std::numeric_limits<double>::infinity();
     bool goal_reached_ = false;
     bool collision_ = false;
+    std::string collision_cause_;
     bool lidar_scan_fresh_ = false;
     bool structured_goal_ready_ = false;
     std::optional<MpcCommand> last_mpc_command_;

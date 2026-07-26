@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
+#include <numeric>
 #include <sstream>
 #include <string>
 
@@ -16,7 +18,21 @@ namespace {
 
 struct MetricSummary {
     double avg = 0.0;
+    double p95 = 0.0;
     double max = 0.0;
+};
+
+struct RobustnessSummary {
+    double path_length_m = 0.0;
+    double min_clearance_m = 0.0;
+    double mean_abs_cross_track_m = 0.0;
+    double max_backward_progress_m = 0.0;
+    double steering_total_variation_rad = 0.0;
+    double road_time_s = 0.0;
+    double gate_time_s = 0.0;
+    double rejoin_time_s = 0.0;
+    int gate_target_switches = 0;
+    int planner_deadline_misses = 0;
 };
 
 size_t plot_sample_stride(size_t point_count) {
@@ -125,13 +141,95 @@ MetricSummary summarize_metric(const std::vector<TelemetrySample>& history,
         return summary;
     }
     double total = 0.0;
+    std::vector<double> values;
+    values.reserve(history.size());
     for (const TelemetrySample& sample : history) {
         const double value = sample.*member;
         total += value;
+        values.push_back(value);
         summary.max = std::max(summary.max, value);
     }
     summary.avg = total / static_cast<double>(history.size());
+    const size_t p95_index = static_cast<size_t>(
+        std::ceil(0.95 * static_cast<double>(values.size())) - 1.0);
+    std::nth_element(values.begin(), values.begin() + p95_index, values.end());
+    summary.p95 = values[p95_index];
     return summary;
+}
+
+RobustnessSummary summarize_robustness(const std::vector<TelemetrySample>& history,
+                                       double control_period_s) {
+    RobustnessSummary summary;
+    if (history.empty()) {
+        return summary;
+    }
+    summary.min_clearance_m = std::numeric_limits<double>::infinity();
+    double cross_track_total = 0.0;
+    for (size_t i = 0; i < history.size(); ++i) {
+        const TelemetrySample& sample = history[i];
+        if (sample.min_lidar > 0.0) {
+            summary.min_clearance_m = std::min(summary.min_clearance_m, sample.min_lidar);
+        }
+        cross_track_total += std::abs(sample.tracker_cross_track);
+        if (sample.mixed_state < 0.5) {
+            summary.road_time_s += control_period_s;
+        } else if (sample.mixed_state < 1.5) {
+            summary.gate_time_s += control_period_s;
+        } else {
+            summary.rejoin_time_s += control_period_s;
+        }
+        if (sample.step_ms > control_period_s * 1000.0) {
+            ++summary.planner_deadline_misses;
+        }
+        summary.gate_target_switches = std::max(
+            summary.gate_target_switches,
+            static_cast<int>(std::llround(sample.dynamic_gate_target_switches)));
+        if (i == 0) {
+            continue;
+        }
+        const TelemetrySample& previous = history[i - 1];
+        summary.path_length_m += std::hypot(sample.x - previous.x, sample.y - previous.y);
+        summary.steering_total_variation_rad +=
+            std::abs(sample.target_steer_angle - previous.target_steer_angle);
+        summary.max_backward_progress_m = std::max(
+            summary.max_backward_progress_m,
+            previous.structured_progress_s - sample.structured_progress_s);
+    }
+    if (!std::isfinite(summary.min_clearance_m)) {
+        summary.min_clearance_m = 0.0;
+    }
+    summary.mean_abs_cross_track_m =
+        cross_track_total / static_cast<double>(history.size());
+    return summary;
+}
+
+std::string fnv1a_hash(const std::string& value) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : value) {
+        hash ^= static_cast<std::uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    std::ostringstream out;
+    out << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return out.str();
+}
+
+std::string simulation_config_hash(const PlannerDrivenVehicleSim& sim) {
+    const SimConfig& c = sim.config();
+    const VehicleGeometry& g = sim.geometry();
+    std::ostringstream canonical;
+    canonical << std::setprecision(17)
+              << static_cast<int>(sim.environment_mode()) << '|'
+              << static_cast<int>(sim.world().structured_preset()) << '|'
+              << static_cast<int>(sim.world().unstructured_preset()) << '|'
+              << static_cast<int>(c.vehicle_model) << '|'
+              << c.simulation_seed << '|'
+              << c.dt << '|' << c.control_interval_steps << '|'
+              << g.wheelbase << '|' << g.track << '|'
+              << g.body_length << '|' << g.body_width << '|'
+              << g.wheel_radius << '|' << g.encoder_ticks_per_revolution << '|'
+              << c.calibration_profile_hash;
+    return fnv1a_hash(canonical.str());
 }
 
 bool write_sim_slam_reference_png(const PlannerDrivenVehicleSim& sim,
@@ -238,6 +336,7 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
     const MetricSummary lidar_summary = summarize_metric(history, &TelemetrySample::lidar_ms);
     const MetricSummary estimator_summary = summarize_metric(history, &TelemetrySample::estimator_ms);
     const MetricSummary step_summary = summarize_metric(history, &TelemetrySample::step_ms);
+    const RobustnessSummary robustness = summarize_robustness(history, config.dt);
 
     out << std::fixed << std::setprecision(6);
     out << "{\n";
@@ -248,6 +347,16 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
     out << "  \"structured_preset\": \"" << json_escape(thesis_sim::structured_map_preset_name(world.structured_preset())) << "\",\n";
     out << "  \"gate_behavior\": \"" << json_escape(thesis_sim::gate_behavior_mode_name(sim.gate_behavior())) << "\",\n";
     out << "  \"gate_seed\": " << sim.gate_seed() << ",\n";
+    out << "  \"provenance\": {\n";
+    out << "    \"configuration_hash\": \"" << simulation_config_hash(sim) << "\",\n";
+    out << "    \"calibration_profile_name\": \"" << json_escape(config.calibration_profile_name) << "\",\n";
+    out << "    \"calibration_profile_version\": \"" << json_escape(config.calibration_profile_version) << "\",\n";
+    out << "    \"calibration_profile_hash\": \"" << json_escape(config.calibration_profile_hash) << "\",\n";
+    out << "    \"calibration_profile_path\": \"" << json_escape(config.calibration_profile_path) << "\",\n";
+    out << "    \"wheel_radius_calibrated\": " << (config.wheel_radius_calibrated ? "true" : "false") << ",\n";
+    out << "    \"planner_revision\": \"" << THESIS_SOURCE_REVISION << "\",\n";
+    out << "    \"planner_submodule_revision\": \"" << THESIS_PLANNER_SUBMODULE_REVISION << "\"\n";
+    out << "  },\n";
     out << "  \"config\": {\n";
     out << "    \"dt\": " << config.dt << ",\n";
     out << "    \"control_interval_steps\": " << config.control_interval_steps << ",\n";
@@ -344,6 +453,8 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
     out << "    ]\n";
     out << "  },\n";
     out << "  \"summary\": {\n";
+    out << "    \"result\": \"" << json_escape(status) << "\",\n";
+    out << "    \"collision_cause\": \"" << json_escape(sim.collision_cause()) << "\",\n";
     out << "    \"steps\": " << report.steps << ",\n";
     out << "    \"sim_time\": " << report.sim_time << ",\n";
     out << "    \"distance_to_goal\": " << report.distance_to_goal << ",\n";
@@ -352,14 +463,24 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
     write_vec2_json(out, report.final_position);
     out << ",\n";
     out << "    \"final_yaw_rad\": " << sim.vehicle().yaw << ",\n";
-    out << "    \"final_speed\": " << sim.vehicle().speed << "\n";
+    out << "    \"final_speed\": " << sim.vehicle().speed << ",\n";
+    out << "    \"path_length_m\": " << robustness.path_length_m << ",\n";
+    out << "    \"min_clearance_m\": " << robustness.min_clearance_m << ",\n";
+    out << "    \"mean_abs_cross_track_m\": " << robustness.mean_abs_cross_track_m << ",\n";
+    out << "    \"max_backward_progress_m\": " << robustness.max_backward_progress_m << ",\n";
+    out << "    \"steering_total_variation_rad\": " << robustness.steering_total_variation_rad << ",\n";
+    out << "    \"gate_target_switches\": " << robustness.gate_target_switches << ",\n";
+    out << "    \"time_in_road_s\": " << robustness.road_time_s << ",\n";
+    out << "    \"time_in_gate_s\": " << robustness.gate_time_s << ",\n";
+    out << "    \"time_in_rejoin_s\": " << robustness.rejoin_time_s << ",\n";
+    out << "    \"planner_deadline_misses\": " << robustness.planner_deadline_misses << "\n";
     out << "  },\n";
     out << "  \"performance\": {\n";
-    out << "    \"planning_ms\": {\"avg\": " << planning_summary.avg << ",\"max\": " << planning_summary.max << "},\n";
-    out << "    \"tracking_ms\": {\"avg\": " << tracking_summary.avg << ",\"max\": " << tracking_summary.max << "},\n";
-    out << "    \"lidar_ms\": {\"avg\": " << lidar_summary.avg << ",\"max\": " << lidar_summary.max << "},\n";
-    out << "    \"estimator_ms\": {\"avg\": " << estimator_summary.avg << ",\"max\": " << estimator_summary.max << "},\n";
-    out << "    \"step_ms\": {\"avg\": " << step_summary.avg << ",\"max\": " << step_summary.max << "}\n";
+    out << "    \"planning_ms\": {\"avg\": " << planning_summary.avg << ",\"p95\": " << planning_summary.p95 << ",\"max\": " << planning_summary.max << "},\n";
+    out << "    \"tracking_ms\": {\"avg\": " << tracking_summary.avg << ",\"p95\": " << tracking_summary.p95 << ",\"max\": " << tracking_summary.max << "},\n";
+    out << "    \"lidar_ms\": {\"avg\": " << lidar_summary.avg << ",\"p95\": " << lidar_summary.p95 << ",\"max\": " << lidar_summary.max << "},\n";
+    out << "    \"estimator_ms\": {\"avg\": " << estimator_summary.avg << ",\"p95\": " << estimator_summary.p95 << ",\"max\": " << estimator_summary.max << "},\n";
+    out << "    \"step_ms\": {\"avg\": " << step_summary.avg << ",\"p95\": " << step_summary.p95 << ",\"max\": " << step_summary.max << "}\n";
     out << "  },\n";
     out << "  \"telemetry\": [\n";
     bool first = true;
@@ -410,6 +531,20 @@ bool write_json_report(const PlannerDrivenVehicleSim& sim,
             << ",\"mixed_gate_confidence\":" << sample.mixed_gate_confidence
             << ",\"mixed_switches\":" << sample.mixed_switches
             << ",\"mixed_aborts\":" << sample.mixed_aborts
+            << ",\"dynamic_gate_track_id\":" << sample.dynamic_gate_track_id
+            << ",\"dynamic_gate_track_confidence\":" << sample.dynamic_gate_track_confidence
+            << ",\"dynamic_gate_target_switches\":" << sample.dynamic_gate_target_switches
+            << ",\"mixed_state\":" << sample.mixed_state
+            << ",\"structured_track_s\":" << sample.structured_track_s
+            << ",\"structured_progress_s\":" << sample.structured_progress_s
+            << ",\"mixed_rejoin_elapsed_s\":" << sample.mixed_rejoin_elapsed_s
+            << ",\"mixed_rejoin_progress_start_s\":"
+            << sample.mixed_rejoin_progress_start_s
+            << ",\"mixed_rejoin_road_lateral_error\":"
+            << sample.mixed_rejoin_road_lateral_error
+            << ",\"mixed_rejoin_road_heading_error_deg\":"
+            << sample.mixed_rejoin_road_heading_error_deg
+            << ",\"target_curvature\":" << sample.target_curvature
             << "}";
     }
     out << "\n  ]\n";

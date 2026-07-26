@@ -11,6 +11,26 @@
 
 namespace thesis_sim {
 
+namespace measured_robot {
+
+inline constexpr double kCarBodyLengthM = 0.250;
+inline constexpr double kCarBodyWidthM = 0.150;
+inline constexpr double kCarWheelRadiusM = 0.0327;
+inline constexpr double kCarWheelDiameterM = 0.0654;
+
+inline constexpr double kTankBodyLengthM = 0.165;
+inline constexpr double kTankBodyWidthM = 0.146;
+inline constexpr double kTankBeltLengthM = 0.158;
+inline constexpr double kTankBeltWidthM = 0.0447;
+// Distance between belt centre lines: total width minus one belt width.
+inline constexpr double kTankTrackCenterDistanceM =
+    kTankBodyWidthM - kTankBeltWidthM;
+// Effective sprocket radius still needs a dedicated physical measurement.
+// Keep the previously validated encoder conversion until that value is known.
+inline constexpr double kTankEffectiveDriveRadiusDefaultM = 0.032;
+
+}  // namespace measured_robot
+
 enum class VehicleModelKind {
     CarLikeBicycle = 0,
     TrackedVehicle = 1,
@@ -26,11 +46,11 @@ struct VehicleGeometry {
     double cg_to_front = 0.09;
     double cg_to_rear = 0.09;
     double track = 0.13;
-    double body_length = 0.25;
-    double body_width = 0.15;
+    double body_length = measured_robot::kCarBodyLengthM;
+    double body_width = measured_robot::kCarBodyWidthM;
     double wheel_length = 0.09;
     double wheel_width = 0.03;
-    double wheel_radius = 0.04;
+    double wheel_radius = measured_robot::kCarWheelRadiusM;
     double max_steer_angle = 0.52;
     double max_steer_rate = 1.8;
     double max_curvature = 2.1;

@@ -1,5 +1,13 @@
 bool has_tuning_overrides(const VehicleTuningOverrides& overrides) {
-    return overrides.min_effective_pwm.has_value() ||
+    return overrides.wheelbase.has_value() ||
+           overrides.track.has_value() ||
+           overrides.body_length.has_value() ||
+           overrides.body_width.has_value() ||
+           overrides.wheel_length.has_value() ||
+           overrides.wheel_width.has_value() ||
+           overrides.wheel_radius.has_value() ||
+           overrides.encoder_ticks_per_revolution.has_value() ||
+           overrides.min_effective_pwm.has_value() ||
            overrides.speed_estimate_per_pwm.has_value() ||
            overrides.pwm_slew_rate.has_value() ||
            overrides.motor_time_constant.has_value() ||
@@ -16,11 +24,133 @@ bool has_tuning_overrides(const VehicleTuningOverrides& overrides) {
            overrides.cruise_speed_limit.has_value();
 }
 
-void apply_sim_tuning_overrides(PlannerDrivenVehicleSim* sim, const AppOptions& options) {
-    if (sim == nullptr || !has_tuning_overrides(options.tuning_overrides)) {
+void overlay_tuning(const VehicleTuningOverrides& source,
+                    VehicleTuningOverrides* destination) {
+    if (destination == nullptr) {
         return;
     }
-    sim->set_tuning_overrides(options.tuning_overrides);
+#define THESIS_OVERLAY_TUNING_FIELD(field) \
+    if (source.field.has_value()) { destination->field = source.field; }
+    THESIS_OVERLAY_TUNING_FIELD(wheelbase)
+    THESIS_OVERLAY_TUNING_FIELD(track)
+    THESIS_OVERLAY_TUNING_FIELD(body_length)
+    THESIS_OVERLAY_TUNING_FIELD(body_width)
+    THESIS_OVERLAY_TUNING_FIELD(wheel_length)
+    THESIS_OVERLAY_TUNING_FIELD(wheel_width)
+    THESIS_OVERLAY_TUNING_FIELD(wheel_radius)
+    THESIS_OVERLAY_TUNING_FIELD(encoder_ticks_per_revolution)
+    THESIS_OVERLAY_TUNING_FIELD(min_effective_pwm)
+    THESIS_OVERLAY_TUNING_FIELD(speed_estimate_per_pwm)
+    THESIS_OVERLAY_TUNING_FIELD(pwm_slew_rate)
+    THESIS_OVERLAY_TUNING_FIELD(motor_time_constant)
+    THESIS_OVERLAY_TUNING_FIELD(max_linear_speed)
+    THESIS_OVERLAY_TUNING_FIELD(max_curvature)
+    THESIS_OVERLAY_TUNING_FIELD(max_steer_angle)
+    THESIS_OVERLAY_TUNING_FIELD(max_steer_rate)
+    THESIS_OVERLAY_TUNING_FIELD(max_yaw_rate)
+    THESIS_OVERLAY_TUNING_FIELD(linear_feedback_gain)
+    THESIS_OVERLAY_TUNING_FIELD(yaw_feedback_gain)
+    THESIS_OVERLAY_TUNING_FIELD(left_pwm_scale)
+    THESIS_OVERLAY_TUNING_FIELD(right_pwm_scale)
+    THESIS_OVERLAY_TUNING_FIELD(yaw_response_scale)
+    THESIS_OVERLAY_TUNING_FIELD(cruise_speed_limit)
+#undef THESIS_OVERLAY_TUNING_FIELD
+}
+
+std::string resolve_default_calibration_profile(VehicleModelKind model) {
+    const std::string relative =
+        model == VehicleModelKind::TrackedVehicle
+            ? "config/robots/tank_calibrated.json"
+            : "config/robots/car_calibrated.json";
+    const std::array<std::filesystem::path, 4> candidates{{
+        std::filesystem::path(relative),
+        std::filesystem::path("..") / relative,
+        std::filesystem::path("../..") / relative,
+        std::filesystem::path("../../..") / relative,
+    }};
+    for (const std::filesystem::path& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(candidate, ec) && !ec) {
+            return candidate.lexically_normal().string();
+        }
+    }
+    return {};
+}
+
+VehicleTuningOverrides prepare_calibrated_profile(const AppOptions& options,
+                                                  thesis_sim::SimConfig* config) {
+    VehicleTuningOverrides effective;
+    if (config == nullptr) {
+        return effective;
+    }
+    config->simulation_seed = options.simulation_seed;
+    const bool profile_requested =
+        options.calibrated_simulation || !options.calibration_profile_path.empty();
+    const std::string profile_path =
+        !options.calibration_profile_path.empty()
+            ? options.calibration_profile_path
+            : resolve_default_calibration_profile(options.vehicle_model);
+    if (profile_requested && profile_path.empty() &&
+        !options.calibration_profile_path.empty()) {
+        throw std::runtime_error("calibration profile not found: " +
+                                 options.calibration_profile_path);
+    }
+    if (profile_requested && !profile_path.empty()) {
+        RobotCalibrationProfile profile;
+        std::string error;
+        if (!load_robot_calibration_profile(profile_path, &profile, &error)) {
+            throw std::runtime_error(error);
+        }
+        if (profile.vehicle_model != options.vehicle_model) {
+            throw std::runtime_error("calibration profile vehicle_model does not match --vehicle-model");
+        }
+        config->calibration_profile_loaded = true;
+        config->calibration_profile_name = profile.name;
+        config->calibration_profile_version = profile.version;
+        config->calibration_profile_path = profile.source_path;
+        config->calibration_profile_hash = profile.content_hash;
+        config->wheel_radius_calibrated = profile.wheel_radius_calibrated;
+        config->command_delay_steps = profile.command_delay_steps;
+        config->encoder_distance_noise_std_m = profile.encoder_distance_noise_std_m;
+        config->encoder_left_scale = profile.encoder_left_scale;
+        config->encoder_right_scale = profile.encoder_right_scale;
+        config->imu_yaw_noise_std_rad = profile.imu_yaw_noise_std_rad;
+        config->imu_yaw_rate_noise_std_rad_s = profile.imu_yaw_rate_noise_std_rad_s;
+        config->imu_yaw_bias_walk_std_rad = profile.imu_yaw_bias_walk_std_rad;
+        config->lidar_range_noise_std_m = profile.lidar_range_noise_std_m;
+        config->lidar_dropout_probability = profile.lidar_dropout_probability;
+        config->actuator_left_scale = profile.left_actuator_scale;
+        config->actuator_right_scale = profile.right_actuator_scale;
+
+        effective.wheelbase =
+            profile.vehicle_model == VehicleModelKind::TrackedVehicle
+                ? profile.wheel_or_belt_length_m
+                : 0.18;
+        effective.track = profile.track_center_distance_m;
+        effective.body_length = profile.body_length_m;
+        effective.body_width = profile.body_width_m;
+        effective.wheel_length = profile.wheel_or_belt_length_m;
+        effective.wheel_width = profile.wheel_or_belt_width_m;
+        effective.wheel_radius = profile.wheel_radius_m;
+        effective.encoder_ticks_per_revolution =
+            static_cast<double>(profile.encoder_ticks_per_revolution);
+        effective.min_effective_pwm = static_cast<double>(profile.min_effective_pwm);
+        effective.speed_estimate_per_pwm = profile.speed_estimate_per_pwm;
+        effective.pwm_slew_rate = profile.pwm_slew_rate;
+        effective.motor_time_constant = profile.motor_time_constant_s;
+        effective.max_linear_speed = profile.max_linear_speed_mps;
+        effective.max_yaw_rate = profile.max_yaw_rate_rad_s;
+    }
+    overlay_tuning(options.tuning_overrides, &effective);
+    return effective;
+}
+
+void apply_sim_tuning_overrides(PlannerDrivenVehicleSim* sim,
+                                const VehicleTuningOverrides& overrides) {
+    if (sim == nullptr || !has_tuning_overrides(overrides)) {
+        return;
+    }
+    sim->set_tuning_overrides(overrides);
 }
 
 void fill_structured_tank_ideal_tuning_defaults(VehicleTuningOverrides* tuning) {
@@ -49,6 +179,7 @@ void apply_sim_level_to_config(const AppOptions& options, thesis_sim::SimConfig*
         return;
     }
     config->calibrated_conditions = options.calibrated_simulation;
+    config->simulation_seed = options.simulation_seed;
     if (!options.ideal_simulation) {
         return;
     }
@@ -650,4 +781,3 @@ bool queue_hardware_robot_profile(UiState* ui_state,
             : hardware_server->last_error();
     return false;
 }
-

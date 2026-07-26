@@ -9,6 +9,7 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
     const bool mixed_gate_reference = mixed_mode_enabled() && mixed_gate_mode_active_;
     if (road_environment(world_) &&
         !mixed_gate_reference &&
+        !mixed_rejoin_active_ &&
         (!has_planner_clothoid || world_.road_centerline().size() < 2)) {
         planned_trajectory_ = world_.road_centerline();
         reference_trajectory_ = build_reference_waypoints(planned_trajectory_, planner_speed_ref_);
@@ -17,6 +18,56 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
 
     if ((world_.environment_mode() == EnvironmentMode::UnstructuredGates || mixed_gate_reference) &&
         chosen_gate_index_ < 0) {
+        return;
+    }
+    const bool unstructured_goal_reference =
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        chosen_gate_index_ >= 0 &&
+        chosen_gate_index_ < static_cast<int>(gates_.size()) &&
+        distance(gate_position(gates_[static_cast<size_t>(chosen_gate_index_)]),
+                 world_.goal()) <= 0.02;
+    if (unstructured_goal_reference) {
+        const Vec2 start = navigation_position_;
+        const Vec2 target = world_.goal();
+        const double target_distance = distance(start, target);
+        if (target_distance >= 0.02) {
+            const Vec2 target_axis{
+                (target.x - start.x) / target_distance,
+                (target.y - start.y) / target_distance,
+            };
+            const double start_handle = std::clamp(
+                0.30 * target_distance, 0.05, 0.18);
+            const double target_handle = std::clamp(
+                0.36 * target_distance, 0.06, 0.20);
+            const Vec2 p1{
+                start.x + std::cos(navigation_yaw_) * start_handle,
+                start.y + std::sin(navigation_yaw_) * start_handle,
+            };
+            const Vec2 p2{
+                target.x - target_axis.x * target_handle,
+                target.y - target_axis.y * target_handle,
+            };
+            constexpr int kGoalSamples = 28;
+            planned_trajectory_.reserve(kGoalSamples);
+            for (int i = 0; i < kGoalSamples; ++i) {
+                const double t =
+                    static_cast<double>(i) /
+                    static_cast<double>(kGoalSamples - 1);
+                const double u = 1.0 - t;
+                planned_trajectory_.push_back({
+                    u * u * u * start.x +
+                        3.0 * u * u * t * p1.x +
+                        3.0 * u * t * t * p2.x +
+                        t * t * t * target.x,
+                    u * u * u * start.y +
+                        3.0 * u * u * t * p1.y +
+                        3.0 * u * t * t * p2.y +
+                        t * t * t * target.y,
+                });
+            }
+            reference_trajectory_ = build_reference_waypoints(
+                planned_trajectory_, planner_speed_ref_);
+        }
         return;
     }
     if (mixed_gate_reference &&
@@ -47,8 +98,8 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
             const double entry_scale = obstacle_closed_gate_reference ? 0.32 : 0.45;
             const double exit_scale = obstacle_closed_gate_reference ? 0.42 : 0.15;
             const Vec2 p1{
-                start.x + gate_axis.x * entry_scale * gate_distance,
-                start.y + gate_axis.y * entry_scale * gate_distance,
+                start.x + std::cos(navigation_yaw_) * entry_scale * gate_distance,
+                start.y + std::sin(navigation_yaw_) * entry_scale * gate_distance,
             };
             const Vec2 p2{
                 target.x - exit_axis.x * exit_scale * gate_distance,
@@ -71,6 +122,93 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
                 });
             }
             reference_trajectory_ = build_reference_waypoints(planned_trajectory_, planner_speed_ref_);
+        }
+        return;
+    }
+
+    const bool compact_open_mixed_rejoin =
+        mixed_mode_enabled() &&
+        mixed_rejoin_active_ &&
+        world_span_m(world_) <= 1.20 &&
+        !structured_road_is_closed_loop(world_) &&
+        !mixed_closed_gate_sequence(world_) &&
+        world_.road_centerline().size() >= 2;
+    if (compact_open_mixed_rejoin) {
+        // Hardware Lab has an open road, so it cannot use the closed-loop
+        // projection/rejoin branch below.  Previously it fell through to a
+        // stale generic clothoid: the car kept driving near the upper bound,
+        // while the rejoin diagnostics remained infinite and arbitration
+        // could never return to ROAD.  Rejoin the actual road at an anchor
+        // that is strictly ahead of the current longitudinal progress.
+        const Vec2 road_start = world_.road_centerline().front();
+        const Vec2 road_end = world_.road_centerline().back();
+        Vec2 road_axis = subtract(road_end, road_start);
+        const double road_length = std::hypot(road_axis.x, road_axis.y);
+        if (road_length > 1e-6) {
+            road_axis.x /= road_length;
+            road_axis.y /= road_length;
+            const Vec2 road_normal{-road_axis.y, road_axis.x};
+            const Vec2 relative = subtract(navigation_position_, road_start);
+            const double current_s = clamp_value(
+                dot_product(relative, road_axis), 0.0, road_length);
+            const double road_lateral = dot_product(relative, road_normal);
+            const double road_heading = std::atan2(road_axis.y, road_axis.x);
+            mixed_rejoin_road_lateral_error_ = std::abs(road_lateral);
+            mixed_rejoin_road_heading_error_deg_ =
+                std::abs(wrap_angle(road_heading - navigation_yaw_)) *
+                180.0 / 3.14159265358979323846;
+
+            double target_s = std::min(current_s + 0.28, road_length);
+            for (const GateSpec& spec : world_.gates()) {
+                if (spec.final) {
+                    continue;
+                }
+                const Vec2 gate_relative = subtract(spec.position, road_start);
+                const double gate_lateral = std::abs(
+                    dot_product(gate_relative, road_normal));
+                const double gate_s = dot_product(gate_relative, road_axis);
+                if (gate_lateral <= 0.06 && gate_s > current_s + 0.08) {
+                    target_s = std::max(target_s, std::min(gate_s, road_length));
+                }
+            }
+            const Vec2 start = navigation_position_;
+            const Vec2 target{
+                road_start.x + road_axis.x * target_s,
+                road_start.y + road_axis.y * target_s,
+            };
+            const double target_distance = std::max(distance(start, target), 1e-3);
+            const double start_handle = std::clamp(
+                0.30 * target_distance, 0.055, 0.15);
+            const double target_handle = std::clamp(
+                0.38 * target_distance, 0.070, 0.18);
+            const Vec2 p1{
+                start.x + std::cos(navigation_yaw_) * start_handle,
+                start.y + std::sin(navigation_yaw_) * start_handle,
+            };
+            const Vec2 p2{
+                target.x - road_axis.x * target_handle,
+                target.y - road_axis.y * target_handle,
+            };
+            constexpr int kOpenRejoinSamples = 32;
+            planned_trajectory_.reserve(kOpenRejoinSamples);
+            for (int i = 0; i < kOpenRejoinSamples; ++i) {
+                const double t =
+                    static_cast<double>(i) /
+                    static_cast<double>(kOpenRejoinSamples - 1);
+                const double u = 1.0 - t;
+                planned_trajectory_.push_back({
+                    u * u * u * start.x +
+                        3.0 * u * u * t * p1.x +
+                        3.0 * u * t * t * p2.x +
+                        t * t * t * target.x,
+                    u * u * u * start.y +
+                        3.0 * u * u * t * p1.y +
+                        3.0 * u * t * t * p2.y +
+                        t * t * t * target.y,
+                });
+            }
+            reference_trajectory_ = build_reference_waypoints(
+                planned_trajectory_, planner_speed_ref_);
         }
         return;
     }
@@ -109,7 +247,11 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
         }
     }
     if (obstacle_closed_mixed_world && world_.road_centerline().size() >= 2) {
-        const ClosedPathProjection projection =
+        const ClosedPathProjection physical_projection = project_closed_path(
+            world_.road_centerline(),
+            navigation_position_,
+            std::numeric_limits<double>::quiet_NaN());
+        ClosedPathProjection projection =
             project_closed_path(
                 world_.road_centerline(),
                 navigation_position_,
@@ -117,6 +259,30 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
                     ? 0.0
                     : structured_last_s_);
         if (projection.valid && projection.length > 0.10) {
+            if (mixed_rejoin_active_ && std::isfinite(structured_last_s_)) {
+                const double maximum_forward_rejoin_step = std::max(
+                    0.08,
+                    navigation_speed_ * std::max(config_.dt, 1e-3) * 4.0 + 0.05);
+                const double projected_forward_delta = closed_loop_forward_delta(
+                    structured_last_s_, projection.s, projection.length);
+                if (projected_forward_delta > maximum_forward_rejoin_step) {
+                    projection.s = wrap_arc_length(
+                        structured_last_s_ + maximum_forward_rejoin_step,
+                        projection.length);
+                    const ClosedPathProjection constrained = project_closed_path(
+                        world_.road_centerline(),
+                        sample_closed_path_span(
+                            world_.road_centerline(),
+                            projection.s,
+                            0.02,
+                            2,
+                            projection.length).front(),
+                        projection.s);
+                    if (constrained.valid) {
+                        projection = constrained;
+                    }
+                }
+            }
             if (!structured_goal_ready_) {
                 structured_goal_progress_target_ = projection.length;
                 structured_goal_position_ = world_.goal();
@@ -140,19 +306,118 @@ void PlannerDrivenVehicleSim::update_selected_trajectory() {
             x0_.a = navigation_accel_;
             x0_.c = navigation_curvature_;
 
-            const double reference_span = pure_structured_closed_world
-                                              ? std::min(
-                                                    projection.length,
-                                                    std::clamp(
-                                                        0.22 * projection.length,
-                                                        0.42,
-                                                        0.62))
-                                              : std::min(
-                                                    projection.length,
-                                                    std::clamp(
-                                                        0.24 * projection.length,
-                                                        1.25,
-                                                        1.70));
+            if (mixed_rejoin_active_) {
+                const ClosedPathProjection& rejoin_projection =
+                    physical_projection.valid ? physical_projection : projection;
+                const bool tracked_vehicle =
+                    config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+                const double tangent_step = 0.035;
+                const Vec2 tangent_before = sample_closed_path(
+                    world_.road_centerline(),
+                    rejoin_projection.s - tangent_step,
+                    rejoin_projection.length);
+                const Vec2 tangent_after = sample_closed_path(
+                    world_.road_centerline(),
+                    rejoin_projection.s + tangent_step,
+                    rejoin_projection.length);
+                const double road_heading = angle_to(tangent_before, tangent_after);
+                mixed_rejoin_road_lateral_error_ =
+                    std::abs(rejoin_projection.lateral);
+                mixed_rejoin_road_heading_error_deg_ =
+                    std::abs(wrap_angle(road_heading - navigation_yaw_)) *
+                    180.0 / 3.14159265358979323846;
+
+                // Rejoin through a local cubic whose endpoint is always ahead
+                // of current structured progress. Sampling the global loop
+                // directly from the nearest projection creates a discontinuous
+                // reference after a bypass and was the source of the long
+                // oscillating rejoin seen in Closed Obstacle Road.
+                const double heading_mismatch =
+                    std::abs(wrap_angle(road_heading - navigation_yaw_));
+                const double rejoin_ahead = std::clamp(
+                    (tracked_vehicle ? 0.25 : 0.31) +
+                        0.75 * std::abs(rejoin_projection.lateral) +
+                        0.08 * heading_mismatch,
+                    tracked_vehicle ? 0.25 : 0.31,
+                    tracked_vehicle ? 0.48 : 0.62);
+                const double target_s = wrap_arc_length(
+                    rejoin_projection.s + rejoin_ahead,
+                    rejoin_projection.length);
+                const Vec2 target = sample_closed_path(
+                    world_.road_centerline(), target_s, rejoin_projection.length);
+                const Vec2 target_before = sample_closed_path(
+                    world_.road_centerline(),
+                    target_s - tangent_step,
+                    rejoin_projection.length);
+                const Vec2 target_after = sample_closed_path(
+                    world_.road_centerline(),
+                    target_s + tangent_step,
+                    rejoin_projection.length);
+                const double target_heading = angle_to(target_before, target_after);
+                const Vec2 start = navigation_position_;
+                const double target_distance = std::max(distance(start, target), 1e-3);
+                const double start_handle = std::clamp(
+                    0.26 * target_distance,
+                    tracked_vehicle ? 0.045 : 0.060,
+                    tracked_vehicle ? 0.13 : 0.17);
+                const double target_handle = std::clamp(
+                    0.30 * target_distance,
+                    tracked_vehicle ? 0.060 : 0.075,
+                    tracked_vehicle ? 0.15 : 0.20);
+                const Vec2 p1{
+                    start.x + std::cos(navigation_yaw_) * start_handle,
+                    start.y + std::sin(navigation_yaw_) * start_handle,
+                };
+                const Vec2 p2{
+                    target.x - std::cos(target_heading) * target_handle,
+                    target.y - std::sin(target_heading) * target_handle,
+                };
+                constexpr int kRejoinSamples = 34;
+                planned_trajectory_.reserve(kRejoinSamples);
+                for (int i = 0; i < kRejoinSamples; ++i) {
+                    const double t =
+                        static_cast<double>(i) /
+                        static_cast<double>(kRejoinSamples - 1);
+                    const double u = 1.0 - t;
+                    planned_trajectory_.push_back({
+                        u * u * u * start.x +
+                            3.0 * u * u * t * p1.x +
+                            3.0 * u * t * t * p2.x +
+                            t * t * t * target.x,
+                        u * u * u * start.y +
+                            3.0 * u * u * t * p1.y +
+                            3.0 * u * t * t * p2.y +
+                            t * t * t * target.y,
+                    });
+                }
+                reference_trajectory_ = build_reference_waypoints(
+                    planned_trajectory_, planner_speed_ref_);
+                return;
+            }
+
+            const bool lab_scale_mixed_loop =
+                obstacle_closed_mixed_world && world_span_m(world_) <= 2.25;
+            const double reference_span =
+                pure_structured_closed_world
+                    ? std::min(
+                          projection.length,
+                          std::clamp(
+                              0.22 * projection.length,
+                              0.42,
+                              0.62))
+                    : (lab_scale_mixed_loop
+                           ? std::min(
+                                 projection.length,
+                                 std::clamp(
+                                     0.16 * projection.length,
+                                     0.48,
+                                     0.72))
+                           : std::min(
+                                 projection.length,
+                                 std::clamp(
+                                     0.24 * projection.length,
+                                     1.25,
+                                     1.70)));
             planned_trajectory_ = sample_closed_path_span(
                 world_.road_centerline(),
                 projection.s,
@@ -315,4 +580,3 @@ int PlannerDrivenVehicleSim::lidar_update_interval_steps() const {
             return 1;
     }
 }
-

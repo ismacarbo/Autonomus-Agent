@@ -58,6 +58,11 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
                    : "LiDAR disabled for structured planner");
     scene.vehicle_model_name = vehicle_model_kind_name(runner.config().vehicle_model);
     scene.tracking_controller_name = "MPC path follower";
+    scene.calibration_profile_name = runner.config().calibration_profile_name;
+    scene.calibration_profile_version = runner.config().calibration_profile_version;
+    scene.calibration_profile_hash = runner.config().calibration_profile_hash;
+    scene.wheel_radius_calibrated = runner.config().wheel_radius_calibrated;
+    scene.mcu_velocity_closed_loop = runner.config().use_mcu_velocity_closed_loop;
     scene.active_lidar_beams = lidar_enabled ? 360 : 0;
     scene.active_lidar_fov_rad = lidar_enabled ? kTwoPi : 0.0;
     scene.active_lidar_range = lidar_enabled ? runner.config().localization.max_range_m : 0.0;
@@ -170,4 +175,3 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     apply_structured_display_remap(remap, &frame);
     return frame;
 }
-

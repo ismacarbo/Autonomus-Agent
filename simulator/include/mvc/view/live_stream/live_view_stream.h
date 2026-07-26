@@ -54,6 +54,11 @@ struct LiveSceneSnapshot {
     std::string range_sensor_name;
     std::string vehicle_model_name;
     std::string tracking_controller_name;
+    std::string calibration_profile_name;
+    std::string calibration_profile_version;
+    std::string calibration_profile_hash;
+    bool wheel_radius_calibrated = false;
+    bool mcu_velocity_closed_loop = false;
     int active_lidar_beams = 360;
     double active_lidar_fov_rad = 6.28318530717958647692;
     double active_lidar_range = 8.0;

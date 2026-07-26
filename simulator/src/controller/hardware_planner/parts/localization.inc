@@ -162,6 +162,53 @@ void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerT
     }
 }
 
+bool HardwarePlannerRunner::apply_slam_pose_correction(const Vec2& position,
+                                                       double yaw) {
+    slam_pose_valid_ = true;
+    last_slam_position_ = position;
+    last_slam_yaw_ = wrap_angle(yaw);
+    last_slam_position_innovation_m_ = distance(estimate_.position, position);
+    last_slam_yaw_innovation_rad_ = std::abs(wrap_angle(yaw - estimate_.yaw));
+    last_slam_correction_accepted_ = false;
+    if (last_slam_position_innovation_m_ > 0.75 ||
+        last_slam_yaw_innovation_rad_ > 0.90) {
+        return false;
+    }
+
+    const Vec2 delta{position.x - estimate_.position.x,
+                     position.y - estimate_.position.y};
+    const double delta_norm = std::max(vector_norm(delta), 1e-9);
+    const double scale = std::min(1.0, 0.060 / delta_norm);
+    const Vec2 bounded_position{
+        estimate_.position.x + delta.x * scale,
+        estimate_.position.y + delta.y * scale,
+    };
+    const double bounded_yaw = wrap_angle(
+        estimate_.yaw + clamp_value(
+                            wrap_angle(yaw - estimate_.yaw), -0.08, 0.08));
+    const int accepted_before = estimator_.lidar_updates_accepted();
+    estimator_.update_lidar_pose(bounded_position, bounded_yaw, true);
+    last_slam_correction_accepted_ =
+        estimator_.lidar_updates_accepted() > accepted_before;
+    if (!last_slam_correction_accepted_ &&
+        estimator_.lidar_recovery_recommended() &&
+        last_slam_position_innovation_m_ < 0.25 &&
+        last_slam_yaw_innovation_rad_ < 0.35) {
+        const double recovery_scale = std::min(1.0, 0.015 / delta_norm);
+        estimator_.override_pose(
+            {estimate_.position.x + delta.x * recovery_scale,
+             estimate_.position.y + delta.y * recovery_scale},
+            wrap_angle(
+                estimate_.yaw + clamp_value(
+                                    wrap_angle(yaw - estimate_.yaw), -0.02, 0.02)));
+        last_slam_correction_accepted_ = true;
+    }
+    if (last_slam_correction_accepted_) {
+        sync_estimate_from_ekf_state();
+    }
+    return last_slam_correction_accepted_;
+}
+
 bool HardwarePlannerRunner::controller_encoder_delta_plausible(std::int32_t left_delta_ticks,
                                                                std::int32_t right_delta_ticks,
                                                                double encoder_dt) const {
@@ -267,11 +314,7 @@ bool HardwarePlannerRunner::rearm_controller_if_needed(const ControllerTelemetry
                 0.20);
         } catch (const std::exception&) {
         }
-        bridge_.send_pwm(
-            static_cast<std::int16_t>(last_command_.pwm_left),
-            static_cast<std::int16_t>(last_command_.pwm_right),
-            true,
-            MotorControlMode::SafeDirectPwm);
+        send_last_control_command(true);
         return true;
     } catch (const std::exception& e) {
         std::cerr << "hardware_runner_warning=controller autonomous rearm failed: "
@@ -910,7 +953,8 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
     scan_keys.reserve(scan.size());
     free_space_clear_votes.reserve(scan.size() * 8);
 
-    for (const RPLidarA1::ScanPoint& point : scan) {
+    for (size_t point_index = 0; point_index < scan.size(); ++point_index) {
+        const RPLidarA1::ScanPoint& point = scan[point_index];
         if (point.distance_m <= 0.0 ||
             point.distance_m < config_.localization.min_valid_range_m ||
             point.distance_m > config_.localization.max_range_m ||
@@ -918,8 +962,29 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
             continue;
         }
         ++diagnostics_.valid_lidar_points;
+        const double scan_fraction =
+            scan.size() > 1
+                ? static_cast<double>(point_index) /
+                      static_cast<double>(scan.size() - 1)
+                : 1.0;
+        const double time_from_scan_end =
+            config_.localization.motion_compensate_scan
+                ? (scan_fraction - 1.0) * active_lidar_scan_duration_s_
+                : 0.0;
+        const double point_yaw = wrap_angle(
+            estimate_.yaw + estimate_.yaw_rate * time_from_scan_end);
+        const double point_heading_mid = wrap_angle(
+            estimate_.yaw + 0.5 * estimate_.yaw_rate * time_from_scan_end);
+        const Vec2 point_position{
+            estimate_.position.x +
+                estimate_.speed * std::cos(point_heading_mid) * time_from_scan_end,
+            estimate_.position.y +
+                estimate_.speed * std::sin(point_heading_mid) * time_from_scan_end,
+        };
+        const Vec2 point_origin =
+            lidar_origin_world(point_position, point_yaw, config_.localization);
         const double angle_local = lidar_body_local_angle_rad(config_.localization, point.angle_deg);
-        const double angle_world = wrap_angle(estimate_.yaw + angle_local);
+        const double angle_world = wrap_angle(point_yaw + angle_local);
         if (point.distance_m < config_.localization.obstacle_stop_distance_m) {
             ++diagnostics_.close_lidar_points;
             if (std::abs(angle_local) <= config_.localization.front_sector_half_angle_rad) {
@@ -927,8 +992,8 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
             }
         }
         const Vec2 hit{
-            origin.x + std::cos(angle_world) * point.distance_m,
-            origin.y + std::sin(angle_world) * point.distance_m,
+            point_origin.x + std::cos(angle_world) * point.distance_m,
+            point_origin.y + std::sin(angle_world) * point.distance_m,
         };
         lidar_hits_.push_back({angle_world, point.distance_m, hit, true});
 
@@ -938,11 +1003,11 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
             ? std::max(config_.localization.min_valid_range_m, point.distance_m - map_resolution * 1.5)
             : point.distance_m;
         const Vec2 free_endpoint{
-            origin.x + std::cos(angle_world) * free_distance,
-            origin.y + std::sin(angle_world) * free_distance,
+            point_origin.x + std::cos(angle_world) * free_distance,
+            point_origin.y + std::sin(angle_world) * free_distance,
         };
         sample_segment_points(
-            origin,
+            point_origin,
             free_endpoint,
             map_resolution * 0.85,
             false,
@@ -1011,4 +1076,3 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
         estimate_.front_lidar_distance > 0.0 &&
         estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m;
 }
-

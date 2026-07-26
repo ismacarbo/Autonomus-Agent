@@ -302,6 +302,11 @@ void PlannerDrivenVehicleSim::leave_mixed_gate_mode(bool aborted) {
         ++mixed_abort_count_;
     }
     mixed_gate_mode_active_ = false;
+    mixed_rejoin_active_ = true;
+    mixed_rejoin_started_time_s_ = sim_time_;
+    mixed_rejoin_progress_start_s_ = structured_progress_s_;
+    mixed_rejoin_road_lateral_error_ = std::numeric_limits<double>::infinity();
+    mixed_rejoin_road_heading_error_deg_ = std::numeric_limits<double>::infinity();
     const bool tracked_mixed_dynamic =
         config_.vehicle_model == VehicleModelKind::TrackedVehicle &&
         use_dynamic_lidar_gates();
@@ -321,26 +326,30 @@ void PlannerDrivenVehicleSim::leave_mixed_gate_mode(bool aborted) {
         mixed_sequence &&
         !mixed_closed_semantic_gate_sequence(world_) &&
         use_dynamic_lidar_gates() &&
-        cl_.prev_road.num_segments() > 0 &&
-        cl_.end_point_s > 0.10;
+        world_.road_centerline().size() >= 2;
     if (reanchor_closed_dynamic_gate) {
-        const double hint = std::isfinite(structured_last_s_) ? structured_last_s_ : x0_.x;
-        double projected_s = hint;
-        double lateral_offset = 0.0;
-        if (project_curvilinear_state(
-                cl_,
-                navigation_position_,
-                hint,
-                true,
-                &projected_s,
-                &lateral_offset)) {
+        const double hint = std::isfinite(structured_last_s_)
+                                ? structured_last_s_
+                                : std::numeric_limits<double>::quiet_NaN();
+        const ClosedPathProjection projection = project_closed_path(
+            world_.road_centerline(), navigation_position_, hint);
+        if (projection.valid && projection.length > 0.10) {
+            double forward_delta = std::isfinite(structured_last_s_)
+                                       ? closed_loop_forward_delta(
+                                             structured_last_s_,
+                                             projection.s,
+                                             projection.length)
+                                       : 0.0;
+            // Crossing a gate can legitimately jump the nearest projection
+            // forward, but never allow a local bypass to be interpreted as a
+            // nearly complete lap.
+            forward_delta = std::min(forward_delta, 0.65);
             structured_progress_s_ = std::max(
                 0.0,
-                structured_progress_s_ +
-                    closed_loop_forward_delta(structured_last_s_, projected_s, cl_.end_point_s));
-            structured_last_s_ = projected_s;
-            x0_.x = projected_s;
-            x0_.n = lateral_offset;
+                structured_progress_s_ + forward_delta);
+            structured_last_s_ = projection.s;
+            x0_.x = projection.s;
+            x0_.n = projection.lateral;
         }
     }
 }
@@ -352,22 +361,54 @@ void PlannerDrivenVehicleSim::update_mixed_arbitration() {
         mixed_gate_score_ = 0.0;
         mixed_structured_score_ = 1.0;
         mixed_gate_confidence_ = 0.0;
+        mixed_rejoin_active_ = false;
+        mixed_rejoin_started_time_s_ = -1.0;
+        mixed_rejoin_road_lateral_error_ = std::numeric_limits<double>::infinity();
+        mixed_rejoin_road_heading_error_deg_ = std::numeric_limits<double>::infinity();
         return;
     }
 
     mixed_gate_score_ = compute_mixed_gate_score();
     mixed_structured_score_ = compute_mixed_structured_score();
     mixed_gate_confidence_ = clamp_value(
-        0.70 * mixed_gate_score_ +
-        0.30 * clamp_value(static_cast<double>(dynamic_lidar_stable_steps_) / 8.0, 0.0, 1.0),
+        0.55 * mixed_gate_score_ +
+        0.25 * clamp_value(static_cast<double>(dynamic_lidar_stable_steps_) / 8.0, 0.0, 1.0) +
+        0.20 * dynamic_lidar_active_gate_confidence_,
         0.0,
         1.0);
+
+    if (mixed_rejoin_active_) {
+        const bool tracked_vehicle =
+            config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+        const double rejoin_elapsed = mixed_rejoin_started_time_s_ >= 0.0
+                                          ? sim_time_ - mixed_rejoin_started_time_s_
+                                          : 0.0;
+        const bool rejoin_pose_stable =
+            rejoin_elapsed >= 0.60 &&
+            mixed_gate_rejoin_cooldown_steps_ <= 0 &&
+            mixed_rejoin_road_lateral_error_ <=
+                (tracked_vehicle ? 0.11 : 0.09) &&
+            mixed_rejoin_road_heading_error_deg_ <=
+                (tracked_vehicle ? 28.0 : 38.0);
+        if (rejoin_pose_stable) {
+            mixed_rejoin_active_ = false;
+            mixed_rejoin_started_time_s_ = -1.0;
+            mixed_gate_rejoin_cooldown_steps_ = std::max(
+                mixed_gate_rejoin_cooldown_steps_,
+                tracked_vehicle ? 12 : 20);
+            mixed_rejoin_road_lateral_error_ = std::numeric_limits<double>::infinity();
+            mixed_rejoin_road_heading_error_deg_ = std::numeric_limits<double>::infinity();
+        }
+    }
 
     if (mixed_gate_rejoin_cooldown_steps_ > 0) {
         --mixed_gate_rejoin_cooldown_steps_;
         if (!mixed_gate_mode_active_) {
             return;
         }
+    }
+    if (mixed_rejoin_active_ && !mixed_gate_mode_active_) {
+        return;
     }
 
     const bool stable_gate = dynamic_lidar_stable_steps_ >= (world_span_m(world_) <= 5.0 ? 4 : 7);
@@ -383,7 +424,9 @@ void PlannerDrivenVehicleSim::update_mixed_arbitration() {
             !mixed_closed_semantic_gate_sequence(world_) &&
             use_dynamic_lidar_gates();
         const int gate_memory_abort_steps =
-            obstacle_closed_dynamic_gate ? 700 : (world_span_m(world_) <= 5.0 ? 24 : 5);
+            (obstacle_closed_dynamic_gate || compact_mixed_open_world)
+                ? 700
+                : (world_span_m(world_) <= 5.0 ? 24 : 5);
         if (mixed_gate_mode_active_ && dynamic_lidar_gate_hold_steps_ > gate_memory_abort_steps) {
             leave_mixed_gate_mode(true);
         }
@@ -519,7 +562,7 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
     const Vec2 progress_axis = mixed_closed_loop ? heading_axis : goal_axis;
     const double passed_gate_reject_radius =
         lab_scale_mixed_closed
-            ? 0.35
+            ? (tracked_vehicle ? 0.30 : 0.50)
             : (compact_mixed_open_world
             ? 0.12
             : (mixed_closed_loop
@@ -599,7 +642,10 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
         if (!vehicle_road_projection.valid || !projection.valid || !(projection.length > 1e-6)) {
             return std::numeric_limits<double>::infinity();
         }
-        return closed_loop_forward_delta(vehicle_road_projection.s, projection.s, projection.length);
+        const double current_s = std::isfinite(structured_last_s_)
+                                     ? wrap_arc_length(structured_last_s_, projection.length)
+                                     : vehicle_road_projection.s;
+        return closed_loop_forward_delta(current_s, projection.s, projection.length);
     };
 
     auto min_local_loop_gate_delta = [&]() {
@@ -637,6 +683,20 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
                std::abs(projection.lateral) <= std::max(0.05, mixed_road_half_width - margin);
     };
 
+    // A gate center can be inside the map while the rotated robot footprint is
+    // already outside it. Keep dynamic targets inside a conservative inscribed
+    // rectangle so gaps between an obstacle and an arena edge are accepted only
+    // when the complete vehicle can physically traverse them.
+    const double footprint_radius =
+        0.5 * std::hypot(geometry_.body_length, geometry_.body_width) + 0.012;
+    auto inside_safe_vehicle_bounds = [&](const Vec2& point) {
+        const Rect& bounds = world_.bounds();
+        return point.x >= bounds.min_x + footprint_radius &&
+               point.x <= bounds.max_x - footprint_radius &&
+               point.y >= bounds.min_y + footprint_radius &&
+               point.y <= bounds.max_y - footprint_radius;
+    };
+
     auto already_passed_dynamic_gate = [&](const Vec2& target) {
         for (const Vec2& passed_position : dynamic_lidar_passed_gate_positions_) {
             if (distance(passed_position, target) <= passed_gate_reject_radius) {
@@ -662,7 +722,8 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
 
     if (mixed_closed_loop && !closed_obstacle_references.empty()) {
         const double minimum_gap =
-            lab_scale_mixed_closed ? (tracked_vehicle ? 0.18 : 0.16)
+            lab_scale_mixed_closed
+                ? geometry_.body_width + 0.024
                                    : (tracked_vehicle ? 0.20 : 0.30);
         for (const Rect& obstacle : closed_obstacle_references) {
             const Vec2 obstacle_center{
@@ -718,24 +779,61 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
                     max_longitudinal +
                     (lab_scale_mixed_closed ? (tracked_vehicle ? 0.14 : 0.12)
                                             : (tracked_vehicle ? 0.34 : 0.18));
-            const double side_edges[] = {
-                std::min(max_lateral, mixed_road_half_width - 0.02),
-                std::max(min_lateral, -mixed_road_half_width + 0.02),
+            const Vec2 target_base{
+                obstacle_projection.point.x +
+                    obstacle_projection.tangent.x * obstacle_gate_longitudinal,
+                obstacle_projection.point.y +
+                    obstacle_projection.tangent.y * obstacle_gate_longitudinal,
             };
-            const double road_walls[] = {mixed_road_half_width, -mixed_road_half_width};
+            double safe_min_lateral = -mixed_road_half_width;
+            double safe_max_lateral = mixed_road_half_width;
+            auto constrain_lateral_to_bounds = [&](double base_coordinate,
+                                                    double normal_component,
+                                                    double safe_min_coordinate,
+                                                    double safe_max_coordinate) {
+                if (std::abs(normal_component) <= 1e-9) {
+                    return base_coordinate >= safe_min_coordinate &&
+                           base_coordinate <= safe_max_coordinate;
+                }
+                double lo = (safe_min_coordinate - base_coordinate) / normal_component;
+                double hi = (safe_max_coordinate - base_coordinate) / normal_component;
+                if (lo > hi) {
+                    std::swap(lo, hi);
+                }
+                safe_min_lateral = std::max(safe_min_lateral, lo);
+                safe_max_lateral = std::min(safe_max_lateral, hi);
+                return safe_min_lateral <= safe_max_lateral;
+            };
+            const Rect& bounds = world_.bounds();
+            if (!constrain_lateral_to_bounds(
+                    target_base.x,
+                    obstacle_projection.normal.x,
+                    bounds.min_x + footprint_radius,
+                    bounds.max_x - footprint_radius) ||
+                !constrain_lateral_to_bounds(
+                    target_base.y,
+                    obstacle_projection.normal.y,
+                    bounds.min_y + footprint_radius,
+                    bounds.max_y - footprint_radius)) {
+                continue;
+            }
+            const double road_walls[] = {safe_max_lateral, safe_min_lateral};
+            const double side_edges[] = {
+                std::min(max_lateral, road_walls[0] - 0.01),
+                std::max(min_lateral, road_walls[1] + 0.01),
+            };
             for (int side = 0; side < 2; ++side) {
                 const double gap_width = std::abs(road_walls[side] - side_edges[side]);
                 if (gap_width < minimum_gap) {
                     continue;
                 }
-                const double side_bias =
-                    lab_scale_mixed_closed ? (gap_width > 0.36 ? 0.80 : 0.68) : 0.50;
+                const double side_bias = 0.50;
                 const double target_lateral =
                     side_edges[side] + side_bias * (road_walls[side] - side_edges[side]);
                 const double wall_clearance = std::abs(road_walls[side] - target_lateral);
                 const double obstacle_clearance = std::abs(target_lateral - side_edges[side]);
                 const double min_center_clearance =
-                    lab_scale_mixed_closed ? (tracked_vehicle ? 0.065 : 0.055)
+                    lab_scale_mixed_closed ? 0.5 * geometry_.body_width + 0.010
                                            : (tracked_vehicle ? 0.08 : 0.12);
                 if (std::min(wall_clearance, obstacle_clearance) < min_center_clearance) {
                     continue;
@@ -745,14 +843,13 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
                 }
 
                 const Vec2 target{
-                    obstacle_projection.point.x +
-                        obstacle_projection.tangent.x * obstacle_gate_longitudinal +
+                    target_base.x +
                         obstacle_projection.normal.x * target_lateral,
-                    obstacle_projection.point.y +
-                        obstacle_projection.tangent.y * obstacle_gate_longitudinal +
+                    target_base.y +
                         obstacle_projection.normal.y * target_lateral,
                 };
                 if (!point_in_bounds(world_.bounds(), target) ||
+                    !inside_safe_vehicle_bounds(target) ||
                     !inside_mixed_road_corridor(target, 0.02) ||
                     already_passed_dynamic_gate(target)) {
                     continue;
@@ -778,9 +875,9 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
 
                 DynamicLidarGateCandidate candidate{};
                 candidate.position = target;
-                candidate.heading = lab_scale_mixed_closed
-                                        ? angle_to(navigation_position_, target)
-                                        : std::atan2(obstacle_projection.tangent.y, obstacle_projection.tangent.x);
+                candidate.heading = std::atan2(
+                    obstacle_projection.tangent.y,
+                    obstacle_projection.tangent.x);
                 candidate.width = clamp_value(2.0 * std::atan2(0.5 * gap_width, target_distance), 0.18, 1.2);
                 candidate.score =
                     0.55 * std::abs(wrap_angle(candidate.heading - navigation_yaw_)) +
@@ -846,6 +943,41 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
                 0.45 * progress;
             candidates.push_back(candidate);
         }
+
+        // These reproducible presets provide semantic gate anchors, but each
+        // anchor is admitted only when the LiDAR beams confirm free space
+        // beyond it. Do not mix those ordered gates with arbitrary free-sector
+        // candidates: doing so created 6-11 false crossings for maps that
+        // contain exactly four intermediate gates.
+        const int required_unstructured_gates = static_cast<int>(std::count_if(
+            world_.gates().begin(),
+            world_.gates().end(),
+            [](const GateSpec& spec) { return !spec.final; }));
+        if (dynamic_lidar_passed_gates_ >= required_unstructured_gates) {
+            int goal_clear_beams = 0;
+            for (const LidarHit& hit : lidar_hits_) {
+                if (std::abs(wrap_angle(hit.angle - goal_heading)) <= 0.12 &&
+                    std::isfinite(hit.distance) &&
+                    hit.distance >= std::min(
+                        goal_distance + 0.05,
+                        sensor_range * 0.98)) {
+                    ++goal_clear_beams;
+                }
+            }
+            if (goal_distance <= sensor_range * 0.95 && goal_clear_beams >= 3) {
+                DynamicLidarGateCandidate goal_candidate{};
+                goal_candidate.position = world_.goal();
+                goal_candidate.heading = goal_heading;
+                goal_candidate.width = 0.50;
+                goal_candidate.score =
+                    -8.0 - 0.25 * std::max(0.0, sensor_range - goal_distance);
+                candidates.push_back(goal_candidate);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+            return lhs.score < rhs.score;
+        });
+        return candidates;
     }
 
     if (mixed_mode_enabled() && !world_.gates().empty()) {
@@ -1030,4 +1162,3 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
     });
     return candidates;
 }
-

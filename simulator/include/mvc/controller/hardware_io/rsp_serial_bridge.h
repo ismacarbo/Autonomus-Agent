@@ -20,6 +20,18 @@ class ProtocolResponseError : public std::runtime_error {
 struct ControllerTelemetry {
     std::uint32_t ms = 0;
     double rx_timestamp_s = 0.0;
+    double imu_rx_timestamp_s = 0.0;
+    double safety_rx_timestamp_s = 0.0;
+    double encoder_rx_timestamp_s = 0.0;
+    double motor_rx_timestamp_s = 0.0;
+    double heartbeat_rx_timestamp_s = 0.0;
+    double imu_host_timestamp_s = 0.0;
+    double safety_host_timestamp_s = 0.0;
+    double encoder_host_timestamp_s = 0.0;
+    double motor_host_timestamp_s = 0.0;
+    double heartbeat_host_timestamp_s = 0.0;
+    double mcu_to_host_offset_s = 0.0;
+    double mcu_clock_jitter_s = 0.0;
 
     std::uint32_t imu_ms = 0;
     std::uint32_t safety_ms = 0;
@@ -118,6 +130,8 @@ class RSPSerialBridge {
                   std::int16_t pwm_r,
                   bool force = false,
                   MotorControlMode control_mode = MotorControlMode::SafeDirectPwm);
+    // RSP motor payload values are signed millimetres/second in closed-loop mode.
+    void send_wheel_velocity_mps(double left_mps, double right_mps, bool force = false);
     std::optional<AckPayload> stop(StopReason reason = StopReason::UserRequest, bool wait_ack = false, double timeout_s = 0.8);
 
   private:
@@ -128,6 +142,7 @@ class RSPSerialBridge {
                              std::uint8_t flags = 0,
                              std::optional<std::uint8_t> seq = std::nullopt);
     void refresh_public_telemetry();
+    double synchronize_mcu_time(std::uint32_t mcu_ms, double rx_timestamp_s);
     void handle_frame(const Frame& frame);
     void maybe_send_heartbeat();
     AckPayload wait_for_response(std::uint8_t seq, std::uint8_t msg_type, double timeout_s);
@@ -144,6 +159,9 @@ class RSPSerialBridge {
     double last_send_ts_ = 0.0;
     double last_heartbeat_tx_ = 0.0;
     double last_rx_ts_ = 0.0;
+    bool clock_sync_initialized_ = false;
+    double mcu_to_host_offset_s_ = 0.0;
+    double mcu_clock_jitter_s_ = 0.0;
 };
 
 }  // namespace thesis_sim

@@ -1,5 +1,26 @@
 cmake_minimum_required(VERSION 3.16)
 
+execute_process(
+  COMMAND git rev-parse --short=12 HEAD
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  OUTPUT_VARIABLE THESIS_SOURCE_REVISION_VALUE
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET
+)
+execute_process(
+  COMMAND git rev-parse --short=12 HEAD
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/third_party/progettotesi
+  OUTPUT_VARIABLE THESIS_PLANNER_SUBMODULE_REVISION_VALUE
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET
+)
+if(NOT THESIS_SOURCE_REVISION_VALUE)
+  set(THESIS_SOURCE_REVISION_VALUE "unknown")
+endif()
+if(NOT THESIS_PLANNER_SUBMODULE_REVISION_VALUE)
+  set(THESIS_PLANNER_SUBMODULE_REVISION_VALUE "unknown")
+endif()
+
 option(THESIS_BUILD_SIM_GUI "Build thesis_planner_sim and its SDL/ImGui dependencies" ON)
 
 if(THESIS_BUILD_SIM_GUI)
@@ -147,6 +168,7 @@ target_include_directories(thesis_robot_io PUBLIC
 add_library(thesis_planner_stack STATIC
   src/model/navigation/actuation_model.cpp
   src/model/navigation/mpc_path_follower.cpp
+  src/model/navigation/robot_calibration_profile.cpp
   src/model/navigation/state_estimator_ekf.cpp
   src/model/navigation/vehicle_dynamics.cpp
   src/model/perception/perception_model.cpp
@@ -154,6 +176,11 @@ add_library(thesis_planner_stack STATIC
 
 target_include_directories(thesis_planner_stack PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_definitions(thesis_planner_stack PUBLIC
+  THESIS_SOURCE_REVISION="${THESIS_SOURCE_REVISION_VALUE}"
+  THESIS_PLANNER_SUBMODULE_REVISION="${THESIS_PLANNER_SUBMODULE_REVISION_VALUE}"
 )
 
 target_link_libraries(thesis_planner_stack PUBLIC
@@ -238,6 +265,7 @@ target_include_directories(thesis_robot_runner PRIVATE
 target_link_libraries(thesis_robot_runner PRIVATE
   thesis_hardware_planner
   thesis_live_view
+  thesis_slam_bridge
 )
 
 if(BUILD_TESTING)

@@ -136,10 +136,10 @@ Differential drive motor command sent by the host.
 
 ### Payload
 
-| Field          | Size | Type    | Unit      | Description                         |
-| -------------- | ---: | ------- | --------- | ----------------------------------- |
-| `PWM_LEFT`     |    2 | `int16` | PWM units | Requested left motor command        |
-| `PWM_RIGHT`    |    2 | `int16` | PWM units | Requested right motor command       |
+| Field          | Size | Type    | Unit         | Description                         |
+| -------------- | ---: | ------- | ------------ | ----------------------------------- |
+| `LEFT_TARGET`  |    2 | `int16` | mode-defined | Requested left motor target         |
+| `RIGHT_TARGET` |    2 | `int16` | mode-defined | Requested right motor target        |
 | `CONTROL_MODE` |    1 | `uint8` | enum      | Interpretation mode for the command |
 | `RESERVED`     |    1 | `uint8` | -         | Reserved, must be zero              |
 
@@ -149,16 +149,20 @@ Differential drive motor command sent by the host.
 | -----: | --------------------------------- |
 | `0x00` | Direct PWM                        |
 | `0x01` | Safe direct PWM                   |
-| `0x02` | Reserved for future velocity mode |
+| `0x02` | Wheel velocity closed loop; targets are signed mm/s |
 | `0x03` | Reserved                          |
 
 ### Semantic Notes
 The command expresses motion intent. It does not guarantee that the same values are physically applied. Actual applied output should be reported separately through `MOTOR_STATE`.
 
 ### Typical Value Domain
-Recommended operational range:
+Recommended operational range in direct PWM modes:
 
 - `-255 .. +255`
+
+In wheel-velocity mode the firmware accepts signed `-2000 .. +2000 mm/s`,
+then applies encoder PI feedback plus feed-forward at 50 Hz. Safety, watchdog
+and output ramping remain active after the PID stage.
 
 ---
 
@@ -285,6 +289,11 @@ This message is intentionally generic. Its exact parameter catalogue is part of 
 | `0x08`     | `SLEW_STEP`             | `uint8`            | PWM slew-rate step |
 | `0x09`     | `SAFETY_BYPASS`         | `uint8`            | Stored for compatibility; current encoder/IMU profile has no low-level proximity stop to bypass |
 | `0x0A`     | `ENCODER_TELEMETRY_MS`  | `uint16`, `uint32` | Encoder telemetry period |
+| `0x0B`     | `VELOCITY_KP_Q8`        | `uint16`, `uint32` | Proportional gain in Q8 |
+| `0x0C`     | `VELOCITY_KI_Q8`        | `uint16`, `uint32` | Integral gain in Q8 |
+| `0x0D`     | `ENCODER_TICKS_PER_REV` | `uint16`, `uint32` | Encoder scale used by the low-level loop |
+| `0x0E`     | `WHEEL_RADIUS_UM`       | `uint32`           | Effective drive radius in micrometres |
+| `0x0F`     | `VELOCITY_FF_Q8`        | `uint16`, `uint32` | Velocity-to-PWM feed-forward in Q8 |
 
 ---
 
@@ -452,7 +461,7 @@ Report current low-level motor actuation state.
 |     2 | `CMD_TIMEOUT`    | Timeout condition active         |
 |     3 | `SLEW_LIMITING`  | Output ramp limiting active      |
 |     4 | `STOP_REQUESTED` | Stop condition currently imposed |
-|     5 | `RESERVED`       | Reserved                         |
+|     5 | `VELOCITY_CLOSED_LOOP` | Encoder velocity loop active |
 | 6..15 | `RESERVED`       | Reserved                         |
 
 ### Interpretation Notes

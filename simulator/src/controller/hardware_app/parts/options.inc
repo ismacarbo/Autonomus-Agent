@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -8,6 +9,7 @@
 #include <cstring>
 #include <exception>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -17,6 +19,8 @@
 
 #include "mvc/controller/hardware_io/external_pose_receiver.h"
 #include "mvc/controller/hardware_planner/runner.h"
+#include "mvc/controller/slam/slam_toolbox_bridge.h"
+#include "mvc/model/navigation/robot_calibration_profile.h"
 #include "mvc/view/live_stream/live_view_stream.h"
 
 namespace {
@@ -36,9 +40,12 @@ using thesis_sim::HardwareLocalizationPolicy;
 using thesis_sim::LidarHit;
 using thesis_sim::LiveViewStreamClient;
 using thesis_sim::MotorControlMode;
+using thesis_sim::mvc::model::RobotCalibrationProfile;
+using thesis_sim::mvc::model::load_robot_calibration_profile;
 using thesis_sim::RealRobotBridge;
 using thesis_sim::RealRobotObservation;
 using thesis_sim::RPLidarA1;
+using thesis_sim::SlamToolboxBridgeClient;
 using thesis_sim::Rect;
 using thesis_sim::StructuredMapPreset;
 using thesis_sim::UnstructuredMapPreset;
@@ -90,6 +97,7 @@ struct AppOptions {
     bool gyro_zero = true;
     bool planner_safety_stop_enabled = false;
     bool controller_reset_on_connect = false;
+    bool mcu_velocity_closed_loop = false;
     bool simulate = false;
     bool stop_on_stream_loss = false;
     VehicleProfile vehicle_profile = VehicleProfile::Car;
@@ -111,6 +119,10 @@ struct AppOptions {
     int external_pose_udp_port = 0;
     ExternalPoseTransform external_pose_transform{};
     double external_pose_timeout_s = 0.25;
+    std::string slam_bridge_host = "127.0.0.1";
+    int slam_bridge_port = 0;
+    bool slam_pose_feedback = false;
+    std::string calibration_profile_path;
 };
 
 bool parse_external_pose_transform(const std::string& value,
@@ -143,6 +155,34 @@ double world_span_m(const WorldMap& world) {
     return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
 }
 
+void apply_measured_hardware_geometry(VehicleModelKind model,
+                                      thesis_sim::DifferentialDriveGeometry* drive) {
+    if (drive == nullptr) {
+        return;
+    }
+    if (model == VehicleModelKind::TrackedVehicle) {
+        drive->wheelbase = thesis_sim::measured_robot::kTankBeltLengthM;
+        drive->cg_to_front = 0.5 * thesis_sim::measured_robot::kTankBodyLengthM;
+        drive->cg_to_rear = 0.5 * thesis_sim::measured_robot::kTankBodyLengthM;
+        drive->track_width = thesis_sim::measured_robot::kTankTrackCenterDistanceM;
+        drive->body_length = thesis_sim::measured_robot::kTankBodyLengthM;
+        drive->body_width = thesis_sim::measured_robot::kTankBodyWidthM;
+        drive->wheel_or_belt_length = thesis_sim::measured_robot::kTankBeltLengthM;
+        drive->wheel_or_belt_width = thesis_sim::measured_robot::kTankBeltWidthM;
+        drive->wheel_radius = thesis_sim::measured_robot::kTankEffectiveDriveRadiusDefaultM;
+        return;
+    }
+    drive->wheelbase = 0.18;
+    drive->cg_to_front = 0.09;
+    drive->cg_to_rear = 0.09;
+    drive->track_width = 0.13;
+    drive->body_length = thesis_sim::measured_robot::kCarBodyLengthM;
+    drive->body_width = thesis_sim::measured_robot::kCarBodyWidthM;
+    drive->wheel_or_belt_length = thesis_sim::measured_robot::kCarWheelDiameterM;
+    drive->wheel_or_belt_width = 0.020;
+    drive->wheel_radius = thesis_sim::measured_robot::kCarWheelRadiusM;
+}
+
 bool compact_hardware_mixed_lab_world(const WorldMap& world) {
     return world.environment_mode() == EnvironmentMode::MixedRoadGates &&
            world.unstructured_preset() == UnstructuredMapPreset::HardwareLab &&
@@ -162,13 +202,7 @@ void apply_structured_hardware_config(const WorldMap& world,
     // The normalized validation arena is 1.20 x 1.20 m and both physical
     // platforms occupy a 0.25 x 0.15 m footprint. Keep the LiDAR stop margin
     // relative to that footprint instead of inheriting the large-map default.
-    config->drive.wheelbase = 0.18;
-    config->drive.cg_to_front = 0.09;
-    config->drive.cg_to_rear = 0.09;
-    config->drive.track_width = 0.13;
-    config->drive.body_length = 0.25;
-    config->drive.body_width = 0.15;
-    config->drive.wheel_radius = 0.032;
+    apply_measured_hardware_geometry(config->vehicle_model, &config->drive);
     config->drive.max_curvature =
         config->vehicle_model == VehicleModelKind::TrackedVehicle ? 4.80 : 4.50;
     config->drive.max_steer_angle = 0.70;
@@ -190,13 +224,7 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
 
     config->cruise_speed_limit = 0.16;
     config->goal_tolerance_m = 0.08;
-    config->drive.wheelbase = 0.18;
-    config->drive.cg_to_front = 0.09;
-    config->drive.cg_to_rear = 0.09;
-    config->drive.track_width = 0.13;
-    config->drive.body_length = 0.25;
-    config->drive.body_width = 0.15;
-    config->drive.wheel_radius = 0.032;
+    apply_measured_hardware_geometry(config->vehicle_model, &config->drive);
     config->localization.max_range_m = 1.80;
     config->localization.obstacle_stop_distance_m = 0.18;
     config->gap_extraction.planning_max_range_m = 1.80;
@@ -490,7 +518,12 @@ void print_usage(const char* argv0) {
         << "  --no-auto-mode            do not force AUTONOMOUS mode on connect\n"
         << "  --no-gyro-zero            do not send GYRO_ZERO on connect\n"
         << "  --enable-planner-safety   enable planner-side LiDAR safety stop logic\n"
-        << "  --controller-reset-on-connect  pulse DTR/RTS when opening the controller serial port\n";
+        << "  --controller-reset-on-connect  pulse DTR/RTS when opening the controller serial port\n"
+        << "  --mcu-wheel-pid           send wheel velocity targets to firmware PID (requires new firmware)\n"
+        << "  --slam-bridge-port N      stream odometry + LiDAR to the SLAM Toolbox UDP bridge\n"
+        << "  --slam-bridge-host HOST   bridge host (default 127.0.0.1)\n"
+        << "  --slam-pose-feedback      enable bounded SLAM-to-EKF corrections\n"
+        << "  --calibration-profile P   override the versioned robot calibration JSON\n";
 }
 
 AppOptions parse_args(int argc, char** argv) {
@@ -600,6 +633,16 @@ AppOptions parse_args(int argc, char** argv) {
             options.planner_safety_stop_enabled = true;
         } else if (arg == "--controller-reset-on-connect") {
             options.controller_reset_on_connect = true;
+        } else if (arg == "--mcu-wheel-pid") {
+            options.mcu_velocity_closed_loop = true;
+        } else if (arg == "--slam-bridge-port" && i + 1 < argc) {
+            options.slam_bridge_port = std::atoi(argv[++i]);
+        } else if (arg == "--slam-bridge-host" && i + 1 < argc) {
+            options.slam_bridge_host = argv[++i];
+        } else if (arg == "--slam-pose-feedback") {
+            options.slam_pose_feedback = true;
+        } else if (arg == "--calibration-profile" && i + 1 < argc) {
+            options.calibration_profile_path = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -608,5 +651,9 @@ AppOptions parse_args(int argc, char** argv) {
     options.stream_every_n_steps = std::max(options.stream_every_n_steps, 1);
     options.external_pose_udp_port = std::max(options.external_pose_udp_port, 0);
     options.external_pose_timeout_s = std::max(options.external_pose_timeout_s, 0.01);
+    options.slam_bridge_port = std::max(options.slam_bridge_port, 0);
+    if (options.slam_pose_feedback && options.slam_bridge_port == 0) {
+        throw std::runtime_error("--slam-pose-feedback requires --slam-bridge-port");
+    }
     return options;
 }

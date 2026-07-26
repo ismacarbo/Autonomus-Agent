@@ -683,6 +683,22 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        passed_unstructured_gap_count_ > 0 &&
+        have_global_goal) {
+        // Once at least one real opening has been crossed, admit the physical
+        // mission goal as the next target only through the same LiDAR,
+        // occupancy-grid and persistent-map checks used for every dynamic
+        // candidate.  This prevents an open Hardware Lab from demanding a
+        // second arbitrary free-sector gate (or succeeding on a false gap
+        // caused by localization drift) while still forbidding a shortcut
+        // through an obstacle.
+        try_add_candidate(
+            global_goal,
+            4.50,
+            std::max(required_gap_width, geometry_.body_width + 0.08));
+    }
+
     const double min_depth_contrast = micro_hardware_lab
         ? clamp_value(0.16 * current_world_span, 0.045, 0.095)
         : std::max(
@@ -1439,4 +1455,3 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
 }
-

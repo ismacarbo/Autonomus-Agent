@@ -17,6 +17,12 @@ struct RealRobotObservation {
     bool have_lidar_scan = false;
     std::vector<RPLidarA1::ScanPoint> lidar_scan;
     double min_lidar_range_m = 0.0;
+    double lidar_scan_start_timestamp_s = 0.0;
+    double lidar_scan_end_timestamp_s = 0.0;
+    double lidar_scan_mid_timestamp_s = 0.0;
+    double lidar_scan_duration_s = 0.0;
+    double lidar_scan_age_s = 0.0;
+    bool lidar_scan_reused = false;
 };
 
 class RealRobotBridge {
@@ -67,6 +73,9 @@ class RealRobotBridge {
                   MotorControlMode control_mode = MotorControlMode::SafeDirectPwm) {
         controller_.send_pwm(pwm_l, pwm_r, force, control_mode);
     }
+    void send_wheel_velocity_mps(double left_mps, double right_mps, bool force = false) {
+        controller_.send_wheel_velocity_mps(left_mps, right_mps, force);
+    }
     std::optional<AckPayload> stop(StopReason reason = StopReason::UserRequest, bool wait_ack = false, double timeout_s = 0.8) {
         return controller_.stop(reason, wait_ack, timeout_s);
     }
@@ -75,7 +84,10 @@ class RealRobotBridge {
     bool reconnect_lidar(bool log_failures);
     void refresh_observation_timestamp();
     void refresh_controller_snapshot();
-    void refresh_lidar_snapshot(std::vector<RPLidarA1::ScanPoint> scan);
+    void refresh_lidar_snapshot(std::vector<RPLidarA1::ScanPoint> scan,
+                                double scan_start_s = 0.0,
+                                double scan_end_s = 0.0,
+                                bool reused = false);
     std::vector<RPLidarA1::ScanPoint> recent_lidar_scan_or_empty(double max_age_s) const;
 
     Options options_;
@@ -85,6 +97,7 @@ class RealRobotBridge {
     double next_lidar_reconnect_time_s_ = 0.0;
     std::vector<RPLidarA1::ScanPoint> last_good_lidar_scan_;
     double last_good_lidar_scan_time_s_ = 0.0;
+    double last_good_lidar_scan_start_time_s_ = 0.0;
     RealRobotObservation observation_{};
 };
 

@@ -1,5 +1,6 @@
 #include "mvc/controller/simulation_planner/simulator.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace thesis_sim {
@@ -63,6 +64,25 @@ void PlannerDrivenVehicleSim::update_telemetry() {
         mixed_gate_confidence_,
         static_cast<double>(mixed_switch_count_),
         static_cast<double>(mixed_abort_count_),
+        static_cast<double>(active_dynamic_lidar_gate_track_id_),
+        dynamic_lidar_active_gate_confidence_,
+        static_cast<double>(dynamic_lidar_gate_target_switches_),
+        mixed_gate_mode_active_ ? 1.0 : (mixed_rejoin_active_ ? 2.0 : 0.0),
+        std::isfinite(structured_last_s_) ? structured_last_s_ : 0.0,
+        structured_progress_s_,
+        mixed_rejoin_active_ && mixed_rejoin_started_time_s_ >= 0.0
+            ? std::max(0.0, sim_time_ - mixed_rejoin_started_time_s_)
+            : 0.0,
+        mixed_rejoin_progress_start_s_,
+        std::isfinite(mixed_rejoin_road_lateral_error_)
+            ? mixed_rejoin_road_lateral_error_
+            : -1.0,
+        std::isfinite(mixed_rejoin_road_heading_error_deg_)
+            ? mixed_rejoin_road_heading_error_deg_
+            : -1.0,
+        std::abs(vehicle_.target_speed) > 1e-5
+            ? vehicle_.target_yaw_rate / vehicle_.target_speed
+            : 0.0,
     });
     if (static_cast<int>(history_.size()) > config_.max_history) {
         history_.erase(history_.begin());

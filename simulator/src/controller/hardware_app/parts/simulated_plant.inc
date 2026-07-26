@@ -31,7 +31,9 @@ int run_simulated(const AppOptions& options,
     plant->reset(runner.world().start(), runner.world().start_heading());
 
     bool collision = false;
-    double host_time_s = 0.0;
+    // Use a non-zero monotonic epoch because zero explicitly means
+    // "timestamp unavailable" in RealRobotObservation/ControllerTelemetry.
+    double host_time_s = 1.0;
     const bool trace_gate_events = std::getenv("THESIS_TRACE_GATES") != nullptr;
     Vec2 previous_gate_target{};
     bool had_previous_gate_target = false;
@@ -48,7 +50,7 @@ int run_simulated(const AppOptions& options,
             plant = make_simulated_hardware_plant(runner);
             plant->reset(runner.world().start(), runner.world().start_heading());
             collision = false;
-            host_time_s = 0.0;
+            host_time_s = 1.0;
             if (!send_stream_scene(options, runner, &streamer)) {
                 return 2;
             }
@@ -61,9 +63,29 @@ int run_simulated(const AppOptions& options,
         observation.host_timestamp_s = host_time_s;
         observation.have_controller_telemetry = true;
         observation.controller = make_controller_telemetry(plant_state, runner.last_command());
+        observation.controller.rx_timestamp_s = host_time_s;
+        observation.controller.imu_rx_timestamp_s = host_time_s;
+        observation.controller.safety_rx_timestamp_s = host_time_s;
+        observation.controller.encoder_rx_timestamp_s = host_time_s;
+        observation.controller.motor_rx_timestamp_s = host_time_s;
+        observation.controller.heartbeat_rx_timestamp_s = host_time_s;
+        observation.controller.imu_host_timestamp_s = host_time_s;
+        observation.controller.safety_host_timestamp_s = host_time_s;
+        observation.controller.encoder_host_timestamp_s = host_time_s;
+        observation.controller.motor_host_timestamp_s = host_time_s;
+        observation.controller.heartbeat_host_timestamp_s = host_time_s;
         if (runner.lidar_enabled_for_current_mode()) {
             observation.have_lidar_scan = true;
             observation.lidar_scan = make_lidar_scan(runner.world(), plant_state, planner_config);
+            observation.lidar_scan_duration_s = planner_config.nominal_dt;
+            observation.lidar_scan_start_timestamp_s =
+                host_time_s - observation.lidar_scan_duration_s;
+            observation.lidar_scan_end_timestamp_s = host_time_s;
+            observation.lidar_scan_mid_timestamp_s =
+                0.5 * (observation.lidar_scan_start_timestamp_s +
+                       observation.lidar_scan_end_timestamp_s);
+            observation.lidar_scan_age_s = 0.0;
+            observation.lidar_scan_reused = false;
             observation.min_lidar_range_m = observation.lidar_scan.empty()
                                                 ? 0.0
                                                 : observation.lidar_scan.front().distance_m;
@@ -211,4 +233,3 @@ int run_simulated(const AppOptions& options,
 }
 
 }  // namespace
-

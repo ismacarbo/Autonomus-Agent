@@ -3,6 +3,8 @@ int run_headless(const AppOptions& options) {
     sim_config.vehicle_model = options.vehicle_model;
     sim_config.dynamic_lidar_gates = options.dynamic_lidar_gates;
     apply_sim_level_to_config(options, &sim_config);
+    const VehicleTuningOverrides effective_tuning =
+        prepare_calibrated_profile(options, &sim_config);
     WorldMap world = make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,
@@ -13,7 +15,7 @@ int run_headless(const AppOptions& options) {
     world = fit_simulation_structured_world(std::move(world), options.vehicle_model);
     apply_dynamic_obstacle_sim_config(world, &sim_config);
     PlannerDrivenVehicleSim sim(std::move(world), sim_config);
-    apply_sim_tuning_overrides(&sim, options);
+    apply_sim_tuning_overrides(&sim, effective_tuning);
     const SimulationReport report = sim.run_headless(options.max_steps);
     const std::string status = report.goal_reached ? "goal_reached" : (report.collision ? "collision" : "timeout");
     const std::string report_path = default_report_path(sim, "headless");
@@ -79,6 +81,8 @@ int run_gui(const AppOptions& options) {
     sim_config.vehicle_model = options.vehicle_model;
     sim_config.dynamic_lidar_gates = options.dynamic_lidar_gates;
     apply_sim_level_to_config(options, &sim_config);
+    const VehicleTuningOverrides effective_tuning =
+        prepare_calibrated_profile(options, &sim_config);
     WorldMap world = make_world_from_mode(
         options.environment_mode,
         options.unstructured_preset,
@@ -89,7 +93,7 @@ int run_gui(const AppOptions& options) {
     world = fit_simulation_structured_world(std::move(world), options.vehicle_model);
     apply_dynamic_obstacle_sim_config(world, &sim_config);
     PlannerDrivenVehicleSim sim(std::move(world), sim_config);
-    apply_sim_tuning_overrides(&sim, options);
+    apply_sim_tuning_overrides(&sim, effective_tuning);
     HardwareViewerState hardware_view;
     LiveViewStreamServer hardware_server;
     SlamToolboxBridgeClient slam_bridge;

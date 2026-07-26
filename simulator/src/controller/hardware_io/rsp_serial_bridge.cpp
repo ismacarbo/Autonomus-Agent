@@ -70,6 +70,9 @@ void RSPSerialBridge::connect() {
     last_send_ts_ = 0.0;
     last_heartbeat_tx_ = 0.0;
     last_rx_ts_ = 0.0;
+    clock_sync_initialized_ = false;
+    mcu_to_host_offset_s_ = 0.0;
+    mcu_clock_jitter_s_ = 0.0;
 }
 
 void RSPSerialBridge::disconnect() {
@@ -181,6 +184,32 @@ void RSPSerialBridge::send_pwm(std::int16_t pwm_l,
     last_sent_pwm_ = {pwm_l, pwm_r};
 }
 
+void RSPSerialBridge::send_wheel_velocity_mps(double left_mps,
+                                              double right_mps,
+                                              bool force) {
+    require_serial();
+    const std::int16_t left_mm_s = static_cast<std::int16_t>(std::clamp<long>(
+        std::lround(left_mps * 1000.0), -2000L, 2000L));
+    const std::int16_t right_mm_s = static_cast<std::int16_t>(std::clamp<long>(
+        std::lround(right_mps * 1000.0), -2000L, 2000L));
+    const double now = monotonic_seconds();
+    if (!force &&
+        last_sent_pwm_.first.has_value() &&
+        last_sent_pwm_.second.has_value() &&
+        left_mm_s == *last_sent_pwm_.first &&
+        right_mm_s == *last_sent_pwm_.second &&
+        (now - last_send_ts_) < 0.15) {
+        return;
+    }
+    write_frame(
+        static_cast<std::uint8_t>(MsgType::MotorCmd),
+        encode_motor_cmd(
+            left_mm_s,
+            right_mm_s,
+            static_cast<std::uint8_t>(MotorControlMode::WheelVelocityMmPerSecond)));
+    last_sent_pwm_ = {left_mm_s, right_mm_s};
+}
+
 std::optional<AckPayload> RSPSerialBridge::stop(StopReason reason, bool wait_ack, double timeout_s) {
     const std::vector<std::uint8_t> payload = encode_stop_cmd(static_cast<std::uint8_t>(reason));
     const std::uint8_t seq = write_frame(static_cast<std::uint8_t>(MsgType::StopCmd),
@@ -222,6 +251,27 @@ void RSPSerialBridge::refresh_public_telemetry() {
     if (telemetry_.rx_timestamp_s <= 0.0) {
         telemetry_.rx_timestamp_s = last_rx_ts_;
     }
+}
+
+double RSPSerialBridge::synchronize_mcu_time(std::uint32_t mcu_ms,
+                                             double rx_timestamp_s) {
+    const double sample_offset =
+        rx_timestamp_s - static_cast<double>(mcu_ms) * 0.001;
+    if (!clock_sync_initialized_) {
+        mcu_to_host_offset_s_ = sample_offset;
+        clock_sync_initialized_ = true;
+    } else {
+        const double residual = sample_offset - mcu_to_host_offset_s_;
+        // Serial reception can only delay a frame. Follow lower-delay samples
+        // quickly and increases slowly, so the mapping is not biased by queues.
+        const double alpha = residual < 0.0 ? 0.20 : 0.01;
+        mcu_to_host_offset_s_ += alpha * residual;
+        mcu_clock_jitter_s_ =
+            0.95 * mcu_clock_jitter_s_ + 0.05 * std::abs(residual);
+    }
+    telemetry_.mcu_to_host_offset_s = mcu_to_host_offset_s_;
+    telemetry_.mcu_clock_jitter_s = mcu_clock_jitter_s_;
+    return static_cast<double>(mcu_ms) * 0.001 + mcu_to_host_offset_s_;
 }
 
 void RSPSerialBridge::handle_frame(const Frame& frame) {
@@ -296,6 +346,8 @@ void RSPSerialBridge::handle_frame(const Frame& frame) {
         telemetry_.acc_z_raw = imu->acc_z_raw;
         telemetry_.gyro_z_raw = imu->gyro_z_raw;
         telemetry_.rx_timestamp_s = last_rx_ts_;
+        telemetry_.imu_rx_timestamp_s = last_rx_ts_;
+        telemetry_.imu_host_timestamp_s = synchronize_mcu_time(imu->mcu_time_ms, last_rx_ts_);
     } else if (const auto* safety = std::get_if<SafetyTelemetryPayload>(&decoded.data)) {
         telemetry_.have_safety = true;
         telemetry_.safety_ms = safety->mcu_time_ms;
@@ -305,6 +357,8 @@ void RSPSerialBridge::handle_frame(const Frame& frame) {
         telemetry_.ir_r_raw = safety->ir_right_raw;
         telemetry_.safety_flags = safety->safety_flags;
         telemetry_.rx_timestamp_s = last_rx_ts_;
+        telemetry_.safety_rx_timestamp_s = last_rx_ts_;
+        telemetry_.safety_host_timestamp_s = synchronize_mcu_time(safety->mcu_time_ms, last_rx_ts_);
     } else if (const auto* motor = std::get_if<MotorStatePayload>(&decoded.data)) {
         telemetry_.have_motor = true;
         telemetry_.motor_ms = motor->mcu_time_ms;
@@ -315,6 +369,8 @@ void RSPSerialBridge::handle_frame(const Frame& frame) {
         telemetry_.pwm_r = motor->current_pwm_right;
         telemetry_.motor_flags = motor->motor_flags;
         telemetry_.rx_timestamp_s = last_rx_ts_;
+        telemetry_.motor_rx_timestamp_s = last_rx_ts_;
+        telemetry_.motor_host_timestamp_s = synchronize_mcu_time(motor->mcu_time_ms, last_rx_ts_);
     } else if (const auto* heartbeat = std::get_if<HeartbeatStatePayload>(&decoded.data)) {
         telemetry_.have_heartbeat = true;
         telemetry_.heartbeat_ms = heartbeat->mcu_time_ms;
@@ -325,6 +381,8 @@ void RSPSerialBridge::handle_frame(const Frame& frame) {
         telemetry_.fw_minor = heartbeat->fw_minor;
         telemetry_.error_code = heartbeat->error_code;
         telemetry_.rx_timestamp_s = last_rx_ts_;
+        telemetry_.heartbeat_rx_timestamp_s = last_rx_ts_;
+        telemetry_.heartbeat_host_timestamp_s = synchronize_mcu_time(heartbeat->mcu_time_ms, last_rx_ts_);
     } else if (const auto* encoder = std::get_if<EncoderTelemetryPayload>(&decoded.data)) {
         telemetry_.have_encoder = true;
         telemetry_.encoder_ms = encoder->mcu_time_ms;
@@ -334,6 +392,8 @@ void RSPSerialBridge::handle_frame(const Frame& frame) {
         telemetry_.enc_dt_ms = encoder->dt_ms;
         telemetry_.enc_flags = encoder->enc_flags;
         telemetry_.rx_timestamp_s = last_rx_ts_;
+        telemetry_.encoder_rx_timestamp_s = last_rx_ts_;
+        telemetry_.encoder_host_timestamp_s = synchronize_mcu_time(encoder->mcu_time_ms, last_rx_ts_);
     }
 
     refresh_public_telemetry();

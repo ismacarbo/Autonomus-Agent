@@ -999,6 +999,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
     const auto [left_wheel_speed, right_wheel_speed] =
         wheel_speeds_from_body(last_command_.target_speed, last_command_.target_yaw_rate, half_track);
+    last_command_.target_left_wheel_speed_mps = left_wheel_speed;
+    last_command_.target_right_wheel_speed_mps = right_wheel_speed;
 
     const int ff_left = wheel_speed_to_pwm(left_wheel_speed, config_.pwm.left_scale);
     const int ff_right = wheel_speed_to_pwm(right_wheel_speed, config_.pwm.right_scale);
@@ -1293,4 +1295,3 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
     diagnostics_.stall_boost_active = stall_boost_active_;
 }
-

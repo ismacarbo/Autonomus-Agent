@@ -53,13 +53,7 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
         // far more ticks per wheel revolution than the small car profile; using
         // the car default makes odometry jump and collapses structured tracking
         // into an in-place yaw correction.
-        config->drive.wheelbase = 0.18;
-        config->drive.cg_to_front = 0.09;
-        config->drive.cg_to_rear = 0.09;
-        config->drive.track_width = 0.13;
-        config->drive.body_length = 0.25;
-        config->drive.body_width = 0.15;
-        config->drive.wheel_radius = 0.032;
+        apply_measured_hardware_geometry(VehicleModelKind::TrackedVehicle, &config->drive);
         config->drive.encoder_ticks_per_revolution = 2400;
         config->drive.max_linear_speed = 0.22;
         config->drive.max_yaw_rate = 1.80;
@@ -71,6 +65,8 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
         config->pwm.stall_boost_after_cycles = 2;
         config->pwm.stall_target_speed_threshold_mps = 0.010;
         config->cruise_speed_limit = std::min(config->cruise_speed_limit, 0.09);
+    } else {
+        apply_measured_hardware_geometry(VehicleModelKind::CarLikeBicycle, &config->drive);
     }
 
     if (options.encoder_ticks_per_revolution > 0) {
@@ -78,6 +74,99 @@ void apply_vehicle_profile(const AppOptions& options, HardwarePlannerConfig* con
     }
     if (options.wheel_radius_m > 0.0) {
         config->drive.wheel_radius = options.wheel_radius_m;
+    }
+    if (options.track_width_m > 0.0) {
+        config->drive.track_width = options.track_width_m;
+    }
+    if (options.max_linear_speed_mps > 0.0) {
+        config->drive.max_linear_speed = options.max_linear_speed_mps;
+    }
+    if (options.max_yaw_rate_rad_s > 0.0) {
+        config->drive.max_yaw_rate = options.max_yaw_rate_rad_s;
+    }
+    if (options.cruise_speed_limit_mps > 0.0) {
+        config->cruise_speed_limit = options.cruise_speed_limit_mps;
+    }
+}
+
+std::string resolve_robot_calibration_path(const AppOptions& options) {
+    if (!options.calibration_profile_path.empty()) {
+        return options.calibration_profile_path;
+    }
+    const std::filesystem::path relative =
+        options.vehicle_profile == VehicleProfile::Tank
+            ? std::filesystem::path("config/robots/tank_calibrated.json")
+            : std::filesystem::path("config/robots/car_calibrated.json");
+    const std::array<std::filesystem::path, 5> candidates{{
+        relative,
+        std::filesystem::path("..") / relative,
+        std::filesystem::path("../..") / relative,
+        std::filesystem::path("../../..") / relative,
+        std::filesystem::path("../../../..") / relative,
+    }};
+    for (const std::filesystem::path& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(candidate, ec) && !ec) {
+            return candidate.lexically_normal().string();
+        }
+    }
+    return {};
+}
+
+void apply_robot_calibration_profile(const AppOptions& options,
+                                     HardwarePlannerConfig* config) {
+    if (config == nullptr) {
+        return;
+    }
+    const std::string path = resolve_robot_calibration_path(options);
+    if (path.empty()) {
+        if (!options.calibration_profile_path.empty()) {
+            throw std::runtime_error(
+                "calibration profile not found: " + options.calibration_profile_path);
+        }
+        return;
+    }
+    RobotCalibrationProfile profile;
+    std::string error;
+    if (!load_robot_calibration_profile(path, &profile, &error)) {
+        throw std::runtime_error(error);
+    }
+    if (profile.vehicle_model != config->vehicle_model) {
+        throw std::runtime_error(
+            "calibration profile vehicle_model does not match selected robot");
+    }
+    config->calibration_profile_name = profile.name;
+    config->calibration_profile_version = profile.version;
+    config->calibration_profile_path = profile.source_path;
+    config->calibration_profile_hash = profile.content_hash;
+    config->wheel_radius_calibrated = profile.wheel_radius_calibrated;
+    config->drive.body_length = profile.body_length_m;
+    config->drive.body_width = profile.body_width_m;
+    config->drive.wheel_or_belt_length = profile.wheel_or_belt_length_m;
+    config->drive.wheel_or_belt_width = profile.wheel_or_belt_width_m;
+    config->drive.track_width = profile.track_center_distance_m;
+    config->drive.wheel_radius = profile.wheel_radius_m;
+    config->drive.encoder_ticks_per_revolution =
+        profile.encoder_ticks_per_revolution;
+    config->drive.max_linear_speed = profile.max_linear_speed_mps;
+    config->drive.max_yaw_rate = profile.max_yaw_rate_rad_s;
+    config->pwm.min_effective_pwm = profile.min_effective_pwm;
+    config->pwm.left_scale = profile.left_actuator_scale;
+    config->pwm.right_scale = profile.right_actuator_scale;
+    if (profile.speed_estimate_per_pwm > 1e-6) {
+        config->pwm.wheel_speed_to_pwm_gain =
+            1.0 / profile.speed_estimate_per_pwm;
+        config->pwm.wheel_speed_to_pwm_bias = 0.0;
+    }
+
+    // Explicit CLI values remain the final authority for identification runs.
+    if (options.encoder_ticks_per_revolution > 0) {
+        config->drive.encoder_ticks_per_revolution =
+            options.encoder_ticks_per_revolution;
+    }
+    if (options.wheel_radius_m > 0.0) {
+        config->drive.wheel_radius = options.wheel_radius_m;
+        config->wheel_radius_calibrated = true;
     }
     if (options.track_width_m > 0.0) {
         config->drive.track_width = options.track_width_m;
@@ -148,6 +237,7 @@ bool process_stream_control(const AppOptions& options,
             profile_options.vehicle_profile = vehicle_profile_from_model(*poll_result.robot_profile);
             HardwarePlannerConfig next_config = base_config;
             apply_vehicle_profile(profile_options, &next_config);
+            apply_robot_calibration_profile(profile_options, &next_config);
             apply_structured_hardware_config(runner->world(), &next_config);
             apply_mixed_hardware_config(runner->world(), &next_config);
             apply_tracked_mixed_hardware_config(runner->world(), &next_config);
@@ -350,4 +440,3 @@ VehicleControlInput make_vehicle_control(const thesis_sim::VehicleGeometry& geom
     input.target_yaw_rate = command.target_yaw_rate;
     return input;
 }
-

@@ -32,11 +32,14 @@ int main(int argc, char** argv) {
         planner_config.use_encoder_odometry = true;
         planner_config.planner_safety_stop_enabled = options.planner_safety_stop_enabled;
         planner_config.mapping_lidar_enabled = options.simulate || !options.lidar_port.empty();
+        planner_config.use_mcu_velocity_closed_loop =
+            options.mcu_velocity_closed_loop && !options.simulate;
         planner_config.localization_policy = options.localization_policy;
         apply_structured_hardware_config(world, &planner_config);
         apply_mixed_hardware_config(world, &planner_config);
         const HardwarePlannerConfig base_planner_config = planner_config;
         apply_vehicle_profile(options, &planner_config);
+        apply_robot_calibration_profile(options, &planner_config);
         apply_structured_hardware_config(world, &planner_config);
         apply_mixed_hardware_config(world, &planner_config);
         apply_tracked_mixed_hardware_config(world, &planner_config);
@@ -54,6 +57,15 @@ int main(int argc, char** argv) {
             return 2;
         }
         LiveViewStreamClient streamer;
+        SlamToolboxBridgeClient slam_bridge;
+        std::uint64_t slam_sequence = 0;
+        if (options.slam_bridge_port > 0 &&
+            !slam_bridge.open(
+                options.slam_bridge_host,
+                static_cast<std::uint16_t>(options.slam_bridge_port))) {
+            std::cerr << "hardware_runner_warning=SLAM bridge disabled: "
+                      << slam_bridge.last_error() << '\n';
+        }
         auto next_stream_connect_attempt = std::chrono::steady_clock::now();
         auto ensure_stream_client = [&](bool force_frame_push) {
             if (!stream_enabled(options) || streamer.connected()) {
@@ -141,6 +153,33 @@ int main(int argc, char** argv) {
             }
             poll_external_pose(options, &external_pose_receiver, runner.get());
             runner->step();
+            if (slam_bridge.active() && !runner->lidar_hits().empty()) {
+                const RealRobotObservation& slam_observation =
+                    runner->bridge().observation();
+                const double scan_timestamp =
+                    slam_observation.lidar_scan_mid_timestamp_s > 0.0
+                        ? slam_observation.lidar_scan_mid_timestamp_s
+                        : slam_observation.host_timestamp_s;
+                slam_bridge.submit_scan(
+                    options.vehicle_profile == VehicleProfile::Tank
+                        ? "hardware_tank"
+                        : "hardware_car",
+                    ++slam_sequence,
+                    scan_timestamp,
+                    runner->estimate().position,
+                    runner->estimate().yaw,
+                    runner->lidar_hits(),
+                    planner_config.localization.min_valid_range_m,
+                    planner_config.localization.max_range_m);
+                if (slam_bridge.poll() &&
+                    options.slam_pose_feedback &&
+                    slam_bridge.snapshot().connected &&
+                    slam_bridge.snapshot().pose_valid) {
+                    runner->apply_slam_pose_correction(
+                        slam_bridge.snapshot().corrected_position,
+                        slam_bridge.snapshot().corrected_yaw);
+                }
+            }
             stream_frame_if_due(options, *runner, &streamer);
             if (stop_if_stream_lost()) {
                 return 1;
@@ -192,6 +231,16 @@ int main(int argc, char** argv) {
         std::cout << "controller_target_pwm_right=" << report.controller_target_pwm_right << '\n';
         std::cout << "planned_pwm_left=" << report.planned_pwm_left << '\n';
         std::cout << "planned_pwm_right=" << report.planned_pwm_right << '\n';
+        std::cout << "calibration_profile_name="
+                  << planner_config.calibration_profile_name << '\n';
+        std::cout << "calibration_profile_version="
+                  << planner_config.calibration_profile_version << '\n';
+        std::cout << "calibration_profile_hash="
+                  << planner_config.calibration_profile_hash << '\n';
+        std::cout << "wheel_radius_calibrated="
+                  << (planner_config.wheel_radius_calibrated ? 1 : 0) << '\n';
+        std::cout << "mcu_velocity_closed_loop="
+                  << (planner_config.use_mcu_velocity_closed_loop ? 1 : 0) << '\n';
         return report.goal_reached ? 0 : 1;
     } catch (const std::exception& e) {
         try {

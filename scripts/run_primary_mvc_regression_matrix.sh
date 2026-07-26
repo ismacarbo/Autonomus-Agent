@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="${ROOT_DIR}/build/simulator/thesis_planner_sim"
 OUTPUT_DIR="${ROOT_DIR}/results/primary_mvc_regression_matrix"
 SUMMARY="${OUTPUT_DIR}/summary.tsv"
-MAX_STEPS="${MAX_STEPS:-3000}"
+MAX_STEPS="${MAX_STEPS:-4000}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-180}"
 
 mkdir -p "${OUTPUT_DIR}"

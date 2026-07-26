@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <string>
+
 #include "mvc/controller/simulation_planner/simulator.h"
 
 namespace thesis_sim::mvc::controller {
@@ -15,6 +18,8 @@ struct AppOptions {
     bool ideal_simulation = false;
     bool calibrated_simulation = false;
     VehicleModelKind vehicle_model = VehicleModelKind::CarLikeBicycle;
+    std::uint32_t simulation_seed = 20260711U;
+    std::string calibration_profile_path;
     VehicleTuningOverrides tuning_overrides;
 };
 
