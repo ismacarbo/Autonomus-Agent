@@ -28,7 +28,8 @@ struct DifferentialDriveGeometry {
     double wheel_or_belt_length = measured_robot::kCarWheelDiameterM;
     double wheel_or_belt_width = 0.020;
     double wheel_radius = measured_robot::kCarWheelRadiusM;
-    std::int32_t encoder_ticks_per_revolution = 360;
+    std::int32_t encoder_ticks_per_revolution =
+        measured_robot::kCarEncoderTicksPerRevolution;
     double max_steer_angle = 0.52;
     double max_steer_rate = 1.8;
     double max_linear_speed = 0.90;

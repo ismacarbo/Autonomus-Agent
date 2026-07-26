@@ -12,7 +12,7 @@ struct StraightLineCalibrationOptions {
     int pwm = 90;
     double safety_timeout_s = 20.0;
     double wheel_radius_m = 0.0327;
-    int encoder_ticks_per_revolution = 360;
+    int encoder_ticks_per_revolution = 38;
     bool reset_controller_on_connect = true;
 };
 

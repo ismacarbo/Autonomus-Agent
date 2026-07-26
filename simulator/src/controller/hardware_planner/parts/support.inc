@@ -495,6 +495,10 @@ VehicleGeometry make_vehicle_geometry(const HardwarePlannerConfig& config) {
     geometry.min_effective_pwm = config.pwm.min_effective_pwm;
     geometry.wheel_speed_to_pwm_gain = config.pwm.wheel_speed_to_pwm_gain;
     geometry.wheel_speed_to_pwm_bias = config.pwm.wheel_speed_to_pwm_bias;
+    geometry.speed_estimate_per_pwm =
+        config.pwm.wheel_speed_to_pwm_gain > 1e-9
+            ? 1.0 / config.pwm.wheel_speed_to_pwm_gain
+            : 0.0;
     geometry.left_pwm_scale = config.pwm.left_scale;
     geometry.right_pwm_scale = config.pwm.right_scale;
     geometry.linear_feedback_gain = config.pwm.linear_feedback_gain;

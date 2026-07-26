@@ -27,7 +27,7 @@ void print_usage(const char* executable) {
         << "  --pwm N                    equal left/right PWM, default 90 (range 45..160)\n"
         << "  --safety-timeout SEC       hard motion limit, default 20 (range 1..60)\n"
         << "  --wheel-radius M           nominal radius, default 0.0327\n"
-        << "  --ticks-per-rev N          nominal encoder value, default 360\n"
+        << "  --ticks-per-rev N          nominal encoder value, default 38\n"
         << "  --output-dir PATH          default reports\n"
         << "  --no-controller-reset      do not pulse DTR on serial connect\n"
         << "  --help                     show this message\n";

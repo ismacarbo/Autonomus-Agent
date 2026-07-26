@@ -14,6 +14,12 @@ bool close_to(double actual, double expected, double tolerance = 1.0e-12) {
 }  // namespace
 
 int main() {
+    const thesis_sim::StraightLineCalibrationOptions defaults{};
+    if (defaults.encoder_ticks_per_revolution != 38) {
+        std::cerr << "car_encoder_default_failed\n";
+        return 1;
+    }
+
     thesis_sim::StraightLineCalibrationResult result{};
     result.options.wheel_radius_m = 0.0327;
     result.nominal_center_distance_m = 0.5;

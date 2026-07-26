@@ -21,7 +21,7 @@ cmake --build build-ninja --target thesis_straight_line_calibration
 ./scripts/run_car_straight_calibration.sh /dev/ttyACM0
 ```
 
-I default della car sono PWM `90`, raggio `0.0327 m`, `360` tick/giro nominali
+I default della car sono PWM `90`, raggio `0.0327 m`, `38` tick/giro misurati
 e timeout massimo di `20 s`. Per cambiare solo il PWM:
 
 ```sh

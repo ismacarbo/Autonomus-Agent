@@ -17,6 +17,7 @@ inline constexpr double kCarBodyLengthM = 0.250;
 inline constexpr double kCarBodyWidthM = 0.150;
 inline constexpr double kCarWheelRadiusM = 0.0327;
 inline constexpr double kCarWheelDiameterM = 0.0654;
+inline constexpr std::int32_t kCarEncoderTicksPerRevolution = 38;
 
 inline constexpr double kTankBodyLengthM = 0.165;
 inline constexpr double kTankBodyWidthM = 0.146;
