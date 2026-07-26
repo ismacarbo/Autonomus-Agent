@@ -1,0 +1,45 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "compilerPath": "/usr/bin/g++",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "includePath": [
+                "${workspaceFolder}/simulator/include",
+                "${workspaceFolder}/simulator/src",
+                "${workspaceFolder}/third_party/progettotesi/include",
+                "${workspaceFolder}/third_party/rerun_stub",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/src",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/src/Clothoids",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/submodules/UtilsLite/src",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/submodules/UtilsLite/src/Utils",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/submodules/UtilsLite/ThirdParties/Eigen/eigen-5.0.0",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/submodules/GenericContainer/include",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/lib3rd/include",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/pipal/include",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/submodules/quarticRootsFlocke/src",
+                "${workspaceFolder}/third_party/progettotesi/clothoids/eigen",
+                "${workspaceFolder}/build/_deps/imgui-src",
+                "${workspaceFolder}/build/_deps/imgui-src/backends",
+                "${workspaceFolder}/build/_deps/implot-src",
+                "/usr/include/SDL2"
+            ],
+            "defines": [],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "configurationProvider": "ms-vscode.cmake-tools",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/simulator/include",
+                    "${workspaceFolder}/simulator/src",
+                    "${workspaceFolder}/third_party/progettotesi/include",
+                    "${workspaceFolder}/third_party/progettotesi/clothoids/clothoids/src",
+                    "${workspaceFolder}/third_party/rerun_stub"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}

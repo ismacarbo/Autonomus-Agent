@@ -2,8 +2,9 @@
 
 Sim-to-real navigation stack for validating a modular local planner on small
 mobile robots. The project started as a thesis prototype and now includes a
-native C++ simulator, a hardware runner, real robot communication, LiDAR-based
-perception, report analysis tools, and an ArUco/OpenCV ground-truth pipeline.
+native C++ Autonomous Reasoning Engine, a hardware runner, real robot
+communication, LiDAR-based perception, report analysis tools, and independent
+external-pose channels based on ArUco or motion capture.
 
 ![Robot platforms used for validation](assets/readme/hero_robots.jpg)
 
@@ -25,7 +26,10 @@ To answer it, the project implements:
 - vehicle profiles for a differential car-like robot and a tracked/skid-steer
   platform;
 - LiDAR-driven gate extraction for mixed navigation around local obstacles;
-- Python tools for report inspection, validation plots, and ArUco ground truth.
+- an optional ROS 2 SLAM Toolbox bridge for scan matching, loop closure, and
+  pose-graph optimization;
+- Python tools for report inspection, validation plots, and external-pose
+  comparison.
 
 ![Planner and hardware architecture](assets/readme/planner_explanation.png)
 
@@ -33,9 +37,20 @@ To answer it, the project implements:
 
 ### C++ Simulation And Planner Integration
 
-The simulator is built around a native C++ stack. It provides map generation,
-robot dynamics, LiDAR raycasting, planner execution, visualization, and
-experiment reporting. The GUI uses Dear ImGui, ImPlot, and SDL2.
+The Autonomous Reasoning Engine is built around a native C++ stack. It provides
+map generation, robot dynamics, LiDAR raycasting, planner execution,
+visualization, and experiment reporting. The GUI uses Dear ImGui, ImPlot, and
+SDL2.
+
+The current Model-View-Controller boundaries and the exact locations of gate
+perception, LiDAR acquisition, planner primitives, PWM mapping, map geometry,
+base-link sensor input, SLAM, and report export are indexed in
+[`documentation/MVC_Code_Map.md`](documentation/MVC_Code_Map.md). A compact
+package index is kept next to the implementation in
+[`simulator/src/README.md`](simulator/src/README.md). The detailed runtime guide,
+including the data flow through LiDAR, gates, planner, MPC, PWM, completion and
+reporting, is in
+[`documentation/Guida_Tecnica_Punti_Principali_Codice_20260726.md`](documentation/Guida_Tecnica_Punti_Principali_Codice_20260726.md).
 
 Supported scenarios include:
 
@@ -61,7 +76,9 @@ Implemented hardware modules include:
 - RPLidar A1 driver;
 - encoder, IMU, and LiDAR pose fusion;
 - safety-aware command generation;
-- live visualization stream for the desktop GUI.
+- live visualization stream for the desktop GUI;
+- a one-way UDP motion-capture reference used only for overlay and error
+  metrics, never as planner or controller feedback.
 
 ### Vehicle Portability
 
@@ -77,9 +94,9 @@ The planner has been validated on two small platforms:
 
 ### Analysis And Ground Truth
 
-The `data_analisys/` tools process simulator and hardware reports, generate
+The `data_analisys/` tools process simulation and hardware reports, generate
 validation plots, and compare the estimated pose against an external
-ArUco/OpenCV reference.
+ArUco/OpenCV or motion-capture reference.
 
 The ground-truth pipeline supports:
 
@@ -96,10 +113,14 @@ The ground-truth pipeline supports:
 
 ```text
 simulator/                 C++ simulator, hardware runner, GUI, and planner stack
-simulator/include/         Public C++ interfaces
-simulator/src/             Simulation, hardware bridge, LiDAR, EKF, MPC, GUI
+simulator/include/mvc/     Public interfaces mirrored by MVC package
+simulator/src/model/       navigation, perception, reporting, route, world
+simulator/src/controller/  application, hardware I/O/planner, simulation, SLAM
+simulator/src/view/        canvas, live stream, simulator application
+simulator/src/tests/       C++ smoke and contract tests
 low_level/                 Arduino-compatible firmware for robot controllers
 data_analisys/             Python tools for reports, plots, and ArUco validation
+datasets/                  Curated validation report subset for reproducibility
 documentation/             Protocol notes and architecture documentation
 assets/readme/             Public README images
 third_party/               External planner dependency and local support code
@@ -160,7 +181,7 @@ cmake -S . -B build -DAUTONOMOUS_AGENT_BUILD_PYTHON_BINDINGS=ON
 
 ## Run
 
-### GUI Simulator
+### Autonomous Reasoning Engine GUI
 
 ```bash
 ./build/simulator/thesis_planner_sim
@@ -168,6 +189,16 @@ cmake -S . -B build -DAUTONOMOUS_AGENT_BUILD_PYTHON_BINDINGS=ON
 
 The GUI exposes scenario selection, robot model selection, map presets, live
 plots, LiDAR visualization, and report export.
+
+Run the canonical regression matrix for all three modes, both robot profiles,
+and both simulation levels:
+
+```bash
+./scripts/run_canonical_simulation_matrix.sh
+```
+
+The machine-readable result is written to
+`results/canonical_simulation_matrix/summary.tsv`.
 
 ### Hardware Runner In Simulation
 
@@ -249,6 +280,27 @@ python3 -m data_analisys.aruco_video_alignment --help
 Generated reports, plots, videos, and intermediate analysis outputs are ignored
 by git so that the public repository stays lightweight.
 
+## Curated Validation Dataset
+
+The repository includes a small reproducibility subset in
+`datasets/thesis_validation/`. It contains the selected JSON reports used for
+the thesis validation, grouped by scenario:
+
+- structured, unstructured, and mixed validation on the car-like robot;
+- the hardware run associated with the ArUco ground-truth comparison;
+- mixed-mode validation runs on the tracked platform;
+- one recent simulation-support run used for qualitative sim-to-real figures.
+
+The folder also contains `manifest.csv`, `metrics_summary.csv`, aggregate
+statistics, SVG summary figures, and an archive summary explaining why the full
+local report history is not published as a single benchmark dataset. Regenerate
+the subset and figures with:
+
+```bash
+python3 -m data_analisys.export_thesis_validation_dataset
+python3 -m data_analisys.plot_thesis_validation_dataset
+```
+
 ## Validation Highlights
 
 The current stack has been used to validate:
@@ -260,6 +312,10 @@ The current stack has been used to validate:
 - mixed navigation on the tracked robot, demonstrating portability across
   different actuation models;
 - external pose validation using ArUco markers and a zenith camera.
+
+The current canonical simulation matrix reaches the completion criterion in
+all 12 mode/platform/level combinations. This is a deterministic software
+regression result, not a substitute for repeated physical trials.
 
 The repository contains the code needed to reproduce the simulator runs and to
 process local experimental reports. Large raw videos, generated reports, and

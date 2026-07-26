@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(autonomous_agent LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(AUTONOMOUS_AGENT_BUILD_PYTHON_BINDINGS "Build the legacy Python bindings under generalEnv/bindings" OFF)
 

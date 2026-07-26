@@ -18,7 +18,18 @@ reports/
 build-pi-headless/
 serialProtocolValidation.py
 documentation/
+!documentation/
+documentation/*
+!documentation/Sim_Calibrated_Mixed_Hardware_Status_20260712.md
+!documentation/MVC_Code_Map.md
+!documentation/Codex_Handoff_Status_20260725.md
+!documentation/Guida_Tecnica_Punti_Principali_Codice_20260726.md
 data_analisys/outputs/
+
+# Local papers, validation datasets, and generated test results
+paper/
+datasets/
+results/
 
 # Python cache / bytecode
 __pycache__/
@@ -37,7 +48,9 @@ env/
 .micromamba/
 .mamba/
 pygame
-.vscode/
+.vscode/*
+!.vscode/c_cpp_properties.json
+!.vscode/settings.json
 
 # Logs / temp
 *.log

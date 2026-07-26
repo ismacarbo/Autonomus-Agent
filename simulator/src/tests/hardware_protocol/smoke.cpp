@@ -1,0 +1,6 @@
+#include "parts/support.inc"
+#include "parts/localization.inc"
+#include "parts/simulation_mapping.inc"
+#include "parts/stream_world.inc"
+#include "parts/cli.inc"
+#include "parts/run.inc"
