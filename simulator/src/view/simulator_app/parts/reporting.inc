@@ -292,12 +292,14 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
 }
 
 bool write_hardware_slam_reference_png(const HardwareViewerState& hardware,
-                                       const std::string& report_path);
+                                       const std::string& report_path,
+                                       const SlamToolboxSnapshot* slam_snapshot = nullptr);
 
 bool write_hardware_json_report(const HardwareViewerState& hardware,
                                 const UiState& ui_state,
                                 const LiveViewStreamServer& hardware_server,
-                                const std::string& report_path) {
+                                const std::string& report_path,
+                                const SlamToolboxSnapshot* slam_snapshot = nullptr) {
     std::ofstream out(report_path, std::ios::out | std::ios::trunc);
     if (!out.is_open()) {
         return false;
@@ -464,6 +466,33 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     }
     out << "    ]\n";
     out << "  },\n";
+    const bool slam_toolbox_connected =
+        slam_snapshot != nullptr && slam_snapshot->connected;
+    out << "  \"slam_backend\": {\n";
+    out << "    \"backend\": \""
+        << (slam_toolbox_connected ? "slam_toolbox" : "passive_lidar_reconstruction")
+        << "\",\n";
+    out << "    \"connected\": " << (slam_toolbox_connected ? "true" : "false") << ",\n";
+    out << "    \"pose_valid\": "
+        << (slam_toolbox_connected && slam_snapshot->pose_valid ? "true" : "false") << ",\n";
+    out << "    \"map_updates\": "
+        << (slam_toolbox_connected ? slam_snapshot->map_updates : 0) << ",\n";
+    out << "    \"graph_nodes\": "
+        << (slam_toolbox_connected ? slam_snapshot->graph_nodes : 0) << ",\n";
+    out << "    \"loop_edges\": "
+        << (slam_toolbox_connected ? slam_snapshot->loop_edges : 0) << ",\n";
+    out << "    \"map_resolution_m\": "
+        << (slam_toolbox_connected ? slam_snapshot->map_resolution_m : 0.0) << ",\n";
+    out << "    \"free_cells\": "
+        << (slam_toolbox_connected ? slam_snapshot->free_points.size() : 0U) << ",\n";
+    out << "    \"occupied_cells\": "
+        << (slam_toolbox_connected ? slam_snapshot->occupied_points.size() : 0U) << ",\n";
+    out << "    \"status\": \""
+        << json_escape(slam_toolbox_connected
+                           ? slam_snapshot->status
+                           : "No SLAM Toolbox response; passive endpoint accumulation only")
+        << "\"\n";
+    out << "  },\n";
     out << "  \"performance\": {\n";
     out << "    \"history_samples\": " << hardware.history.size() << ",\n";
     out << "    \"lidar_reconstruction_points\": " << hardware.lidar_reconstruction.size() << ",\n";
@@ -506,7 +535,7 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     const bool json_ok = out.good();
     out.close();
     const std::string slam_path = append_stem_suffix(report_path, "_slam_reference", ".png");
-    return json_ok && write_hardware_slam_reference_png(hardware, slam_path);
+    return json_ok && write_hardware_slam_reference_png(hardware, slam_path, slam_snapshot);
 }
 
 bool write_sim_csv_report(const PlannerDrivenVehicleSim& sim, const std::string& report_path) {
@@ -711,7 +740,31 @@ bool write_hardware_lidar_reconstruction_png(const HardwareViewerState& hardware
 }
 
 bool write_hardware_slam_reference_png(const HardwareViewerState& hardware,
-                                       const std::string& report_path) {
+                                       const std::string& report_path,
+                                       const SlamToolboxSnapshot* slam_snapshot) {
+    if (slam_snapshot != nullptr &&
+        slam_snapshot->connected &&
+        !slam_snapshot->occupied_points.empty()) {
+        thesis_sim::mvc::model::SlamReferenceArtifact artifact;
+        artifact.bounds = hardware.has_scene
+                              ? hardware.scene.world.bounds()
+                              : Rect{-1.0, -1.0, 1.0, 1.0};
+        artifact.draw_reference_geometry = false;
+        artifact.draw_mission_markers = false;
+        artifact.occupancy_resolution_m = slam_snapshot->map_resolution_m;
+        artifact.free_points = slam_snapshot->free_points;
+        artifact.occupied_points = slam_snapshot->occupied_points;
+        artifact.estimated_trail.reserve(
+            !hardware.history.empty() ? hardware.history.size() : hardware.frame.trail.size());
+        if (!hardware.history.empty()) {
+            for (const HardwareTelemetrySample& sample : hardware.history) {
+                artifact.estimated_trail.push_back({sample.position_x, sample.position_y});
+            }
+        } else {
+            artifact.estimated_trail = hardware.frame.trail;
+        }
+        return thesis_sim::mvc::model::write_slam_reference_png(artifact, report_path);
+    }
     return write_hardware_lidar_reconstruction_png(hardware, report_path);
 }
 

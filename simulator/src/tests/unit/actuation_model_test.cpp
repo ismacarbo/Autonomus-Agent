@@ -29,6 +29,26 @@ int main() {
         return 1;
     }
 
+    thesis_sim::VehicleGeometry calibrated_geometry{};
+    calibrated_geometry.min_effective_pwm = 45;
+    calibrated_geometry.speed_estimate_per_pwm = 0.006209;
+    const double calibrated_gain = 1.0 / calibrated_geometry.speed_estimate_per_pwm;
+    const int calibrated_pwm = wheel_speed_to_pwm(
+        0.055,
+        1.0,
+        calibrated_geometry.min_effective_pwm,
+        255,
+        calibrated_gain,
+        0.0);
+    const double reconstructed_speed = wheel_speed_from_pwm_estimate(
+        calibrated_pwm,
+        1.0,
+        calibrated_geometry);
+    if (calibrated_pwm != 54 || !close(reconstructed_speed, 0.055881, 1e-6)) {
+        std::cerr << "calibrated_pwm_roundtrip_failed\n";
+        return 1;
+    }
+
     int boosted_left = 8;
     int boosted_right = 12;
     apply_start_motion_boost(40, &boosted_left, &boosted_right);

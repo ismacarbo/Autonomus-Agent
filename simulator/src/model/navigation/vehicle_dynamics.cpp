@@ -104,8 +104,11 @@ class CarLikeBicycleModel final : public VehicleDynamicsModel {
             clamp_value(previous_speed + bounded_accel * dt,
                         -geometry_.max_linear_speed,
                         geometry_.max_linear_speed);
-        const bool target_speed_valid =
-            std::isfinite(input.target_speed) && std::abs(input.target_speed) > 1e-4;
+        // Zero is an explicit stop command. Treat only a non-finite value as
+        // "target unavailable", matching the tracked model and the
+        // VehicleControlInput contract. The old magnitude test converted a
+        // requested stop into an acceleration-derived rolling target.
+        const bool target_speed_valid = std::isfinite(input.target_speed);
         const double requested_target_speed =
             target_speed_valid ? input.target_speed : accel_based_target_speed;
         const double target_speed = clamp_value(

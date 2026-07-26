@@ -101,6 +101,8 @@ int run_gui(const AppOptions& options) {
     std::uint64_t slam_sequence = 0;
     int last_slam_sim_step = -1;
     int last_slam_hardware_step = -1;
+    int slam_sim_session_epoch = 1;
+    int slam_hardware_session_epoch = 1;
     bool running = true;
     UiState ui_state;
     sync_ui_state_from_sim(&ui_state, sim);
@@ -180,11 +182,21 @@ int run_gui(const AppOptions& options) {
             ui_state.single_step = false;
         }
 
+        if (sim.step_count() < last_slam_sim_step) {
+            ++slam_sim_session_epoch;
+            last_slam_sim_step = -1;
+        }
+        if (hardware_view.has_scene &&
+            hardware_view.frame.step_count < last_slam_hardware_step) {
+            ++slam_hardware_session_epoch;
+            last_slam_hardware_step = -1;
+        }
+
         if (ui_state.workspace_source == kWorkspaceSourceSimulation &&
             sim.step_count() != last_slam_sim_step &&
             !sim.lidar_hits().empty()) {
             slam_bridge.submit_scan(
-                "simulation",
+                "simulation_" + std::to_string(slam_sim_session_epoch),
                 ++slam_sequence,
                 sim.sim_time(),
                 sim.navigation_position(),
@@ -198,7 +210,7 @@ int run_gui(const AppOptions& options) {
                    hardware_view.frame.step_count != last_slam_hardware_step &&
                    !hardware_view.frame.lidar_hits.empty()) {
             slam_bridge.submit_scan(
-                "hardware",
+                "hardware_" + std::to_string(slam_hardware_session_epoch),
                 ++slam_sequence,
                 hardware_view.frame.sim_time,
                 hardware_view.frame.navigation_position,

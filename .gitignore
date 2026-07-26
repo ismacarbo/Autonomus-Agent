@@ -26,6 +26,7 @@ documentation/*
 !documentation/Guida_Tecnica_Punti_Principali_Codice_20260726.md
 !documentation/Hardware_Straight_Line_Calibration.md
 !documentation/Hardware_Unstructured_120cm_Status_20260726.md
+!documentation/Hardware_Unstructured_Gates_SLAM_Status_20260726.md
 data_analisys/outputs/
 
 # Local papers, validation datasets, and generated test results

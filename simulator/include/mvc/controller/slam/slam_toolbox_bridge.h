@@ -19,6 +19,7 @@ struct SlamToolboxSnapshot {
     int graph_nodes = 0;
     int loop_edges = 0;
     double map_resolution_m = 0.03;
+    std::vector<Vec2> free_points;
     std::vector<Vec2> occupied_points;
     std::string status = "LiDAR reconstruction fallback";
 };

@@ -104,17 +104,22 @@ WorldMap WorldMap::unstructured_demo(UnstructuredMapPreset preset,
             };
             break;
         case UnstructuredMapPreset::HardwareLab:
-            world.bounds_ = {0.0, 0.0, 2.70, 2.40};
-            world.start_ = {0.28, 1.00};
-            world.goal_ = {2.35, 1.15};
+            // Metric hardware fixture: a LiDAR-visible aperture followed by
+            // the mission goal in the same
+            // 1.20 x 1.20 m arena used by the manual editor. The previous
+            // 2.70 x 2.40 preset was later compressed to 0.80 m and turned its
+            // two short floor blocks into corner-like returns; the detector
+            // could then mistake the arena boundary for a gate.
+            world.bounds_ = {0.0, 0.0, 1.20, 1.20};
+            world.start_ = {0.22, 0.60};
+            world.goal_ = {1.00, 0.60};
             world.start_heading_ = 0.0;
             world.obstacles_ = {
-                {0.90, 0.00, 1.08, 0.55},
-                {1.70, 0.00, 1.88, 0.60},
+                {0.49, 0.00, 0.53, 0.45},
+                {0.49, 0.75, 0.53, 1.20},
             };
             world.gate_templates_ = {
-                {"gate_entry", {1.18, 1.00}, {1.18, 1.00}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
-                {"exit_align", {2.00, 1.15}, {2.00, 1.15}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
+                {"gate_entry", {0.59, 0.60}, {0.51, 0.60}, {0.0, 0.0}, 0.0, 0.0, 0.0, false},
                 {"goal", world.goal_, world.goal_, {0.0, 0.0}, 0.0, 0.0, 0.0, true},
             };
             break;

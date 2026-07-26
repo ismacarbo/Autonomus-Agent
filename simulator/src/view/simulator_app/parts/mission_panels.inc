@@ -535,7 +535,8 @@ void render_editor_inspector(WorldMap& editor_world, UiState* ui_state, bool* di
 
 void render_hardware_control_panel(const HardwareViewerState& hardware,
                                    UiState* ui_state,
-                                   LiveViewStreamServer* hardware_server) {
+                                   LiveViewStreamServer* hardware_server,
+                                   const SlamToolboxSnapshot* slam_snapshot) {
     if (ui_state == nullptr || hardware_server == nullptr) {
         return;
     }
@@ -971,7 +972,8 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         if (ImGui::Button("Save Hardware Telemetry", ImVec2(-1.0f, 0.0f))) {
             const std::string report_path = default_hardware_report_path(hardware, *ui_state, "gui_manual");
             HardwareLidarReconstructionExport lidar_export;
-            const bool json_ok = write_hardware_json_report(hardware, *ui_state, *hardware_server, report_path);
+            const bool json_ok = write_hardware_json_report(
+                hardware, *ui_state, *hardware_server, report_path, slam_snapshot);
             const bool lidar_ok = write_hardware_lidar_reconstruction_bundle(hardware, report_path, &lidar_export);
             if (json_ok && lidar_ok) {
                 ui_state->hardware_report_written = true;
@@ -992,7 +994,8 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             const std::string csv_path = replace_extension(json_path, ".csv");
             const std::string markdown_path = replace_extension(json_path, ".md");
             HardwareLidarReconstructionExport lidar_export;
-            const bool json_ok = write_hardware_json_report(hardware, *ui_state, *hardware_server, json_path);
+            const bool json_ok = write_hardware_json_report(
+                hardware, *ui_state, *hardware_server, json_path, slam_snapshot);
             const bool csv_ok = write_hardware_csv_report(hardware, csv_path);
             const bool markdown_ok = write_hardware_markdown_summary(hardware, *ui_state, *hardware_server, markdown_path);
             const bool lidar_ok = write_hardware_lidar_reconstruction_bundle(hardware, json_path, &lidar_export);
@@ -1354,4 +1357,3 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
 
     ImGui::EndChild();
 }
-

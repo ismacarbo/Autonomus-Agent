@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="thesis-slam-toolbox-bridge:humble"
+IMAGE="thesis-slam-toolbox-bridge:jazzy"
 
 if command -v docker >/dev/null 2>&1; then
   DOCKER=(docker)

@@ -163,6 +163,11 @@ double world_span_m(const WorldMap& world) {
     return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
 }
 
+bool compact_hardware_unstructured_world(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::UnstructuredGates &&
+           world_span_m(world) <= 1.25;
+}
+
 double structured_course_span_m(const WorldMap& world) {
     if (!world_has_structured_reference(world) ||
         world.road_centerline().empty()) {

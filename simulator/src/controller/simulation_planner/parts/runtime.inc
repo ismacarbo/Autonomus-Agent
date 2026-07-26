@@ -11,6 +11,29 @@ void PlannerDrivenVehicleSim::step() {
     refresh_gate_diagnostics();
     update_mixed_arbitration();
 
+    // With the measured car calibration the plant can still be moving at
+    // 0.2 m/s when it first enters the final acceptance region.  Requiring a
+    // low speed for completion while continuing to chase an intermittently
+    // visible LiDAR goal makes it overshoot and re-accelerate.  Once the
+    // unstructured robot physically enters the goal region, latch a controlled
+    // stop until it settles; intermediate gates never activate this state.
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        const double span = world_span_m(world_);
+        const double final_acceptance = span <= 5.0
+            ? std::clamp(0.05 * span, 0.08, 0.16)
+            : 0.75;
+        const bool was_goal_stop_active = goal_stop_active_;
+        goal_stop_active_ = goal_stop_active_ ||
+                            distance(vehicle_.position, world_.goal()) < final_acceptance;
+        if (!was_goal_stop_active && goal_stop_active_ &&
+            std::getenv("THESIS_TRACE_GOAL_STOP") != nullptr) {
+            std::cerr << "goal_stop_latched t=" << sim_time_
+                      << " position=(" << vehicle_.position.x << ',' << vehicle_.position.y << ')'
+                      << " distance=" << distance(vehicle_.position, world_.goal())
+                      << " speed=" << vehicle_.speed << '\n';
+        }
+    }
+
     const auto planning_start = std::chrono::steady_clock::now();
     plan_if_needed();
     update_planner_references(config_.dt);
@@ -66,6 +89,46 @@ void PlannerDrivenVehicleSim::step() {
         tracking_desired_speed = std::max(
             tracking_desired_speed,
             std::min(0.30, config_.cruise_speed_limit));
+    }
+    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        use_dynamic_lidar_gates() &&
+        reference_trajectory_.size() >= 2) {
+        int speed_gate_index = chosen_gate_index_;
+        if (speed_gate_index < 0 ||
+            speed_gate_index >= static_cast<int>(gates_.size())) {
+            const std::vector<int> active_indices = active_gate_indices();
+            speed_gate_index = active_indices.empty() ? -1 : active_indices.front();
+        }
+        if (speed_gate_index >= 0 &&
+            speed_gate_index < static_cast<int>(gates_.size())) {
+            const Vec2 target = gate_position(gates_[static_cast<size_t>(speed_gate_index)]);
+            const double target_distance = distance(navigation_position_, target);
+            const double heading_error = std::abs(wrap_angle(
+                angle_to(navigation_position_, target) - navigation_yaw_));
+            const double base_gate_cap = compact_unstructured_world(world_) ? 0.12 : 0.16;
+            const double distance_scale = clamp_value(
+                target_distance / std::max(4.0 * geometry_.body_length, 0.45),
+                0.55,
+                1.0);
+            const double heading_scale = 1.0 / (1.0 + 1.30 * heading_error);
+            const double clearance_scale = clamp_value(
+                (min_lidar_distance_ - 0.5 * geometry_.body_width) /
+                    std::max(3.0 * geometry_.body_width, 0.30),
+                0.55,
+                1.0);
+            const bool tight_gate_turn =
+                heading_error >= 0.50 ||
+                (target_distance <= 0.45 && heading_error >= 0.30);
+            if (tight_gate_turn) {
+                const double safe_gate_speed = clamp_value(
+                    base_gate_cap * distance_scale * heading_scale * clearance_scale,
+                    0.055,
+                    base_gate_cap);
+                tracking_desired_speed = std::min(
+                    tracking_desired_speed,
+                    std::min(safe_gate_speed, config_.cruise_speed_limit));
+            }
+        }
     }
     if (compact_mixed_gate_step && reference_trajectory_.size() >= 2) {
         tracking_desired_speed = clamp_value(
@@ -339,6 +402,39 @@ void PlannerDrivenVehicleSim::step() {
             control.target_steer_angle = 0.0;
             control.steer_rate_cmd = 0.0;
         }
+    }
+
+    if (!tracked_vehicle &&
+        !goal_stop_active_ &&
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        use_dynamic_lidar_gates() &&
+        reference_trajectory_.size() >= 2 &&
+        !active_gate_indices().empty()) {
+        // Apply the gate-motion floor after MPC. A pre-MPC desired-speed
+        // floor was insufficient because the finite-horizon solution could
+        // still alternate zero and low commands, repeatedly dropping the
+        // calibrated motor below break-away speed.
+        const double gate_motion_floor =
+            compact_unstructured_world(world_) ? 0.055 : 0.080;
+        control.target_speed = std::max(
+            control.target_speed,
+            std::min(gate_motion_floor, config_.cruise_speed_limit));
+        control.target_yaw_rate = control.target_speed * control.target_curvature;
+    }
+
+    if (goal_stop_active_) {
+        control.target_speed = 0.0;
+        control.accel_cmd = clamp_value(
+            -navigation_speed_ / std::max(config_.dt, 1e-3),
+            -geometry_.max_decel,
+            0.0);
+        control.target_yaw_rate = 0.0;
+        control.target_curvature = 0.0;
+        control.target_steer_angle = 0.0;
+        control.steer_rate_cmd = clamp_value(
+            -vehicle_.steer_angle / std::max(config_.dt, 1e-3),
+            -geometry_.max_steer_rate,
+            geometry_.max_steer_rate);
     }
 
     VehicleControlInput applied_control = control;

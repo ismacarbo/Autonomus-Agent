@@ -896,7 +896,13 @@ bool HardwarePlannerRunner::lidar_pose_correction_enabled_for_current_mode() con
             return true;
         case HardwareLocalizationPolicy::Auto:
         default:
-            return !compact_mixed_open_road(world_) &&
-                   !compact_hardware_mixed_lab_world(world_);
+            // The legacy local matcher aligns a scan against points accumulated
+            // in the same drifting odometry frame. It has neither a pose graph
+            // nor loop closure, so enabling it implicitly can create confident
+            // map-scale jumps in symmetric gate/loop environments. In Auto,
+            // LiDAR remains a perception source and global pose corrections are
+            // accepted only from the SLAM Toolbox bridge. Keep this matcher as
+            // an explicit diagnostic option through `--pose-fusion lidar`.
+            return false;
     }
 }

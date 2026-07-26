@@ -88,10 +88,34 @@ bool SlamToolboxBridgeClient::submit_scan(const std::string& session,
         return false;
     }
     std::ostringstream message;
+    Vec2 lidar_origin = odom_position;
+    std::size_t origin_samples = 0;
+    for (const LidarHit& hit : scan) {
+        if (!(hit.distance > 0.0) || !std::isfinite(hit.angle) ||
+            !std::isfinite(hit.point.x) || !std::isfinite(hit.point.y)) {
+            continue;
+        }
+        lidar_origin.x += hit.point.x - std::cos(hit.angle) * hit.distance - odom_position.x;
+        lidar_origin.y += hit.point.y - std::sin(hit.angle) * hit.distance - odom_position.y;
+        ++origin_samples;
+    }
+    if (origin_samples > 0U) {
+        lidar_origin.x = odom_position.x +
+            (lidar_origin.x - odom_position.x) / static_cast<double>(origin_samples);
+        lidar_origin.y = odom_position.y +
+            (lidar_origin.y - odom_position.y) / static_cast<double>(origin_samples);
+    }
+    const double cos_yaw = std::cos(odom_yaw);
+    const double sin_yaw = std::sin(odom_yaw);
+    const double offset_world_x = lidar_origin.x - odom_position.x;
+    const double offset_world_y = lidar_origin.y - odom_position.y;
+    const double lidar_offset_x = cos_yaw * offset_world_x + sin_yaw * offset_world_y;
+    const double lidar_offset_y = -sin_yaw * offset_world_x + cos_yaw * offset_world_y;
     message << std::setprecision(9)
             << "SCAN|" << session << '|' << sequence << '|' << timestamp_s << '|'
             << odom_position.x << '|' << odom_position.y << '|' << odom_yaw << '|'
-            << min_range_m << '|' << max_range_m << '|';
+            << min_range_m << '|' << max_range_m << '|'
+            << lidar_offset_x << '|' << lidar_offset_y << '|';
     for (std::size_t i = 0; i < scan.size(); ++i) {
         const LidarHit& hit = scan[i];
         message << hit.angle << ',' << hit.distance << ',' << (hit.hit ? 1 : 0);
@@ -167,6 +191,22 @@ bool SlamToolboxBridgeClient::parse_response(const char* data, std::size_t size)
                 const int cell_x = index % width;
                 const int cell_y = index / width;
                 parsed.occupied_points.push_back({
+                    origin_x + (static_cast<double>(cell_x) + 0.5) * parsed.map_resolution_m,
+                    origin_y + (static_cast<double>(cell_y) + 0.5) * parsed.map_resolution_m,
+                });
+            }
+        }
+        if (fields.size() >= 17U && !fields[16].empty()) {
+            const std::vector<std::string> indices = split(fields[16], ',');
+            parsed.free_points.reserve(indices.size());
+            for (const std::string& token : indices) {
+                const int index = std::stoi(token);
+                if (index < 0 || index >= width * height) {
+                    continue;
+                }
+                const int cell_x = index % width;
+                const int cell_y = index / width;
+                parsed.free_points.push_back({
                     origin_x + (static_cast<double>(cell_x) + 0.5) * parsed.map_resolution_m,
                     origin_y + (static_cast<double>(cell_y) + 0.5) * parsed.map_resolution_m,
                 });

@@ -140,6 +140,7 @@ void PlannerDrivenVehicleSim::reset() {
     mixed_rejoin_road_lateral_error_ = std::numeric_limits<double>::infinity();
     mixed_rejoin_road_heading_error_deg_ = std::numeric_limits<double>::infinity();
     goal_reached_ = false;
+    goal_stop_active_ = false;
     collision_ = false;
     collision_cause_.clear();
     distance_to_goal_ = distance(world_.start(), world_.goal());
@@ -446,7 +447,8 @@ void PlannerDrivenVehicleSim::update_navigation_state(double dt) {
     // produce a locally better but globally wrong association; mixed hardware
     // correction is supplied by the gated SLAM Toolbox bridge instead.
     const bool lidar_pose_correction_enabled =
-        world_.environment_mode() == EnvironmentMode::UnstructuredGates;
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        !config_.calibrated_conditions;
     if (config_.lidar_enabled &&
         lidar_pose_correction_enabled &&
         lidar_scan_fresh_ &&

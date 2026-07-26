@@ -8,11 +8,14 @@ import socket
 from dataclasses import dataclass
 
 import rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
+from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
-from tf2_ros import TransformBroadcaster
+from slam_toolbox.msg import NewNodeEvent, PoseGraph
+from slam_toolbox.srv import Reset
+from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 
 
 @dataclass
@@ -25,6 +28,8 @@ class ScanPacket:
     yaw: float
     min_range: float
     max_range: float
+    lidar_offset_x: float
+    lidar_offset_y: float
     beams: list[tuple[float, float, bool]]
     source: tuple[str, int]
 
@@ -42,39 +47,51 @@ class UdpSlamBridge(Node):
         super().__init__("thesis_slam_toolbox_udp_bridge")
         self.scan_pub = self.create_publisher(LaserScan, "/scan", 10)
         self.tf = TransformBroadcaster(self)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(OccupancyGrid, "/map", self.on_map, 2)
-        self.create_subscription(PoseWithCovarianceStamped, "/pose", self.on_pose, 10)
+        self.create_subscription(NewNodeEvent, "/slam_toolbox/new_node_event", self.on_new_node, 10)
+        self.create_subscription(PoseGraph, "/slam_toolbox/pose_graph", self.on_pose_graph, 2)
+        self.reset_client = self.create_client(Reset, "/slam_toolbox/reset")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
         self.sock.bind(("0.0.0.0", 9760))
         self.latest_map: OccupancyGrid | None = None
-        self.latest_pose: PoseWithCovarianceStamped | None = None
+        self.latest_corrected_pose: tuple[float, float, float] | None = None
         self.latest_packet: ScanPacket | None = None
         self.map_updates = 0
         self.graph_nodes = 0
         self.loop_edges = 0
         self.active_session = ""
+        self.last_sequence = -1
+        self.reset_future = None
+        self.pending_reset_packet: ScanPacket | None = None
         self.create_timer(0.01, self.poll_udp)
         self.get_logger().info("UDP bridge listening on 0.0.0.0:9760")
 
     def parse_packet(self, raw: bytes, source: tuple[str, int]) -> ScanPacket | None:
         try:
             fields = raw.decode("ascii").split("|")
-            if len(fields) != 10 or fields[0] != "SCAN":
+            if len(fields) not in (10, 12) or fields[0] != "SCAN":
                 return None
+            beam_field = 11 if len(fields) == 12 else 9
             beams = []
-            for token in fields[9].split(";"):
+            for token in fields[beam_field].split(";"):
                 angle, distance, hit = token.split(",")
                 beams.append((float(angle), float(distance), int(hit) != 0))
+            lidar_offset_x = float(fields[9]) if len(fields) == 12 else 0.0
+            lidar_offset_y = float(fields[10]) if len(fields) == 12 else 0.0
             return ScanPacket(
                 fields[1], int(fields[2]), float(fields[3]),
                 float(fields[4]), float(fields[5]), float(fields[6]),
-                float(fields[7]), float(fields[8]), beams, source,
+                float(fields[7]), float(fields[8]),
+                lidar_offset_x, lidar_offset_y, beams, source,
             )
         except (UnicodeDecodeError, ValueError):
             return None
 
     def poll_udp(self) -> None:
+        self.complete_pending_reset()
         while True:
             try:
                 raw, source = self.sock.recvfrom(65507)
@@ -83,14 +100,58 @@ class UdpSlamBridge(Node):
             packet = self.parse_packet(raw, source)
             if packet is None:
                 continue
-            if packet.session != self.active_session:
+            sequence_restarted = (
+                packet.session == self.active_session and
+                self.last_sequence >= 0 and
+                packet.sequence <= self.last_sequence
+            )
+            if packet.session != self.active_session or sequence_restarted:
                 self.active_session = packet.session
+                self.last_sequence = -1
                 self.map_updates = 0
                 self.graph_nodes = 0
                 self.loop_edges = 0
+                self.latest_map = None
+                self.latest_corrected_pose = None
+                self.pending_reset_packet = packet
+                self.begin_reset_if_ready()
+                continue
+            self.last_sequence = packet.sequence
+            if self.pending_reset_packet is not None:
+                self.pending_reset_packet = packet
+                continue
             self.latest_packet = packet
             self.publish_scan(packet)
             self.send_response()
+
+    def begin_reset_if_ready(self) -> None:
+        if self.reset_future is not None or not self.reset_client.service_is_ready():
+            return
+        request = Reset.Request()
+        request.pause_new_measurements = False
+        self.reset_future = self.reset_client.call_async(request)
+
+    def complete_pending_reset(self) -> None:
+        if self.pending_reset_packet is None:
+            return
+        self.begin_reset_if_ready()
+        if self.reset_future is None or not self.reset_future.done():
+            return
+        try:
+            response = self.reset_future.result()
+            if response.result != Reset.Response.RESULT_SUCCESS:
+                self.get_logger().warning(
+                    f"slam_toolbox reset returned result={response.result}"
+                )
+        except Exception as error:
+            self.get_logger().warning(f"slam_toolbox reset failed: {error}")
+        self.reset_future = None
+        packet = self.pending_reset_packet
+        self.pending_reset_packet = None
+        self.last_sequence = packet.sequence
+        self.latest_packet = packet
+        self.publish_scan(packet)
+        self.send_response()
 
     def publish_scan(self, packet: ScanPacket) -> None:
         stamp = self.get_clock().now().to_msg()
@@ -107,47 +168,93 @@ class UdpSlamBridge(Node):
         transform.transform.rotation.w = qw
         self.tf.sendTransform(transform)
 
+        laser_transform = TransformStamped()
+        laser_transform.header.stamp = stamp
+        laser_transform.header.frame_id = "base_link"
+        laser_transform.child_frame_id = "laser"
+        laser_transform.transform.translation.x = packet.lidar_offset_x
+        laser_transform.transform.translation.y = packet.lidar_offset_y
+        laser_transform.transform.rotation.w = 1.0
+        self.tf.sendTransform(laser_transform)
+
         scan = LaserScan()
         scan.header.stamp = stamp
-        scan.header.frame_id = "base_link"
+        scan.header.frame_id = "laser"
         scan.range_min = max(packet.min_range, 0.01)
         scan.range_max = max(packet.max_range, scan.range_min + 0.01)
-        ordered = sorted(packet.beams, key=lambda beam: beam[0])
-        if len(ordered) < 2:
+        if len(packet.beams) < 2:
             return
-        scan.angle_min = ordered[0][0] - packet.yaw
-        scan.angle_max = ordered[-1][0] - packet.yaw
-        scan.angle_increment = (scan.angle_max - scan.angle_min) / (len(ordered) - 1)
+        # LidarHit contains only received returns, so its angular samples are
+        # not guaranteed to be uniform. LaserScan requires a uniform lattice:
+        # project the returns into one-degree bins and leave missing beams inf.
+        beam_count = 360
+        scan.angle_min = -math.pi
+        scan.angle_increment = 2.0 * math.pi / beam_count
+        scan.angle_max = scan.angle_min + (beam_count - 1) * scan.angle_increment
         scan.scan_time = 0.10
-        scan.time_increment = scan.scan_time / len(ordered)
-        scan.ranges = [
-            distance if hit and scan.range_min <= distance <= scan.range_max else math.inf
-            for _, distance, hit in ordered
-        ]
+        scan.time_increment = scan.scan_time / beam_count
+        ranges = [math.inf] * beam_count
+        for world_angle, distance, hit in packet.beams:
+            relative_angle = math.atan2(
+                math.sin(world_angle - packet.yaw),
+                math.cos(world_angle - packet.yaw),
+            )
+            index = round((relative_angle - scan.angle_min) / scan.angle_increment)
+            index = min(max(index, 0), beam_count - 1)
+            if hit and scan.range_min <= distance <= scan.range_max:
+                ranges[index] = min(ranges[index], distance)
+        scan.ranges = ranges
         self.scan_pub.publish(scan)
+        self.update_corrected_pose(packet)
 
     def on_map(self, message: OccupancyGrid) -> None:
         self.latest_map = message
         self.map_updates += 1
         self.send_response()
 
-    def on_pose(self, message: PoseWithCovarianceStamped) -> None:
-        self.latest_pose = message
+    def on_pose_graph(self, message: PoseGraph) -> None:
+        self.graph_nodes = len(message.nodes)
+        self.loop_edges = sum(
+            1 for edge in message.edges
+            if abs(edge.source_id - edge.target_id) > 1
+        )
         self.send_response()
+
+    def on_new_node(self, message: NewNodeEvent) -> None:
+        self.graph_nodes = max(self.graph_nodes, message.new_node_id + 1)
+        self.send_response()
+
+    def update_corrected_pose(self, packet: ScanPacket) -> None:
+        """Compose slam_toolbox's map->odom transform with current odometry."""
+        try:
+            transform = self.tf_buffer.lookup_transform("map", "odom", Time())
+        except Exception:  # tf2 raises several lookup/connectivity subclasses
+            self.latest_corrected_pose = None
+            return
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        map_odom_yaw = quaternion_to_yaw(
+            rotation.x, rotation.y, rotation.z, rotation.w,
+        )
+        cosine = math.cos(map_odom_yaw)
+        sine = math.sin(map_odom_yaw)
+        self.latest_corrected_pose = (
+            translation.x + cosine * packet.x - sine * packet.y,
+            translation.y + sine * packet.x + cosine * packet.y,
+            math.atan2(
+                math.sin(map_odom_yaw + packet.yaw),
+                math.cos(map_odom_yaw + packet.yaw),
+            ),
+        )
 
     def send_response(self) -> None:
         packet = self.latest_packet
         if packet is None:
             return
-        pose_valid = self.latest_pose is not None
+        self.update_corrected_pose(packet)
+        pose_valid = self.latest_corrected_pose is not None
         if pose_valid:
-            pose = self.latest_pose.pose.pose
-            pose_x = pose.position.x
-            pose_y = pose.position.y
-            pose_yaw = quaternion_to_yaw(
-                pose.orientation.x, pose.orientation.y,
-                pose.orientation.z, pose.orientation.w,
-            )
+            pose_x, pose_y, pose_yaw = self.latest_corrected_pose
         else:
             pose_x, pose_y, pose_yaw = packet.x, packet.y, packet.yaw
 
@@ -163,12 +270,31 @@ class UdpSlamBridge(Node):
             occupied = ",".join(
                 str(index) for index, value in enumerate(self.latest_map.data) if value >= 50
             )
+            free_indices = [
+                str(index) for index, value in enumerate(self.latest_map.data) if value == 0
+            ]
+            free = ",".join(free_indices)
+        if self.latest_map is None:
+            free = ""
         response = (
             f"MAP|{packet.session}|{packet.sequence}|{int(pose_valid)}|"
             f"{pose_x:.9f}|{pose_y:.9f}|{pose_yaw:.9f}|{self.map_updates}|"
             f"{self.graph_nodes}|{self.loop_edges}|{resolution:.9f}|"
-            f"{origin_x:.9f}|{origin_y:.9f}|{width}|{height}|{occupied}"
+            f"{origin_x:.9f}|{origin_y:.9f}|{width}|{height}|{occupied}|{free}"
         ).encode("ascii")
+        # Small thesis arenas fit in one datagram. For a larger map retain all
+        # occupied cells and progressively thin only the free-space display
+        # cells, keeping scan matching and the ROS occupancy grid untouched.
+        stride = 1
+        while len(response) > 65507 and self.latest_map is not None and stride < 64:
+            stride *= 2
+            free = ",".join(free_indices[::stride])
+            response = (
+                f"MAP|{packet.session}|{packet.sequence}|{int(pose_valid)}|"
+                f"{pose_x:.9f}|{pose_y:.9f}|{pose_yaw:.9f}|{self.map_updates}|"
+                f"{self.graph_nodes}|{self.loop_edges}|{resolution:.9f}|"
+                f"{origin_x:.9f}|{origin_y:.9f}|{width}|{height}|{occupied}|{free}"
+            ).encode("ascii")
         if len(response) <= 65507:
             self.sock.sendto(response, packet.source)
 

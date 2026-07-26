@@ -409,6 +409,7 @@ class PlannerDrivenVehicleSim {
     double mixed_rejoin_road_heading_error_deg_ =
         std::numeric_limits<double>::infinity();
     bool goal_reached_ = false;
+    bool goal_stop_active_ = false;
     bool collision_ = false;
     std::string collision_cause_;
     bool lidar_scan_fresh_ = false;

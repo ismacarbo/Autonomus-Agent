@@ -155,6 +155,8 @@ struct PerceptionOccupancyCell {
 struct DynamicGapTrack {
     int id = 0;
     Vec2 position;
+    Vec2 crossing_point;
+    bool crossing_point_valid = false;
     double heading = 0.0;
     double score = 0.0;
     double candidate_score = 0.0;
@@ -464,7 +466,10 @@ class HardwarePlannerRunner {
     void clear_locked_gap_goal();
     void restart_unstructured_scan();
     void update_unstructured_scan_direction(bool flip_when_aligned);
-    void set_locked_gap_goal(const Vec2& target);
+    void set_locked_gap_goal(
+        const Vec2& target,
+        const std::string& persistent_name = {},
+        const std::optional<Vec2>& crossing_point = std::nullopt);
     double locked_gap_longitudinal_progress(const Vec2& position) const;
     double locked_gap_lateral_offset(const Vec2& position) const;
     void publish_locked_gap_goal();
@@ -576,6 +581,8 @@ class HardwarePlannerRunner {
     double structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
     Vec2 structured_goal_position_{};
     std::optional<Vec2> locked_gap_goal_;
+    std::string locked_gap_name_ = "locked_gap_goal";
+    Vec2 locked_gap_crossing_point_{};
     std::vector<Vec2> passed_unstructured_gap_positions_;
     Vec2 locked_gap_start_position_{};
     Vec2 locked_gap_approach_direction_{1.0, 0.0};

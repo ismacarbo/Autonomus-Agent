@@ -554,6 +554,14 @@ void apply_vehicle_tuning_overrides(const VehicleTuningOverrides& overrides,
     }
     if (overrides.speed_estimate_per_pwm.has_value()) {
         geometry->speed_estimate_per_pwm = *overrides.speed_estimate_per_pwm;
+        if (geometry->speed_estimate_per_pwm > 1e-9) {
+            // The calibration slope and its feed-forward inverse are one
+            // contract. Keeping the legacy gain/bias while changing only the
+            // forward plant made low-speed calibrated targets run 3-4x fast.
+            geometry->wheel_speed_to_pwm_gain =
+                1.0 / geometry->speed_estimate_per_pwm;
+            geometry->wheel_speed_to_pwm_bias = 0.0;
+        }
     }
     if (overrides.pwm_slew_rate.has_value()) {
         geometry->pwm_slew_rate = *overrides.pwm_slew_rate;

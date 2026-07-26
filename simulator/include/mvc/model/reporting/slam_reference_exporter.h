@@ -13,6 +13,7 @@ struct SlamReferenceArtifact {
     std::vector<Rect> reference_obstacles;
     std::vector<Vec2> reference_road;
     std::vector<std::pair<Vec2, Vec2>> free_space_rays;
+    std::vector<Vec2> free_points;
     std::vector<Vec2> occupied_points;
     std::vector<Vec2> estimated_trail;
     Vec2 start;
@@ -20,6 +21,7 @@ struct SlamReferenceArtifact {
     Vec2 current;
     bool draw_reference_geometry = true;
     bool draw_mission_markers = true;
+    double occupancy_resolution_m = 0.0;
 };
 
 bool write_slam_reference_png(const SlamReferenceArtifact& artifact,

@@ -285,6 +285,47 @@ void draw_grid(Raster* raster, const Transform& transform) {
     }
 }
 
+Rect artifact_bounds(const SlamReferenceArtifact& artifact) {
+    Rect bounds = artifact.bounds;
+    bool has_bounds = std::isfinite(bounds.min_x) && std::isfinite(bounds.min_y) &&
+                      std::isfinite(bounds.max_x) && std::isfinite(bounds.max_y) &&
+                      bounds.max_x > bounds.min_x && bounds.max_y > bounds.min_y;
+    auto include_point = [&](const Vec2& point) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+            return;
+        }
+        if (!has_bounds) {
+            bounds = {point.x, point.y, point.x, point.y};
+            has_bounds = true;
+            return;
+        }
+        bounds.min_x = std::min(bounds.min_x, point.x);
+        bounds.min_y = std::min(bounds.min_y, point.y);
+        bounds.max_x = std::max(bounds.max_x, point.x);
+        bounds.max_y = std::max(bounds.max_y, point.y);
+    };
+    for (const Vec2& point : artifact.free_points) {
+        include_point(point);
+    }
+    for (const Vec2& point : artifact.occupied_points) {
+        include_point(point);
+    }
+    for (const Vec2& point : artifact.estimated_trail) {
+        include_point(point);
+    }
+    if (!has_bounds) {
+        return {-1.0, -1.0, 1.0, 1.0};
+    }
+    const double span_x = std::max(bounds.max_x - bounds.min_x, 0.1);
+    const double span_y = std::max(bounds.max_y - bounds.min_y, 0.1);
+    const double padding = 0.04 * std::max(span_x, span_y);
+    bounds.min_x -= padding;
+    bounds.min_y -= padding;
+    bounds.max_x += padding;
+    bounds.max_y += padding;
+    return bounds;
+}
+
 }  // namespace
 
 bool write_slam_reference_png(const SlamReferenceArtifact& artifact,
@@ -292,7 +333,7 @@ bool write_slam_reference_png(const SlamReferenceArtifact& artifact,
     constexpr int kWidth = 1200;
     constexpr int kHeight = 900;
     Raster raster = make_raster(kWidth, kHeight, {246, 246, 246, 255});
-    const Transform transform = make_transform(artifact.bounds, kWidth, kHeight);
+    const Transform transform = make_transform(artifact_bounds(artifact), kWidth, kHeight);
     for (int y = transform.y; y <= transform.y + transform.height; ++y) {
         for (int x = transform.x; x <= transform.x + transform.width; ++x) {
             set_pixel(&raster, x, y, {142, 142, 142, 255});
@@ -308,6 +349,20 @@ bool write_slam_reference_png(const SlamReferenceArtifact& artifact,
                         artifact.free_space_rays[i].second,
                         {246, 246, 246, 255});
     }
+    const int free_cell_radius = artifact.occupancy_resolution_m > 0.0
+        ? std::max(
+              1,
+              static_cast<int>(std::ceil(
+                  0.55 * artifact.occupancy_resolution_m * transform.scale)))
+        : 1;
+    for (const Vec2& point : artifact.free_points) {
+        draw_world_disk(
+            &raster,
+            transform,
+            point,
+            free_cell_radius,
+            {246, 246, 246, 255});
+    }
     draw_grid(&raster, transform);
 
     if (artifact.draw_reference_geometry) {
@@ -320,7 +375,12 @@ bool write_slam_reference_png(const SlamReferenceArtifact& artifact,
                             {42, 125, 102, 255});
         }
     }
-    const int occupied_radius = transform.scale > 420.0 ? 2 : 1;
+    const int occupied_radius = artifact.occupancy_resolution_m > 0.0
+        ? std::max(
+              1,
+              static_cast<int>(std::ceil(
+                  0.55 * artifact.occupancy_resolution_m * transform.scale)))
+        : (transform.scale > 420.0 ? 2 : 1);
     for (const Vec2& point : artifact.occupied_points) {
         draw_world_disk(&raster, transform, point, occupied_radius, {18, 18, 18, 255});
     }

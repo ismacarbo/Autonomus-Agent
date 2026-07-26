@@ -1,7 +1,7 @@
-FROM ros:humble-ros-base
+FROM ros:jazzy-ros-base
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ros-humble-slam-toolbox && \
+    apt-get install -y --no-install-recommends ros-jazzy-slam-toolbox && \
     rm -rf /var/lib/apt/lists/*
 
 COPY bridge_node.py /opt/thesis_slam_bridge/bridge_node.py

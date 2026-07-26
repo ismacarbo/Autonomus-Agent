@@ -1281,6 +1281,20 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             : 110;
     last_command_.pwm_left = slew_limit_pwm(previous_pwm_left, last_command_.pwm_left, pwm_slew_limit);
     last_command_.pwm_right = slew_limit_pwm(previous_pwm_right, last_command_.pwm_right, pwm_slew_limit);
+    // Slew limiting used to turn a valid break-away command (for example 60)
+    // back into an ineffective 42 PWM first step.  Preserve the sign but
+    // re-apply the calibrated motion band after the ramp whenever motion is
+    // genuinely requested.
+    if (commanding_motion) {
+        last_command_.pwm_left = clamp_motion_pwm_band(
+            last_command_.pwm_left,
+            config_.pwm.min_effective_pwm,
+            config_.pwm.max_pwm);
+        last_command_.pwm_right = clamp_motion_pwm_band(
+            last_command_.pwm_right,
+            config_.pwm.min_effective_pwm,
+            config_.pwm.max_pwm);
+    }
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
         last_command_.pwm_right = std::max(last_command_.pwm_right, 0);

@@ -505,17 +505,37 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
             1.2f);
     }
 
+    const bool toolbox_active =
+        toolbox_snapshot != nullptr && toolbox_snapshot->connected;
+    if (toolbox_active && !toolbox_snapshot->free_points.empty()) {
+        const float half_cell_px = std::max(
+            1.0f,
+            static_cast<float>(0.55 * toolbox_snapshot->map_resolution_m * tx.scale));
+        const size_t free_stride = toolbox_snapshot->free_points.size() > 60000 ? 2 : 1;
+        for (size_t i = 0; i < toolbox_snapshot->free_points.size(); i += free_stride) {
+            const ImVec2 point = world_to_screen(tx, toolbox_snapshot->free_points[i]);
+            draw_list->AddRectFilled(
+                ImVec2(point.x - half_cell_px, point.y - half_cell_px),
+                ImVec2(point.x + half_cell_px, point.y + half_cell_px),
+                IM_COL32(226, 232, 232, 245));
+        }
+    }
+
     const size_t stride = slam_points.size() > 30000 ? 3 : (slam_points.size() > 12000 ? 2 : 1);
+    const float occupied_half_px = toolbox_active
+        ? std::max(
+              1.5f,
+              static_cast<float>(0.55 * toolbox_snapshot->map_resolution_m * tx.scale))
+        : 1.5f;
     for (size_t i = 0; i < slam_points.size(); i += stride) {
         const ImVec2 point = world_to_screen(tx, slam_points[i]);
         draw_list->AddRectFilled(
-            ImVec2(point.x - 1.5f, point.y - 1.5f),
-            ImVec2(point.x + 1.5f, point.y + 1.5f),
-            IM_COL32(220, 240, 233, 235));
+            ImVec2(point.x - occupied_half_px, point.y - occupied_half_px),
+            ImVec2(point.x + occupied_half_px, point.y + occupied_half_px),
+            toolbox_active ? IM_COL32(245, 88, 82, 245)
+                           : IM_COL32(220, 240, 233, 235));
     }
     draw_polyline(draw_list, tx, estimated_trail, IM_COL32(88, 193, 255, 235), 2.2f);
-    const bool toolbox_active =
-        toolbox_snapshot != nullptr && toolbox_snapshot->connected;
     const Vec2* displayed_robot_position = robot_position;
     if (toolbox_active && toolbox_snapshot->pose_valid) {
         displayed_robot_position = &toolbox_snapshot->corrected_position;
@@ -533,9 +553,11 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
     std::snprintf(
         graph_status,
         sizeof(graph_status),
-        toolbox_active ? "scan matching | pose graph active | map updates %d"
+        toolbox_active ? "updates %d | graph nodes %d | loop edges %d"
                        : "start tools/slam_toolbox_bridge/run.sh for graph SLAM",
-        toolbox_active ? toolbox_snapshot->map_updates : 0);
+        toolbox_active ? toolbox_snapshot->map_updates : 0,
+        toolbox_active ? toolbox_snapshot->graph_nodes : 0,
+        toolbox_active ? toolbox_snapshot->loop_edges : 0);
     draw_overlay_panel(
         draw_list,
         ImVec2(canvas_pos.x + 12.0f, canvas_pos.y + 12.0f),

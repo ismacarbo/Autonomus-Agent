@@ -9,6 +9,8 @@ bool HardwarePlannerRunner::startup_scan_active() const {
 
 void HardwarePlannerRunner::clear_locked_gap_goal() {
     locked_gap_goal_.reset();
+    locked_gap_name_ = "locked_gap_goal";
+    locked_gap_crossing_point_ = {};
     locked_gap_start_position_ = {};
     locked_gap_approach_direction_ = {1.0, 0.0};
     locked_gap_corridor_half_width_m_ = 0.0;
@@ -52,7 +54,10 @@ void HardwarePlannerRunner::update_unstructured_scan_direction(bool flip_when_al
     }
 }
 
-void HardwarePlannerRunner::set_locked_gap_goal(const Vec2& target) {
+void HardwarePlannerRunner::set_locked_gap_goal(
+    const Vec2& target,
+    const std::string& persistent_name,
+    const std::optional<Vec2>& crossing_point) {
     if (compact_hardware_mixed_lab_world(world_)) {
         const double progress_target =
             structured_goal_progress_target_ > 0.0
@@ -83,6 +88,8 @@ void HardwarePlannerRunner::set_locked_gap_goal(const Vec2& target) {
     }
 
     locked_gap_goal_ = target;
+    locked_gap_name_ = persistent_name.empty() ? "locked_gap_goal" : persistent_name;
+    locked_gap_crossing_point_ = crossing_point.value_or(target);
     locked_gap_start_position_ = estimate_.position;
     locked_gap_set_time_s_ = sim_time_;
 
@@ -110,8 +117,8 @@ double HardwarePlannerRunner::locked_gap_longitudinal_progress(const Vec2& posit
     }
 
     const Vec2 relative{
-        position.x - locked_gap_goal_->x,
-        position.y - locked_gap_goal_->y,
+        position.x - locked_gap_crossing_point_.x,
+        position.y - locked_gap_crossing_point_.y,
     };
     return dot_product(relative, locked_gap_approach_direction_);
 }
@@ -122,8 +129,8 @@ double HardwarePlannerRunner::locked_gap_lateral_offset(const Vec2& position) co
     }
 
     const Vec2 relative{
-        position.x - locked_gap_goal_->x,
-        position.y - locked_gap_goal_->y,
+        position.x - locked_gap_crossing_point_.x,
+        position.y - locked_gap_crossing_point_.y,
     };
     const Vec2 lateral_axis{
         -locked_gap_approach_direction_.y,
@@ -144,9 +151,9 @@ void HardwarePlannerRunner::publish_locked_gap_goal() {
 
     const Vec2 target = *locked_gap_goal_;
     GateSpec spec{};
-    spec.name = "locked_gap_goal";
+    spec.name = locked_gap_name_;
     spec.position = target;
-    spec.anchor_position = target;
+    spec.anchor_position = locked_gap_crossing_point_;
     spec.motion_amplitude = {0.0, 0.0};
     spec.motion_frequency_hz = 0.0;
     spec.motion_phase_rad = 0.0;
@@ -780,7 +787,10 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 if (best_index < 0) {
                     return false;
                 }
-                set_locked_gap_goal(gate_specs_[static_cast<size_t>(best_index)].position);
+                set_locked_gap_goal(
+                    gate_specs_[static_cast<size_t>(best_index)].position,
+                    gate_specs_[static_cast<size_t>(best_index)].name,
+                    gate_specs_[static_cast<size_t>(best_index)].anchor_position);
                 publish_locked_gap_goal();
                 return true;
             };
@@ -954,6 +964,30 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                     }
                     return false;
                 };
+                const auto target_corridor_is_clear = [&](const Vec2& target) {
+                    const double target_distance = distance(estimate_.position, target);
+                    if (!(target_distance > 0.04)) {
+                        return false;
+                    }
+                    const double local_heading = wrap_angle(
+                        angle_to(estimate_.position, target) - estimate_.yaw);
+                    const double corridor_half_angle = clamp_value(
+                        std::atan2(
+                            0.5 * geometry_.body_width +
+                                config_.gap_extraction.path_clearance_radius_m,
+                            target_distance),
+                        0.10,
+                        0.36);
+                    const double clearance = sector_min_clearance(
+                        lidar_hits_,
+                        estimate_.yaw,
+                        local_heading,
+                        corridor_half_angle,
+                        config_.localization.max_range_m);
+                    return clearance +
+                               std::max(config_.gap_extraction.target_clearance_radius_m, 0.04) >=
+                           target_distance;
+                };
 
                 std::vector<Vec2> target_options;
                 target_options.reserve(8);
@@ -983,6 +1017,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 std::optional<Vec2> fallback_repeated_target;
                 for (const Vec2& mixed_target : target_options) {
                     if (!dynamic_gap_point_allowed(mixed_target)) {
+                        continue;
+                    }
+                    if (!target_corridor_is_clear(mixed_target)) {
                         continue;
                     }
                     if (repeats_recent_compact_target(mixed_target)) {
@@ -1151,7 +1188,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         }
     }
 
-    set_locked_gap_goal(gate_specs_[preferred_gate_index].position);
+    set_locked_gap_goal(
+        gate_specs_[preferred_gate_index].position,
+        gate_specs_[preferred_gate_index].name,
+        gate_specs_[preferred_gate_index].anchor_position);
     publish_locked_gap_goal();
 }
-

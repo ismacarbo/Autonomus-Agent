@@ -290,6 +290,16 @@ void draw_structured_road_map(ImDrawList* draw_list, const CanvasTransform& tx, 
 }
 
 float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
+    if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+        const Rect& bounds = world.bounds();
+        const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+        // The normalized hardware gate maps share the same 1.20 m arena and
+        // physical 25 x 15 cm footprint as Structured Validation Road.  Keep
+        // the presentation scale identical; this affects only the GUI glyph,
+        // never collision, LiDAR or planner geometry.
+        return span <= 1.25 ? 0.42f : 1.45f;
+    }
+
     if (world.environment_mode() == EnvironmentMode::MixedRoadGates) {
         const Rect& bounds = world.bounds();
         const double span = std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
@@ -303,10 +313,6 @@ float hardware_vehicle_visual_scale_for_world(const WorldMap& world) {
             return 0.70f;
         }
         return 1.10f;
-    }
-
-    if (world.environment_mode() != EnvironmentMode::StructuredRoad) {
-        return 1.45f;
     }
 
     const Rect content = structured_content_bounds(world);

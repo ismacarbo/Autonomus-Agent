@@ -126,7 +126,8 @@ void render_workspace(PlannerDrivenVehicleSim& sim,
                 if (view == kWorkspaceViewAnalytics) {
                     ui_state->hardware_panel_tab = 3;
                 }
-                render_hardware_control_panel(*hardware, ui_state, hardware_server);
+                render_hardware_control_panel(
+                    *hardware, ui_state, hardware_server, slam_snapshot);
             } else {
                 if (view == kWorkspaceViewAnalytics) {
                     ui_state->simulation_panel_tab = 0;
@@ -139,4 +140,3 @@ void render_workspace(PlannerDrivenVehicleSim& sim,
 
     ImGui::End();
 }
-

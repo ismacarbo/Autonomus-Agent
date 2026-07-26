@@ -216,11 +216,16 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     config->gap_extraction.min_gap_depth_contrast_m = 0.070;
     config->gap_extraction.min_target_distance_m = 0.18;
     config->gap_extraction.max_target_distance_m = 0.58;
-    config->gap_extraction.gap_aperture_target_margin_m = 0.030;
+    // Put the tracking target beyond the geometric aperture. With a target
+    // only 3 cm beyond it, the trajectory tolerance could stop the robot
+    // before its centre had actually crossed the gate plane.
+    config->gap_extraction.gap_aperture_target_margin_m = 0.080;
     config->gap_extraction.target_clearance_radius_m =
         0.5 * config->drive.body_width + 0.020;
-    config->gap_extraction.path_clearance_radius_m =
-        0.5 * config->drive.body_width + 0.010;
+    // This field is the extra corridor margin: scan_supports_target()
+    // already adds half the body width. Storing the footprint radius here
+    // counted the robot twice and rejected physically traversable gates.
+    config->gap_extraction.path_clearance_radius_m = 0.010;
     config->gap_extraction.dynamic_bounds_margin_m = 0.10;
     config->gap_extraction.map_point_resolution_m = 0.022;
     config->gap_extraction.gap_goal_tolerance_m = 0.070;
@@ -238,6 +243,17 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     config->gap_extraction.gap_track_min_hits = 1;
     config->gap_extraction.gap_track_max_misses = 18;
     config->gap_extraction.min_passed_gates_to_complete = 2;
+
+    // PWM 90 is the first physically measured point for this car.  The exact
+    // break-away threshold still needs a dedicated sweep, but 45 produced
+    // repeated sub-threshold commands during the gate runs.  Keep this
+    // conservative override local to compact unstructured hardware missions.
+    config->pwm.min_effective_pwm = std::max(config->pwm.min_effective_pwm, 60);
+    config->pwm.start_motion_pwm = std::max(config->pwm.start_motion_pwm, 120);
+    config->pwm.stall_target_speed_threshold_mps =
+        std::min(config->pwm.stall_target_speed_threshold_mps, 0.018);
+    config->pwm.stall_boost_after_cycles =
+        std::min(config->pwm.stall_boost_after_cycles, 2);
 }
 
 void apply_structured_hardware_config(const WorldMap& world,
@@ -315,9 +331,9 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
         0.075,
         0.105);
     config->gap_extraction.path_clearance_radius_m = clamp_value(
-        0.5 * config->drive.body_width + 0.01,
-        0.070,
-        0.095);
+        0.010 + 0.02 * span,
+        0.010,
+        0.025);
     config->gap_extraction.map_point_resolution_m = clamp_value(0.040 * span, 0.018, 0.025);
     config->gap_extraction.gap_goal_tolerance_m = clamp_value(0.08 * span, 0.035, 0.052);
     config->gap_extraction.gap_goal_acceptance_radius_m = clamp_value(0.12 * span, 0.050, 0.070);
@@ -355,13 +371,13 @@ void apply_tracked_mixed_hardware_config(const WorldMap& world, HardwarePlannerC
     config->gap_extraction.max_target_distance_m = lab_scale ? 0.65 : std::min(config->gap_extraction.max_target_distance_m, 0.65);
     config->gap_extraction.gap_aperture_target_margin_m = lab_scale ? 0.035 : std::min(config->gap_extraction.gap_aperture_target_margin_m, 0.045);
     const double footprint_target_clearance = 0.5 * config->drive.body_width + 0.020;
-    const double footprint_path_clearance = 0.5 * config->drive.body_width + 0.010;
+    const double extra_path_clearance = 0.010;
     config->gap_extraction.target_clearance_radius_m = std::max(
         config->gap_extraction.target_clearance_radius_m,
         footprint_target_clearance);
-    config->gap_extraction.path_clearance_radius_m = std::max(
-        config->gap_extraction.path_clearance_radius_m,
-        footprint_path_clearance);
+    if (lab_scale) {
+        config->gap_extraction.path_clearance_radius_m = extra_path_clearance;
+    }
     config->gap_extraction.map_point_resolution_m = lab_scale ? 0.022 : std::min(config->gap_extraction.map_point_resolution_m, 0.026);
     config->gap_extraction.gap_goal_tolerance_m = lab_scale ? 0.070 : std::min(config->gap_extraction.gap_goal_tolerance_m, 0.090);
     config->gap_extraction.gap_goal_acceptance_radius_m = lab_scale ? 0.105 : std::min(config->gap_extraction.gap_goal_acceptance_radius_m, 0.14);
