@@ -4,8 +4,11 @@
 
 - `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260726_205248_667`
 - `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260726_205601_258`
+- `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_005015_803`
+- `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_005640_579`
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260727_005758_670`
 
-Both runs use the definitive car geometry (`0.25 x 0.15 m`, wheel radius
+All runs use the definitive car geometry (`0.25 x 0.15 m`, wheel radius
 `0.0327 m`, 38 encoder ticks/revolution) in a `1.20 x 1.20 m` map.
 
 The first run remained live for `114.61 s`: only 29 of 821 samples contained a
@@ -13,6 +16,17 @@ selected gate and 752 samples requested zero target speed. The second reached
 the two-gate completion condition in `106.77 s`, but contained about 67 seconds
 without a planner reference between the first and second selected gates. The
 dominant fault was therefore candidate acquisition, not just motor power.
+
+The 27 July follow-up isolated a second, independent actuator fault. The first
+run reached the goal, but the two failed runs spent 557/635 and 261/302 samples
+in pure rotation. They emitted opposing left/right PWM in 633/635 and 300/302
+samples. In those same runs the right encoder reported zero delta despite an
+active command in 310 and 176 samples. Encoder distance consequently exceeded
+the estimated chassis path by 2.05 m and 0.74 m. The passive LiDAR images show
+the corresponding tight odometry loops. In the successful run, by contrast,
+43 samples drove both wheels forward and only three of those had a zero right
+encoder delta. This makes the opposing-wheel search manoeuvre, not gate
+geometry, the differentiating failure mode.
 
 ## Changes applied
 
@@ -28,15 +42,36 @@ geometry.
 
 Compact unstructured hardware uses:
 
-- minimum effective PWM: `60`;
-- break-away PWM: `120`;
+- minimum effective PWM: `70` for the car;
+- per-wheel break-away PWM: `90`, matching the measured calibration run;
 - stall detection target threshold: `0.018 m/s`;
 - stall boost after at most two control cycles.
 
-The effective PWM band is applied again after slew limiting. Previously a
-valid minimum command could be reduced to 42 PWM by the ramp and fail to move
-the real car. These overrides are local to compact unstructured hardware; the
-calibration profile still states that a dedicated multi-PWM sweep is pending.
+Stall detection is now evaluated independently for the left and right wheel.
+One moving wheel can no longer hide the other stationary wheel by keeping the
+old maximum-wheel-speed test above its threshold. The 90-PWM break-away is
+applied only to the stalled channel and its host integral is reset once, while
+normal commands retain the lower 70-PWM floor. The effective PWM band is
+re-applied after slew limiting. These overrides are local to the car in compact
+unstructured hardware; the calibration profile still states that a dedicated
+multi-PWM sweep is pending.
+
+### Forward-arc gate search
+
+The compact unstructured car no longer pivots to acquire or recover a gate.
+Its 360-degree LiDAR already observes the full azimuth, so a chassis rotation
+is not required merely to continue scanning. With sufficient clearance the
+runner scores forward sectors, chooses the clearest competitive heading and
+advances at 0.04--0.06 m/s. If no arc is safe it holds position and continues
+processing scans.
+
+When a gate is selected, large heading errors are followed with a bounded
+forward arc. The yaw-rate limit is tied to current forward speed so both target
+wheel speeds remain positive. The same-sign constraint is enforced again
+after host feedback and after PWM slew limiting. This removes the asymmetric
+pivot that made one slipping or stalled wheel appear as false linear encoder
+motion. Structured car behaviour, mixed-mode tuning and all tank commands are
+unchanged.
 
 The measured calibrated simulation also exposed a final-stop race: the robot
 entered the goal region above the completion speed threshold, lost the final
@@ -129,9 +164,9 @@ has been completed:
 - it reports pose-graph nodes and non-sequential loop edges;
 - oversized maps thin free display cells before touching occupied cells.
 
-The container uses ROS 2 Jazzy and the current SLAM Toolbox interfaces. The
-older Humble 2.6.x package does not expose the pose-graph event and reset APIs
-used by the bridge.
+The container uses ROS 2 Jazzy. The binary 2.8.x package exposes graph
+diagnostics through `/slam_toolbox/graph_visualization`; the bridge converts
+those markers into node and loop-edge counters and uses the native reset API.
 
 When connected, the GUI and `*_slam_reference.png` render the optimized
 occupancy grid. The raw `*_lidar_reconstruction.*` artifacts remain available
@@ -153,7 +188,13 @@ so loop-closure corrections outside the editor rectangle are not clipped.
   `goal_reached` in 1008 steps.
 - Structured Validation Road and Circle Loop, car: 4/4 Ideal/Calibrated runs
   reach the goal within 1167 steps.
-- Nonzero motion commands in this run respect the 60 PWM minimum.
+- All five CTest unit/integration tests pass after the forward-arc change.
+- The hardware-runner car smoke checks for `validation`, `tight`, `slalom`,
+  `lower` and `hardware_lab` produce zero pure-pivot cycles and zero opposing
+  PWM cycles. Several legacy synthetic presets already collide at their
+  initial footprint and therefore are not accepted as goal regressions for the
+  Manual Gate Editor world.
+- Nonzero compact-unstructured car commands respect the 70 PWM minimum.
 
 The `Closed Obstacle Road` hardware-plant regression is improved but not yet
 closed: it now keeps encoder/IMU odometry stable and completes the first
@@ -161,11 +202,11 @@ bypass instead of remaining in the first safety stop, but the rejoin target at
 the upper boundary can still enter a prolonged pivot. It must not be counted
 as a passing regression until that rejoin is corrected and rerun.
 
-The actual ROS 2 container could not be started on this workstation because
-Docker/ROS 2 are not installed locally. The next hardware validation should
-therefore run the sidecar on the GUI workstation and confirm that the panel
-shows `SLAM Toolbox`, nonzero map updates and an occupancy-grid
-`*_slam_reference.png`.
+Docker Engine and the ROS 2 Jazzy sidecar are now installed on the workstation.
+The container reaches the active lifecycle state, listens on UDP 9760 and an
+end-to-end synthetic scan produced a valid 64 x 64 occupancy grid. Hardware
+runs must still pass `--slam-bridge-port 9760`; the three 27 July reports did
+not, so they correctly record the passive reconstruction backend.
 
 The legacy large-coordinate unstructured presets were not redesigned in this
 change. Their physical miniaturization is a separate map-design task; the

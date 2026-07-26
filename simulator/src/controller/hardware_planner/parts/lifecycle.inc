@@ -295,6 +295,8 @@ void HardwarePlannerRunner::reset() {
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
     no_motion_command_cycles_ = 0;
+    left_wheel_stall_cycles_ = 0;
+    right_wheel_stall_cycles_ = 0;
     stuck_motion_elapsed_s_ = 0.0;
     stuck_recovery_until_s_ = -1.0;
     stuck_recovery_direction_ = 1.0;

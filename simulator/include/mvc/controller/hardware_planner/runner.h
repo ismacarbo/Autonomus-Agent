@@ -466,6 +466,9 @@ class HardwarePlannerRunner {
     void clear_locked_gap_goal();
     void restart_unstructured_scan();
     void update_unstructured_scan_direction(bool flip_when_aligned);
+    bool compute_forward_gate_search_command(double speed_limit,
+                                             double* target_speed,
+                                             double* target_yaw_rate) const;
     void set_locked_gap_goal(
         const Vec2& target,
         const std::string& persistent_name = {},
@@ -602,6 +605,8 @@ class HardwarePlannerRunner {
     int encoder_ready_streak_ = 0;
     bool measured_wheel_speeds_valid_ = false;
     int no_motion_command_cycles_ = 0;
+    int left_wheel_stall_cycles_ = 0;
+    int right_wheel_stall_cycles_ = 0;
     double stuck_motion_elapsed_s_ = 0.0;
     double stuck_recovery_until_s_ = -1.0;
     double stuck_recovery_direction_ = 1.0;

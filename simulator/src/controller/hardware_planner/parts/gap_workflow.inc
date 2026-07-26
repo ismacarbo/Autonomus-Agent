@@ -54,6 +54,84 @@ void HardwarePlannerRunner::update_unstructured_scan_direction(bool flip_when_al
     }
 }
 
+bool HardwarePlannerRunner::compute_forward_gate_search_command(
+    double speed_limit,
+    double* target_speed,
+    double* target_yaw_rate) const {
+    if (target_speed == nullptr ||
+        target_yaw_rate == nullptr ||
+        config_.vehicle_model == VehicleModelKind::TrackedVehicle ||
+        world_.environment_mode() != EnvironmentMode::UnstructuredGates ||
+        world_span_m(world_) > 1.25 ||
+        goal_reached_) {
+        return false;
+    }
+
+    *target_speed = 0.0;
+    *target_yaw_rate = 0.0;
+    const double search_range = clamp_value(
+        config_.gap_extraction.planning_max_range_m,
+        config_.localization.min_valid_range_m + 0.10,
+        config_.localization.max_range_m);
+    const double sector_half_width = clamp_value(
+        config_.gap_extraction.recovery_sector_half_angle_rad,
+        0.16,
+        0.34);
+    const double heading_limit = clamp_value(
+        config_.gap_extraction.recovery_heading_search_half_angle_rad,
+        0.55,
+        1.05);
+    const double heading_step = 12.0 * kPi / 180.0;
+    const double forward_clearance = sector_min_clearance(
+        lidar_hits_, estimate_.yaw, 0.0, sector_half_width, search_range);
+    double best_heading = 0.0;
+    double best_clearance = forward_clearance;
+    double best_score = forward_clearance;
+    for (double heading = -heading_limit;
+         heading <= heading_limit + 1e-6;
+         heading += heading_step) {
+        const double clearance = sector_min_clearance(
+            lidar_hits_, estimate_.yaw, heading, sector_half_width, search_range);
+        const double score = clearance - 0.16 * std::abs(heading);
+        if (score > best_score) {
+            best_score = score;
+            best_clearance = clearance;
+            best_heading = heading;
+        }
+    }
+
+    const double required_clearance = std::max(
+        config_.localization.obstacle_stop_distance_m + 0.055,
+        config_.localization.min_valid_range_m + 0.10);
+    if (!(best_clearance > required_clearance)) {
+        // A 360-degree LiDAR can keep acquiring candidates while stationary.
+        return true;
+    }
+
+    if (forward_clearance > required_clearance &&
+        forward_clearance + 0.10 >= best_clearance) {
+        best_heading = 0.0;
+        best_clearance = forward_clearance;
+    }
+    const double clearance_scale = clamp_value(
+        (best_clearance - required_clearance) / 0.35,
+        0.0,
+        1.0);
+    const double search_speed_cap = std::max(0.0, std::min(0.060, speed_limit));
+    *target_speed = search_speed_cap < 0.040
+        ? search_speed_cap
+        : clamp_value(
+              config_.gap_extraction.recovery_creep_speed_mps *
+                  (0.78 + 0.22 * clearance_scale),
+              0.040,
+              search_speed_cap);
+    *target_yaw_rate = clamp_value(
+        0.72 * best_heading,
+        -0.38,
+        0.38);
+    return true;
+}
+
 void HardwarePlannerRunner::set_locked_gap_goal(
     const Vec2& target,
     const std::string& persistent_name,

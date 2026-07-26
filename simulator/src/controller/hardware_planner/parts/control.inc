@@ -48,6 +48,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
     const bool compact_hardware_car =
         compact_hardware_mixed_lab_world(world_) && !tracked_vehicle;
+    const bool compact_unstructured_car =
+        !tracked_vehicle &&
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        world_span_m(world_) <= 1.25;
+    const bool forward_arc_gate_car = compact_hardware_car || compact_unstructured_car;
     const bool forward_only_tracked_tracks =
         tracked_vehicle && world_has_structured_reference(world_) && !mixed_gate_active;
     const bool simple_tiny_tracked_loop =
@@ -63,6 +68,28 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         structured_course_span_m(world_) >= 0.50;
     bool allow_unlocked_recovery_motion = false;
     bool allow_reverse_recovery_motion = false;
+
+    auto apply_forward_gate_search = [&]() {
+        double search_speed = 0.0;
+        double search_yaw_rate = 0.0;
+        if (!compute_forward_gate_search_command(
+                speed_limit,
+                &search_speed,
+                &search_yaw_rate)) {
+            return false;
+        }
+
+        use_direct_yaw_rate_command = true;
+        commanded_steer_angle_ = 0.0;
+        last_command_.target_curvature = 0.0;
+        last_mpc_command_.reset();
+        gap_recovery_turn_active_ = true;
+        direct_yaw_rate_command = search_yaw_rate;
+        commanded_speed_ = search_speed;
+        last_command_.target_speed = search_speed;
+        allow_unlocked_recovery_motion = search_speed > 1e-4;
+        return true;
+    };
 
     auto apply_strict_scan_escape = [&]() {
         if (!strict_locked_motion ||
@@ -158,17 +185,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     tracking_state.target_steer_angle = commanded_steer_angle_;
 
     if (scanning_startup) {
-        commanded_speed_ = 0.0;
-        commanded_steer_angle_ = 0.0;
-        last_command_.target_speed = 0.0;
-        last_command_.target_curvature = 0.0;
-        use_direct_yaw_rate_command = true;
-        direct_yaw_rate_command = startup_scan_direction_ * clamp_value(
-            std::abs(config_.gap_extraction.startup_scan_yaw_rate),
-            0.0,
-            0.85 * config_.drive.max_yaw_rate);
-        last_mpc_command_.reset();
-        apply_strict_scan_escape();
+        if (!apply_forward_gate_search()) {
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+            use_direct_yaw_rate_command = true;
+            direct_yaw_rate_command = startup_scan_direction_ * clamp_value(
+                std::abs(config_.gap_extraction.startup_scan_yaw_rate),
+                0.0,
+                0.85 * config_.drive.max_yaw_rate);
+            last_mpc_command_.reset();
+            apply_strict_scan_escape();
+        }
     } else if (have_reference_trajectory) {
         const MpcCommand mpc_command = mpc_follower_.solve(
             geometry_,
@@ -429,7 +458,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
-            if (!apply_strict_scan_escape()) {
+            if (!apply_forward_gate_search() && !apply_strict_scan_escape()) {
                 direct_yaw_rate_command = startup_scan_direction_ * clamp_value(
                     std::abs(config_.gap_extraction.startup_scan_yaw_rate),
                     0.0,
@@ -889,7 +918,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_mpc_command_.reset();
     }
 
-    if (compact_hardware_car &&
+    if (forward_arc_gate_car &&
         !goal_reached_ &&
         !safety_stop_active_ &&
         !scanning_startup &&
@@ -908,8 +937,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                        config_.localization.min_valid_range_m + 0.035);
         if ((relevant_clearance <= 0.0 || relevant_clearance > creep_clearance) &&
             std::abs(direct_yaw_rate_command) > 0.015) {
-            const double creep_floor = gate_target_active ? 0.012 : 0.010;
-            const double creep_ceiling = gate_target_active ? 0.026 : 0.022;
+            const double creep_floor = compact_unstructured_car
+                ? (gate_target_active ? 0.045 : 0.040)
+                : (gate_target_active ? 0.012 : 0.010);
+            const double creep_ceiling = compact_unstructured_car
+                ? std::min(0.060, speed_limit)
+                : (gate_target_active ? 0.026 : 0.022);
             last_command_.target_speed = std::min(
                 std::max(last_command_.target_speed, creep_floor),
                 creep_ceiling);
@@ -994,6 +1027,25 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                     -geometry_.max_curvature,
                     geometry_.max_curvature);
             }
+        }
+    }
+    if (compact_unstructured_car && use_direct_yaw_rate_command) {
+        if (last_command_.target_speed <= 1e-4) {
+            // Never convert a search or recovery request into opposing wheel
+            // commands: with asymmetric traction that produced false encoder
+            // translation and an indefinitely moving gate estimate.
+            last_command_.target_yaw_rate = 0.0;
+        } else {
+            const double forward_arc_yaw_limit =
+                0.68 * last_command_.target_speed / std::max(half_track, 1e-3);
+            last_command_.target_yaw_rate = clamp_value(
+                last_command_.target_yaw_rate,
+                -forward_arc_yaw_limit,
+                forward_arc_yaw_limit);
+            last_command_.target_curvature = clamp_value(
+                last_command_.target_yaw_rate / last_command_.target_speed,
+                -geometry_.max_curvature,
+                geometry_.max_curvature);
         }
     }
 
@@ -1157,6 +1209,41 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         stall_boost_active_ = true;
     }
 
+    const bool forward_arc_command =
+        compact_unstructured_car && last_command_.target_speed > 1e-4;
+    if (forward_arc_command && measured_wheel_speeds_valid_) {
+        const double wheel_target_threshold = 0.010;
+        const double wheel_motion_threshold = 0.008;
+        const bool left_requested = left_wheel_speed > wheel_target_threshold;
+        const bool right_requested = right_wheel_speed > wheel_target_threshold;
+        left_wheel_stall_cycles_ =
+            left_requested && std::abs(measured_left_wheel_speed) < wheel_motion_threshold
+                ? left_wheel_stall_cycles_ + 1
+                : 0;
+        right_wheel_stall_cycles_ =
+            right_requested && std::abs(measured_right_wheel_speed) < wheel_motion_threshold
+                ? right_wheel_stall_cycles_ + 1
+                : 0;
+
+        const int per_wheel_breakaway_pwm = std::clamp(
+            std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
+            0,
+            config_.pwm.max_pwm);
+        if (left_wheel_stall_cycles_ >= stall_boost_cycles_required && left_requested) {
+            last_command_.pwm_left = std::max(last_command_.pwm_left, per_wheel_breakaway_pwm);
+            wheel_speed_error_integral_left_ = 0.0;
+            stall_boost_active_ = true;
+        }
+        if (right_wheel_stall_cycles_ >= stall_boost_cycles_required && right_requested) {
+            last_command_.pwm_right = std::max(last_command_.pwm_right, per_wheel_breakaway_pwm);
+            wheel_speed_error_integral_right_ = 0.0;
+            stall_boost_active_ = true;
+        }
+    } else {
+        left_wheel_stall_cycles_ = 0;
+        right_wheel_stall_cycles_ = 0;
+    }
+
     if (commanding_motion) {
         last_command_.pwm_left = clamp_motion_pwm_band(
             last_command_.pwm_left,
@@ -1274,6 +1361,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             }
         }
     }
+    if (forward_arc_command) {
+        last_command_.pwm_left = std::max(last_command_.pwm_left, config_.pwm.min_effective_pwm);
+        last_command_.pwm_right = std::max(last_command_.pwm_right, config_.pwm.min_effective_pwm);
+    }
 
     const int pwm_slew_limit =
         commanding_motion
@@ -1298,6 +1389,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
         last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
+    }
+    if (forward_arc_command) {
+        last_command_.pwm_left = std::max(last_command_.pwm_left, config_.pwm.min_effective_pwm);
+        last_command_.pwm_right = std::max(last_command_.pwm_right, config_.pwm.min_effective_pwm);
     }
     if (!commanding_motion && std::abs(last_command_.pwm_left) < 4) {
         last_command_.pwm_left = 0;

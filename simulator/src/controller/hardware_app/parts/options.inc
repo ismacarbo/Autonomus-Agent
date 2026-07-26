@@ -244,12 +244,14 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     config->gap_extraction.gap_track_max_misses = 18;
     config->gap_extraction.min_passed_gates_to_complete = 2;
 
-    // PWM 90 is the first physically measured point for this car.  The exact
-    // break-away threshold still needs a dedicated sweep, but 45 produced
-    // repeated sub-threshold commands during the gate runs.  Keep this
-    // conservative override local to compact unstructured hardware missions.
-    config->pwm.min_effective_pwm = std::max(config->pwm.min_effective_pwm, 60);
-    config->pwm.start_motion_pwm = std::max(config->pwm.start_motion_pwm, 120);
+    // PWM 90 is the first physically measured point for this car. Keep normal
+    // motion below that value when feedback allows it, but never return to the
+    // 60-PWM plateau that repeatedly left one wheel stationary in gate runs.
+    // A stalled wheel receives a short per-channel break-away command at 90.
+    if (config->vehicle_model == VehicleModelKind::CarLikeBicycle) {
+        config->pwm.min_effective_pwm = std::max(config->pwm.min_effective_pwm, 70);
+        config->pwm.start_motion_pwm = 90;
+    }
     config->pwm.stall_target_speed_threshold_mps =
         std::min(config->pwm.stall_target_speed_threshold_mps, 0.018);
     config->pwm.stall_boost_after_cycles =
