@@ -13,9 +13,9 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
-from slam_toolbox.msg import NewNodeEvent, PoseGraph
 from slam_toolbox.srv import Reset
 from tf2_ros import Buffer, TransformBroadcaster, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 @dataclass
@@ -50,8 +50,12 @@ class UdpSlamBridge(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(OccupancyGrid, "/map", self.on_map, 2)
-        self.create_subscription(NewNodeEvent, "/slam_toolbox/new_node_event", self.on_new_node, 10)
-        self.create_subscription(PoseGraph, "/slam_toolbox/pose_graph", self.on_pose_graph, 2)
+        self.create_subscription(
+            MarkerArray,
+            "/slam_toolbox/graph_visualization",
+            self.on_graph_visualization,
+            2,
+        )
         self.reset_client = self.create_client(Reset, "/slam_toolbox/reset")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
@@ -212,16 +216,31 @@ class UdpSlamBridge(Node):
         self.map_updates += 1
         self.send_response()
 
-    def on_pose_graph(self, message: PoseGraph) -> None:
-        self.graph_nodes = len(message.nodes)
-        self.loop_edges = sum(
-            1 for edge in message.edges
-            if abs(edge.source_id - edge.target_id) > 1
-        )
-        self.send_response()
+    def on_graph_visualization(self, message: MarkerArray) -> None:
+        """Extract graph diagnostics exposed by the Jazzy 2.8.x package.
 
-    def on_new_node(self, message: NewNodeEvent) -> None:
-        self.graph_nodes = max(self.graph_nodes, message.new_node_id + 1)
+        Mapping nodes are individual red spheres in the ``slam_toolbox``
+        namespace. Mapping constraints are published as a LINE_LIST; a
+        connected odometry chain has N-1 constraints, therefore any additional
+        constraints are loop-closure edges.
+        """
+        node_ids = {
+            marker.id
+            for marker in message.markers
+            if marker.action == Marker.ADD
+            and marker.ns == "slam_toolbox"
+            and marker.type == Marker.SPHERE
+        }
+        edge_count = sum(
+            len(marker.points) // 2
+            for marker in message.markers
+            if marker.action == Marker.ADD
+            and marker.ns == "slam_toolbox_edges"
+            and marker.id == 0
+            and marker.type == Marker.LINE_LIST
+        )
+        self.graph_nodes = len(node_ids)
+        self.loop_edges = max(0, edge_count - max(0, self.graph_nodes - 1))
         self.send_response()
 
     def update_corrected_pose(self, packet: ScanPacket) -> None:
