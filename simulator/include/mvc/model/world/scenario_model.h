@@ -13,6 +13,7 @@ namespace thesis_sim::mvc::model {
 
 constexpr double kCommonArenaSpanM = 1.20;
 constexpr double kStructuredRoadSpanM = 0.90;
+constexpr double kUnstructuredHardwareContentSpanM = 0.80;
 
 WorldMap make_world_from_mode(EnvironmentMode mode,
                               UnstructuredMapPreset unstructured_preset,
@@ -29,6 +30,7 @@ WorldMap scale_world_map(const WorldMap& source, double scale);
 Rect structured_content_bounds(const WorldMap& world);
 WorldMap fit_hardware_structured_world(WorldMap world,
                                        VehicleModelKind vehicle_model);
+WorldMap fit_hardware_unstructured_world(WorldMap world);
 WorldMap fit_simulation_structured_world(WorldMap world,
                                          VehicleModelKind vehicle_model);
 

@@ -147,6 +147,10 @@ class WorldMap {
     void finalize_editor_changes();
 
   private:
+    friend WorldMap normalize_unstructured_world(WorldMap world,
+                                                 double arena_span_m,
+                                                 double content_span_m);
+
     Rect bounds_;
     Vec2 start_;
     Vec2 goal_;
@@ -171,5 +175,8 @@ std::array<Vec2, 4> make_box_corners(const Vec2& center, double yaw, double leng
 WorldMap normalize_structured_world(WorldMap world,
                                     double arena_span_m = 1.20,
                                     double content_span_m = 0.90);
+WorldMap normalize_unstructured_world(WorldMap world,
+                                      double arena_span_m = 1.20,
+                                      double content_span_m = 0.90);
 
 }  // namespace thesis_sim

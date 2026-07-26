@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "mvc/model/world/world.h"
+#include "mvc/model/world/scenario_model.h"
 #include "mvc/view/live_stream/live_view_stream.h"
 
 namespace {
@@ -76,6 +77,49 @@ int main() {
         !near(untouched_unstructured.bounds().max_x, unstructured.bounds().max_x) ||
         !near(untouched_unstructured.bounds().max_y, unstructured.bounds().max_y)) {
         return fail("structured normalization changed the unstructured preset");
+    }
+
+    const thesis_sim::UnstructuredMapPreset hardware_presets[] = {
+        thesis_sim::UnstructuredMapPreset::RobotValidation,
+        thesis_sim::UnstructuredMapPreset::TightCorridor,
+        thesis_sim::UnstructuredMapPreset::WideSlalom,
+        thesis_sim::UnstructuredMapPreset::LowerBypass,
+        thesis_sim::UnstructuredMapPreset::HardwareLab,
+        thesis_sim::UnstructuredMapPreset::IdealValidation,
+    };
+    for (const thesis_sim::UnstructuredMapPreset preset : hardware_presets) {
+        const thesis_sim::WorldMap compact =
+            thesis_sim::mvc::model::fit_hardware_unstructured_world(
+                thesis_sim::WorldMap::unstructured_demo(preset));
+        const thesis_sim::Rect& compact_bounds = compact.bounds();
+        if (!near(compact_bounds.min_x, 0.0) ||
+            !near(compact_bounds.min_y, 0.0) ||
+            !near(compact_bounds.max_x, 1.20) ||
+            !near(compact_bounds.max_y, 1.20)) {
+            return fail("hardware unstructured preset is not in the common 1.20 m arena");
+        }
+        constexpr double kRobotCircumscribedRadiusM = 0.146;
+        if (compact.start().x < kRobotCircumscribedRadiusM ||
+            compact.start().x > 1.20 - kRobotCircumscribedRadiusM ||
+            compact.start().y < kRobotCircumscribedRadiusM ||
+            compact.start().y > 1.20 - kRobotCircumscribedRadiusM ||
+            compact.goal().x < kRobotCircumscribedRadiusM ||
+            compact.goal().x > 1.20 - kRobotCircumscribedRadiusM ||
+            compact.goal().y < kRobotCircumscribedRadiusM ||
+            compact.goal().y > 1.20 - kRobotCircumscribedRadiusM) {
+            return fail("hardware unstructured start or goal does not clear the physical robot radius");
+        }
+        if (compact.unstructured_preset() != preset) {
+            return fail("hardware unstructured normalization changed the preset identity");
+        }
+        const thesis_sim::WorldMap compact_again =
+            thesis_sim::mvc::model::fit_hardware_unstructured_world(compact);
+        if (!near(compact_again.start().x, compact.start().x) ||
+            !near(compact_again.start().y, compact.start().y) ||
+            !near(compact_again.goal().x, compact.goal().x) ||
+            !near(compact_again.goal().y, compact.goal().y)) {
+            return fail("hardware unstructured normalization is not idempotent");
+        }
     }
 
     std::cout << "world_stream_smoke: ok"

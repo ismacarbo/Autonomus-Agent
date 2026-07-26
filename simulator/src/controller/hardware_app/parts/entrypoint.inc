@@ -35,11 +35,13 @@ int main(int argc, char** argv) {
         planner_config.use_mcu_velocity_closed_loop =
             options.mcu_velocity_closed_loop && !options.simulate;
         planner_config.localization_policy = options.localization_policy;
+        apply_unstructured_hardware_config(world, &planner_config);
         apply_structured_hardware_config(world, &planner_config);
         apply_mixed_hardware_config(world, &planner_config);
         const HardwarePlannerConfig base_planner_config = planner_config;
         apply_vehicle_profile(options, &planner_config);
         apply_robot_calibration_profile(options, &planner_config);
+        apply_unstructured_hardware_config(world, &planner_config);
         apply_structured_hardware_config(world, &planner_config);
         apply_mixed_hardware_config(world, &planner_config);
         apply_tracked_mixed_hardware_config(world, &planner_config);

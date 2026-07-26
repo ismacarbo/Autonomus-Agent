@@ -281,6 +281,23 @@ WorldMap fit_hardware_structured_world(WorldMap world,
         kStructuredRoadSpanM);
 }
 
+WorldMap fit_hardware_unstructured_world(WorldMap world) {
+    if (world.environment_mode() != EnvironmentMode::UnstructuredGates) {
+        return world;
+    }
+    const Rect bounds = world.bounds();
+    if (std::abs(bounds.min_x) <= 1e-9 &&
+        std::abs(bounds.min_y) <= 1e-9 &&
+        std::abs(bounds.max_x - kCommonArenaSpanM) <= 1e-9 &&
+        std::abs(bounds.max_y - kCommonArenaSpanM) <= 1e-9) {
+        return world;
+    }
+    return normalize_unstructured_world(
+        std::move(world),
+        kCommonArenaSpanM,
+        kUnstructuredHardwareContentSpanM);
+}
+
 WorldMap fit_simulation_structured_world(WorldMap world,
                                          VehicleModelKind vehicle_model) {
     return fit_hardware_structured_world(std::move(world), vehicle_model);
@@ -296,6 +313,7 @@ WorldMap sanitize_hardware_unstructured_world(WorldMap world) {
     if (world.environment_mode() != EnvironmentMode::UnstructuredGates) {
         return world;
     }
+    world = fit_hardware_unstructured_world(std::move(world));
     world.editable_obstacles().clear();
     world.editable_perception_obstacles().clear();
     world.editable_gates().clear();

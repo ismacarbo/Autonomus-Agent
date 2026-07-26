@@ -181,3 +181,82 @@ WorldMap normalize_structured_world(WorldMap world,
     return world;
 }
 
+WorldMap normalize_unstructured_world(WorldMap world,
+                                      double arena_span_m,
+                                      double content_span_m) {
+    if (world.environment_mode_ != EnvironmentMode::UnstructuredGates ||
+        arena_span_m <= 0.0 || content_span_m <= 0.0 ||
+        content_span_m > arena_span_m) {
+        return world;
+    }
+
+    const Rect source_bounds = world.bounds_;
+    const double source_width = source_bounds.max_x - source_bounds.min_x;
+    const double source_height = source_bounds.max_y - source_bounds.min_y;
+    const double source_span = std::max(source_width, source_height);
+    if (source_span <= kEps) {
+        return world;
+    }
+
+    // Keep the preset aspect ratio and center it inside the same physical
+    // 1.20 m square used by structured hardware runs. The 0.80 m content span
+    // leaves 0.20 m around the source envelope for footprint-safe turns,
+    // without scaling the robot.
+    const Vec2 source_center{
+        0.5 * (source_bounds.min_x + source_bounds.max_x),
+        0.5 * (source_bounds.min_y + source_bounds.max_y),
+    };
+    const Vec2 target_center{0.5 * arena_span_m, 0.5 * arena_span_m};
+    const double scale = content_span_m / source_span;
+    const auto transform_point = [&](const Vec2& point) {
+        return Vec2{
+            target_center.x + (point.x - source_center.x) * scale,
+            target_center.y + (point.y - source_center.y) * scale,
+        };
+    };
+    const auto transform_rect = [&](const Rect& rect) {
+        const Vec2 minimum = transform_point({rect.min_x, rect.min_y});
+        const Vec2 maximum = transform_point({rect.max_x, rect.max_y});
+        return Rect{
+            std::min(minimum.x, maximum.x),
+            std::min(minimum.y, maximum.y),
+            std::max(minimum.x, maximum.x),
+            std::max(minimum.y, maximum.y),
+        };
+    };
+    const auto transform_gate = [&](GateSpec* gate) {
+        if (gate == nullptr) {
+            return;
+        }
+        gate->position = transform_point(gate->position);
+        gate->anchor_position = transform_point(gate->anchor_position);
+        gate->motion_amplitude.x *= scale;
+        gate->motion_amplitude.y *= scale;
+    };
+
+    world.start_ = transform_point(world.start_);
+    world.goal_ = transform_point(world.goal_);
+    for (Rect& obstacle : world.obstacles_) {
+        obstacle = transform_rect(obstacle);
+    }
+    for (Rect& obstacle : world.perception_obstacles_) {
+        obstacle = transform_rect(obstacle);
+    }
+    for (DynamicObstacleSpec& obstacle : world.dynamic_obstacles_) {
+        obstacle.obstacle = transform_rect(obstacle.obstacle);
+        obstacle.activate_after_progress_m *= scale;
+    }
+    for (GateSpec& gate : world.gates_) {
+        transform_gate(&gate);
+    }
+    for (GateSpec& gate : world.gate_templates_) {
+        transform_gate(&gate);
+    }
+    for (Vec2& point : world.road_centerline_) {
+        point = transform_point(point);
+    }
+    world.bounds_ = {0.0, 0.0, arena_span_m, arena_span_m};
+    recompute_gate_headings(&world.gates_, world.start_, world.goal_);
+    recompute_gate_headings(&world.gate_templates_, world.start_, world.goal_);
+    return world;
+}

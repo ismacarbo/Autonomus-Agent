@@ -238,6 +238,7 @@ bool process_stream_control(const AppOptions& options,
             HardwarePlannerConfig next_config = base_config;
             apply_vehicle_profile(profile_options, &next_config);
             apply_robot_calibration_profile(profile_options, &next_config);
+            apply_unstructured_hardware_config(runner->world(), &next_config);
             apply_structured_hardware_config(runner->world(), &next_config);
             apply_mixed_hardware_config(runner->world(), &next_config);
             apply_tracked_mixed_hardware_config(runner->world(), &next_config);
@@ -267,15 +268,21 @@ bool process_stream_control(const AppOptions& options,
     }
 
     if (poll_result.world_received && poll_result.world.has_value()) {
+        WorldMap next_world = *poll_result.world;
+        if (next_world.environment_mode() == EnvironmentMode::UnstructuredGates) {
+            next_world = thesis_sim::mvc::model::fit_hardware_unstructured_world(
+                std::move(next_world));
+        }
         const bool sensor_mode_changed =
             runner->lidar_enabled_for_current_mode() !=
-            (poll_result.world->environment_mode() != EnvironmentMode::StructuredRoad);
+            (next_world.environment_mode() != EnvironmentMode::StructuredRoad);
         try {
-            runner->apply_world(*poll_result.world);
+            runner->apply_world(next_world);
             HardwarePlannerConfig next_config = active_config != nullptr ? *active_config : base_config;
-            apply_structured_hardware_config(*poll_result.world, &next_config);
-            apply_mixed_hardware_config(*poll_result.world, &next_config);
-            apply_tracked_mixed_hardware_config(*poll_result.world, &next_config);
+            apply_unstructured_hardware_config(next_world, &next_config);
+            apply_structured_hardware_config(next_world, &next_config);
+            apply_mixed_hardware_config(next_world, &next_config);
+            apply_tracked_mixed_hardware_config(next_world, &next_config);
             runner->apply_config(next_config);
             if (active_config != nullptr) {
                 *active_config = next_config;

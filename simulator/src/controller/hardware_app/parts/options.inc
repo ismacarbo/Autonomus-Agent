@@ -21,6 +21,7 @@
 #include "mvc/controller/hardware_planner/runner.h"
 #include "mvc/controller/slam/slam_toolbox_bridge.h"
 #include "mvc/model/navigation/robot_calibration_profile.h"
+#include "mvc/model/world/scenario_model.h"
 #include "mvc/view/live_stream/live_view_stream.h"
 
 namespace {
@@ -188,6 +189,55 @@ bool compact_hardware_mixed_lab_world(const WorldMap& world) {
            world.unstructured_preset() == UnstructuredMapPreset::HardwareLab &&
            world_span_m(world) <= 1.25 &&
            !world.road_centerline().empty();
+}
+
+void apply_unstructured_hardware_config(const WorldMap& world,
+                                        HardwarePlannerConfig* config) {
+    if (config == nullptr ||
+        world.environment_mode() != EnvironmentMode::UnstructuredGates ||
+        world_span_m(world) > 1.25) {
+        return;
+    }
+
+    // LiDAR-only gate extraction in the common 1.20 m arena. These limits
+    // replace the legacy 2.70 x 2.40 m defaults; actuator and firmware paths
+    // are deliberately left untouched.
+    apply_measured_hardware_geometry(config->vehicle_model, &config->drive);
+    config->cruise_speed_limit =
+        config->vehicle_model == VehicleModelKind::TrackedVehicle ? 0.055 : 0.060;
+    config->goal_tolerance_m = 0.070;
+    config->goal_stop_speed_mps = 0.075;
+    config->localization.max_range_m = 1.20;
+    config->localization.obstacle_stop_distance_m = 0.16;
+    config->gap_extraction.planning_max_range_m = 1.20;
+    config->gap_extraction.free_distance_threshold_m = 0.24;
+    config->gap_extraction.min_gap_width_m =
+        std::max(config->drive.body_width + 0.06, 0.21);
+    config->gap_extraction.min_gap_depth_contrast_m = 0.070;
+    config->gap_extraction.min_target_distance_m = 0.18;
+    config->gap_extraction.max_target_distance_m = 0.58;
+    config->gap_extraction.gap_aperture_target_margin_m = 0.030;
+    config->gap_extraction.target_clearance_radius_m =
+        0.5 * config->drive.body_width + 0.020;
+    config->gap_extraction.path_clearance_radius_m =
+        0.5 * config->drive.body_width + 0.010;
+    config->gap_extraction.dynamic_bounds_margin_m = 0.10;
+    config->gap_extraction.map_point_resolution_m = 0.022;
+    config->gap_extraction.gap_goal_tolerance_m = 0.070;
+    config->gap_extraction.gap_goal_acceptance_radius_m = 0.105;
+    config->gap_extraction.gap_goal_acceptance_lateral_slack_m = 0.060;
+    config->gap_extraction.gap_crossing_margin_m = 0.018;
+    config->gap_extraction.gap_goal_cruise_speed_mps = 0.060;
+    config->gap_extraction.startup_scan_duration_s = 1.20;
+    config->gap_extraction.locked_gap_grace_frames = 180;
+    config->gap_extraction.gap_track_match_radius_m = 0.18;
+    config->gap_extraction.gap_track_confirm_score = 1.15;
+    config->gap_extraction.gap_track_hold_score = 0.55;
+    config->gap_extraction.gap_track_hit_gain = 1.05;
+    config->gap_extraction.gap_track_miss_decay = 0.24;
+    config->gap_extraction.gap_track_min_hits = 1;
+    config->gap_extraction.gap_track_max_misses = 18;
+    config->gap_extraction.min_passed_gates_to_complete = 2;
 }
 
 void apply_structured_hardware_config(const WorldMap& world,
@@ -471,7 +521,11 @@ WorldMap make_world_from_options(const AppOptions& options) {
     if (options.environment_mode == EnvironmentMode::MixedRoadGates) {
         return mixed_hardware_world_from_preset(options.mixed_preset);
     }
-    return WorldMap::unstructured_demo(options.unstructured_preset, GateBehaviorMode::Static, 0);
+    return thesis_sim::mvc::model::fit_hardware_unstructured_world(
+        WorldMap::unstructured_demo(
+            options.unstructured_preset,
+            GateBehaviorMode::Static,
+            0));
 }
 
 Vec2 lidar_origin_world(const Vec2& base_position,
