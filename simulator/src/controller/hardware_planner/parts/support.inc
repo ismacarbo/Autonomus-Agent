@@ -168,6 +168,11 @@ bool compact_hardware_unstructured_world(const WorldMap& world) {
            world_span_m(world) <= 1.25;
 }
 
+bool manual_unstructured_exploration(const WorldMap& world) {
+    return compact_hardware_unstructured_world(world) &&
+           world.unstructured_preset() == UnstructuredMapPreset::Custom;
+}
+
 double structured_course_span_m(const WorldMap& world) {
     if (!world_has_structured_reference(world) ||
         world.road_centerline().empty()) {

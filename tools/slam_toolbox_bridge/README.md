@@ -46,5 +46,29 @@ When saving a thesis bundle:
 
 Docker and host networking are required by `run.sh`. For a headless runner
 connected directly to a sidecar, add `--slam-bridge-port 9760` and optionally
-`--slam-bridge-host HOST`. Do not enable `--slam-pose-feedback` until the map
-pose has been checked against the independent external ground truth.
+`--slam-bridge-host HOST`. When the GUI is open, leave those runner flags out:
+the GUI already forwards each streamed hardware scan to its local sidecar.
+Enabling both paths would interleave two sessions and repeatedly reset the
+same pose graph. Do not enable `--slam-pose-feedback` until the map pose has
+been checked against the independent external ground truth.
+
+## Input and Karto grid constraints
+
+The bridge rejects malformed metadata, non-finite beams and scans with fewer
+than eight finite returns before publishing `/scan`. The C++ sender performs
+the same validation, so corrupt or nearly empty UDP datagrams cannot enter the
+scan matcher.
+
+`max_laser_range` is `1.2 m`, matching the range published by the hardware
+pipeline. Keep the Karto correlation grid symmetric when tuning its search
+space. The search dimension divided by the search resolution, plus one, must
+produce an odd cell count. The current `0.36 / 0.01 + 1 = 37` configuration
+satisfies that constraint. The previous `0.35 / 0.01 + 1 = 36` configuration
+let the final coarse-search sample fall outside the probability grid and could
+terminate Slam Toolbox with `unable to get pointer in probability search`.
+
+The container entrypoint supervises both the UDP adapter and the actual
+`/slam_toolbox` lifecycle node. If the mapper aborts, the container now exits
+with an error instead of remaining deceptively `Up` with only the UDP process
+alive. Re-running `run.sh` replaces a stopped container and attaches to an
+already running one.

@@ -10,7 +10,7 @@ slam_toolbox:
     scan_topic: /scan
     mode: mapping
     resolution: 0.025
-    max_laser_range: 2.0
+    max_laser_range: 1.2
     minimum_time_interval: 0.05
     transform_publish_period: 0.02
     map_update_interval: 0.25
@@ -26,7 +26,11 @@ slam_toolbox:
     loop_match_maximum_variance_coarse: 3.0
     loop_match_minimum_response_coarse: 0.25
     loop_match_minimum_response_fine: 0.35
-    correlation_search_space_dimension: 0.35
+    # Karto samples the coarse grid at twice the 0.01 m correlation
+    # resolution. 0.35 / 0.01 creates an even 36-cell probability grid and
+    # the last coarse sample lands one cell outside it. Use an even multiple
+    # of the resolution so the grid has an odd, symmetric cell count.
+    correlation_search_space_dimension: 0.36
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.04
     loop_search_space_dimension: 1.0

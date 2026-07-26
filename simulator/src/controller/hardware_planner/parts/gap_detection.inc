@@ -77,6 +77,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
     const bool compact_unstructured_hardware =
         compact_hardware_unstructured_world(world_);
+    const bool manual_exploration =
+        manual_unstructured_exploration(world_);
     const double current_world_span = world_span_m(world_);
     const bool compact_mixed_reference =
         world_is_mixed(world_) &&
@@ -288,6 +290,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
               config_.localization.obstacle_stop_distance_m + 0.03);
     const Vec2 global_goal = world_.goal();
     const bool have_global_goal =
+        !manual_exploration &&
         is_inside_bounds(world_, global_goal) &&
         distance(lidar_origin, global_goal) > 0.05;
     const double goal_heading = have_global_goal ? angle_to(lidar_origin, global_goal) : estimate_.yaw;
@@ -318,7 +321,9 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
         const double gate_heading_local =
             wrap_angle(angle_to(lidar_origin, previous_spec.position) - estimate_.yaw);
-        if (std::abs(gate_heading_local) > 0.70 * kPi) {
+        const double persistence_heading_limit =
+            manual_exploration ? 0.92 * kPi : 0.70 * kPi;
+        if (std::abs(gate_heading_local) > persistence_heading_limit) {
             return false;
         }
 
@@ -649,13 +654,19 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             cell_x,
             cell_y,
             std::max(1, static_cast<int>(std::ceil(inflate_radius / grid_resolution))));
+        const double lateral_penalty_start =
+            (manual_exploration ? 95.0 : 55.0) * kPi / 180.0;
+        const double lateral_penalty_span =
+            (manual_exploration ? 60.0 : 45.0) * kPi / 180.0;
         const double lateral_heading_penalty = clamp_value(
-            (abs_candidate_local_angle - 55.0 * kPi / 180.0) /
-                (45.0 * kPi / 180.0),
+            (abs_candidate_local_angle - lateral_penalty_start) /
+                lateral_penalty_span,
             0.0,
             1.6);
+        const double reverse_penalty_start =
+            (manual_exploration ? 155.0 : 95.0) * kPi / 180.0;
         const double reverse_heading_penalty = clamp_value(
-            (abs_candidate_local_angle - 95.0 * kPi / 180.0) /
+            (abs_candidate_local_angle - reverse_penalty_start) /
                 (35.0 * kPi / 180.0),
             0.0,
             1.8);
@@ -673,10 +684,21 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                           1.0)
                 : 0.0;
 
+        const double coverage_bonus = manual_exploration
+            ? 0.70 * clamp_value(
+                  (abs_candidate_local_angle - 55.0 * kPi / 180.0) /
+                      (90.0 * kPi / 180.0),
+                  0.0,
+                  1.0)
+            : 0.0;
         TargetCandidate candidate{
-            base_score + 1.95 * progress_score + 1.55 * distance_score +
-                1.35 * forward_alignment + 1.20 * goal_alignment +
-                1.25 * goal_progress + 1.10 * clearance_score +
+            base_score +
+                (manual_exploration ? 0.75 : 1.95) * progress_score +
+                1.55 * distance_score +
+                (manual_exploration ? 0.45 : 1.35) * forward_alignment +
+                (manual_exploration ? 0.40 : 1.20) * goal_alignment +
+                (manual_exploration ? 0.30 : 1.25) * goal_progress +
+                1.10 * clearance_score + coverage_bonus +
                 continuity_bonus_for_target(target) + 1.25 * rear_search_score -
                 1.45 * lateral_heading_penalty -
                 1.70 * reverse_heading_penalty,
@@ -712,7 +734,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
-    if (world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+    if (!manual_exploration &&
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
         passed_unstructured_gap_count_ > 0 &&
         have_global_goal) {
         // Once at least one real opening has been crossed, admit the physical

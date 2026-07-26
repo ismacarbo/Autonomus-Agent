@@ -18,6 +18,9 @@ from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 
+MIN_SLAM_RETURNS = 8
+
+
 @dataclass
 class ScanPacket:
     session: str
@@ -82,16 +85,42 @@ class UdpSlamBridge(Node):
             beams = []
             for token in fields[beam_field].split(";"):
                 angle, distance, hit = token.split(",")
-                beams.append((float(angle), float(distance), int(hit) != 0))
+                parsed_angle = float(angle)
+                parsed_distance = float(distance)
+                parsed_hit = int(hit)
+                if (
+                    not math.isfinite(parsed_angle)
+                    or not math.isfinite(parsed_distance)
+                    or parsed_distance <= 0.0
+                    or parsed_hit not in (0, 1)
+                ):
+                    continue
+                beams.append((parsed_angle, parsed_distance, parsed_hit != 0))
             lidar_offset_x = float(fields[9]) if len(fields) == 12 else 0.0
             lidar_offset_y = float(fields[10]) if len(fields) == 12 else 0.0
-            return ScanPacket(
-                fields[1], int(fields[2]), float(fields[3]),
-                float(fields[4]), float(fields[5]), float(fields[6]),
-                float(fields[7]), float(fields[8]),
-                lidar_offset_x, lidar_offset_y, beams, source,
+            sequence = int(fields[2])
+            numeric_metadata = (
+                float(fields[3]), float(fields[4]), float(fields[5]),
+                float(fields[6]), float(fields[7]), float(fields[8]),
+                lidar_offset_x, lidar_offset_y,
             )
-        except (UnicodeDecodeError, ValueError):
+            if (
+                not fields[1]
+                or len(fields[1]) > 96
+                or sequence < 0
+                or not all(math.isfinite(value) for value in numeric_metadata)
+                or numeric_metadata[5] <= numeric_metadata[4]
+                or numeric_metadata[4] < 0.0
+                or len(beams) < MIN_SLAM_RETURNS
+            ):
+                return None
+            return ScanPacket(
+                fields[1], sequence,
+                numeric_metadata[0], numeric_metadata[1], numeric_metadata[2],
+                numeric_metadata[3], numeric_metadata[4], numeric_metadata[5],
+                numeric_metadata[6], numeric_metadata[7], beams, source,
+            )
+        except (UnicodeDecodeError, ValueError, OverflowError):
             return None
 
     def poll_udp(self) -> None:
@@ -207,6 +236,8 @@ class UdpSlamBridge(Node):
             index = min(max(index, 0), beam_count - 1)
             if hit and scan.range_min <= distance <= scan.range_max:
                 ranges[index] = min(ranges[index], distance)
+        if sum(math.isfinite(distance) for distance in ranges) < MIN_SLAM_RETURNS:
+            return
         scan.ranges = ranges
         self.scan_pub.publish(scan)
         self.update_corrected_pose(packet)

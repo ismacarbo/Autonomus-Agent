@@ -39,7 +39,8 @@ void HardwarePlannerRunner::restart_unstructured_scan() {
 
 void HardwarePlannerRunner::update_unstructured_scan_direction(bool flip_when_aligned) {
     const Vec2 goal = world_.goal();
-    if (distance(estimate_.position, goal) > 0.05) {
+    if (!manual_unstructured_exploration(world_) &&
+        distance(estimate_.position, goal) > 0.05) {
         const double heading_error = wrap_angle(angle_to(estimate_.position, goal) - estimate_.yaw);
         if (std::abs(heading_error) > 0.12) {
             startup_scan_direction_ = heading_error >= 0.0 ? 1.0 : -1.0;
@@ -77,22 +78,53 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         config_.gap_extraction.recovery_sector_half_angle_rad,
         0.16,
         0.34);
-    const double heading_limit = clamp_value(
-        config_.gap_extraction.recovery_heading_search_half_angle_rad,
-        0.55,
-        1.05);
+    const bool manual_exploration = manual_unstructured_exploration(world_);
+    const double heading_limit = manual_exploration
+        ? 140.0 * kPi / 180.0
+        : clamp_value(
+              config_.gap_extraction.recovery_heading_search_half_angle_rad,
+              0.55,
+              1.05);
     const double heading_step = 12.0 * kPi / 180.0;
     const double forward_clearance = sector_min_clearance(
         lidar_hits_, estimate_.yaw, 0.0, sector_half_width, search_range);
     double best_heading = 0.0;
     double best_clearance = forward_clearance;
-    double best_score = forward_clearance;
+    const double footprint_radius =
+        0.5 * std::hypot(geometry_.body_length, geometry_.body_width);
+    const double safe_bounds_margin = footprint_radius + 0.020;
+    const double probe_distance = clamp_value(
+        0.30 * world_span_m(world_),
+        0.20,
+        0.30);
+    const auto heading_stays_in_arena = [&](double heading) {
+        const double world_heading = estimate_.yaw + heading;
+        const Vec2 probe{
+            estimate_.position.x + probe_distance * std::cos(world_heading),
+            estimate_.position.y + probe_distance * std::sin(world_heading),
+        };
+        return is_inside_bounds(world_, probe, -safe_bounds_margin);
+    };
+    double best_score = heading_stays_in_arena(0.0)
+        ? forward_clearance
+        : -std::numeric_limits<double>::infinity();
     for (double heading = -heading_limit;
          heading <= heading_limit + 1e-6;
          heading += heading_step) {
+        if (!heading_stays_in_arena(heading)) {
+            continue;
+        }
         const double clearance = sector_min_clearance(
             lidar_hits_, estimate_.yaw, heading, sector_half_width, search_range);
-        const double score = clearance - 0.16 * std::abs(heading);
+        const double sweep_bias = manual_exploration
+            ? 0.10 * clamp_value(
+                  unstructured_no_candidate_scan_elapsed_s_ / 1.5,
+                  0.0,
+                  1.0) *
+                  startup_scan_direction_ * heading / std::max(heading_limit, 1e-3)
+            : 0.0;
+        const double score =
+            clearance - (manual_exploration ? 0.07 : 0.16) * std::abs(heading) + sweep_bias;
         if (score > best_score) {
             best_score = score;
             best_clearance = clearance;
@@ -103,12 +135,14 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
     const double required_clearance = std::max(
         config_.localization.obstacle_stop_distance_m + 0.055,
         config_.localization.min_valid_range_m + 0.10);
-    if (!(best_clearance > required_clearance)) {
+    if (!std::isfinite(best_score) || !(best_clearance > required_clearance)) {
         // A 360-degree LiDAR can keep acquiring candidates while stationary.
         return true;
     }
 
-    if (forward_clearance > required_clearance &&
+    if (heading_stays_in_arena(0.0) &&
+        (!manual_exploration || unstructured_no_candidate_scan_elapsed_s_ < 0.80) &&
+        forward_clearance > required_clearance &&
         forward_clearance + 0.10 >= best_clearance) {
         best_heading = 0.0;
         best_clearance = forward_clearance;
@@ -1154,7 +1188,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 const double heading_error = std::abs(
                     wrap_angle(angle_to(estimate_.position, spec.position) - estimate_.yaw));
                 const double forward_lock_angle = strict_locked_motion
-                    ? 72.0 * kPi / 180.0
+                    ? (manual_unstructured_exploration(world_)
+                           ? 145.0 * kPi / 180.0
+                           : 72.0 * kPi / 180.0)
                     : 28.0 * kPi / 180.0;
                 if (heading_error <= forward_lock_angle) {
                     have_forward_candidate = true;
@@ -1213,11 +1249,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
 
     size_t preferred_gate_index = 0;
     double best_gate_score = -std::numeric_limits<double>::infinity();
+    const bool manual_exploration = manual_unstructured_exploration(world_);
+    const double reachable_heading_limit =
+        (manual_exploration ? 145.0 : 85.0) * kPi / 180.0;
     bool have_reachable_gate = false;
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const double heading_error = std::abs(
             wrap_angle(angle_to(estimate_.position, gate_specs_[i].position) - estimate_.yaw));
-        if (heading_error <= 85.0 * kPi / 180.0) {
+        if (heading_error <= reachable_heading_limit) {
             have_reachable_gate = true;
             break;
         }
@@ -1229,28 +1268,37 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         const double gate_distance = distance(estimate_.position, target);
         const double forward_progress =
             std::max(std::cos(heading_error), 0.0) * gate_distance;
-        const double goal_distance = distance(target, world_.goal());
+        const double goal_distance = manual_exploration
+            ? 0.0
+            : distance(target, world_.goal());
         const double rank_bonus = std::max(0.0, 1.6 - 0.30 * static_cast<double>(i));
-        const double goal_progress = clamp_value(
-            (distance(estimate_.position, world_.goal()) - goal_distance) /
-                std::max(config_.gap_extraction.max_target_distance_m, 0.10),
-            -0.60,
-            1.20);
+        const double goal_progress = manual_exploration
+            ? 0.0
+            : clamp_value(
+                  (distance(estimate_.position, world_.goal()) - goal_distance) /
+                      std::max(config_.gap_extraction.max_target_distance_m, 0.10),
+                  -0.60,
+                  1.20);
+        const double heading_penalty_start =
+            (manual_exploration ? 100.0 : 40.0) * kPi / 180.0;
         const double heading_penalty = clamp_value(
-            (heading_error - 40.0 * kPi / 180.0) /
+            (heading_error - heading_penalty_start) /
                 (50.0 * kPi / 180.0),
             0.0,
             1.6);
+        const double reverse_penalty_start =
+            (manual_exploration ? 155.0 : 90.0) * kPi / 180.0;
         const double reverse_penalty = clamp_value(
-            (heading_error - 90.0 * kPi / 180.0) /
+            (heading_error - reverse_penalty_start) /
                 (35.0 * kPi / 180.0),
             0.0,
             2.0);
         double gate_score =
             rank_bonus +
-            1.15 * goal_progress +
-            0.95 * forward_progress +
-            0.40 * clamp_value(std::cos(heading_error), -0.35, 1.0) -
+            (manual_exploration ? 0.0 : 1.15) * goal_progress +
+            (manual_exploration ? 0.35 : 0.95) * forward_progress +
+            (manual_exploration ? 0.12 : 0.40) *
+                clamp_value(std::cos(heading_error), -0.35, 1.0) -
             1.55 * heading_penalty -
             (have_reachable_gate ? 2.10 : 0.90) * reverse_penalty -
             0.12 * gate_distance;
@@ -1258,9 +1306,15 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             gate_score += 0.18;
         }
 
+        const double tie_break_distance = manual_exploration
+            ? gate_distance
+            : goal_distance;
+        const double preferred_tie_break_distance = manual_exploration
+            ? distance(estimate_.position, gate_specs_[preferred_gate_index].position)
+            : distance(gate_specs_[preferred_gate_index].position, world_.goal());
         if (gate_score > best_gate_score + 1e-6 ||
             (std::abs(gate_score - best_gate_score) <= 1e-6 &&
-             goal_distance + 1e-6 < distance(gate_specs_[preferred_gate_index].position, world_.goal()))) {
+             tie_break_distance + 1e-6 < preferred_tie_break_distance)) {
             preferred_gate_index = i;
             best_gate_score = gate_score;
         }

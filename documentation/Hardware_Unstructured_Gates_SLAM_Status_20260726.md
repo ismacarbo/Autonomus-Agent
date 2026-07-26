@@ -7,6 +7,9 @@
 - `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_005015_803`
 - `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_005640_579`
 - `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260727_005758_670`
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260727_012728_643`
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260727_012859_110`
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260727_012940_125`
 
 All runs use the definitive car geometry (`0.25 x 0.15 m`, wheel radius
 `0.0327 m`, 38 encoder ticks/revolution) in a `1.20 x 1.20 m` map.
@@ -205,9 +208,87 @@ as a passing regression until that rejoin is corrected and rerun.
 Docker Engine and the ROS 2 Jazzy sidecar are now installed on the workstation.
 The container reaches the active lifecycle state, listens on UDP 9760 and an
 end-to-end synthetic scan produced a valid 64 x 64 occupancy grid. Hardware
-runs must still pass `--slam-bridge-port 9760`; the three 27 July reports did
-not, so they correctly record the passive reconstruction backend.
+runs shown in the GUI use the GUI's automatic local forwarding. A headless
+runner must instead pass `--slam-bridge-port 9760`; the earlier reports were
+captured while no working sidecar response was available and therefore
+correctly record the passive reconstruction backend.
 
 The legacy large-coordinate unstructured presets were not redesigned in this
 change. Their physical miniaturization is a separate map-design task; the
 current hardware focus remains Manual Gate Editor and Hardware Lab.
+
+## Manual Gate Editor follow-up — 2026-07-27 01:27
+
+The three additional runs exposed a mission-semantics defect rather than a
+LiDAR field-of-view limitation:
+
+- run `012728` stayed live for `37.58 s`, travelled an estimated `3.03 m`,
+  observed candidates in only 23/274 samples, selected one in 17 samples and
+  passed no gate;
+- runs `012859` and `012940` both stopped as `goal_reached` after exactly two
+  gates, in `3.52 s` and `5.70 s` respectively;
+- after losing a candidate, the first run continued its forward search beyond
+  the editor arena instead of sweeping toward the remaining openings.
+
+The hardware detector saw the complete 360-degree scan, but its candidate
+score and second-stage planner score were both biased toward the editor's
+virtual global goal. After the first physical aperture the detector also
+inserted that virtual goal into the candidate list. Together with the generic
+two-gate completion condition, this explained both symptoms: lateral/rear
+openings lost to forward candidates, and a straight virtual-goal trajectory
+could terminate a scene that contained more physical gates.
+
+Manual Gate Editor is now an explicit open-ended exploration contract:
+
+- no virtual global goal is inserted or used to score dynamic gates;
+- confirmed candidates remain eligible to about 145 degrees from the current
+  heading and persistent tracks remain associated through almost the full
+  LiDAR azimuth;
+- forward and goal-alignment weights are reduced, while lateral coverage is
+  rewarded after the initial forward acquisition period;
+- the recovery sweep alternates direction, searches a 280-degree sector and
+  rejects every probe whose robot footprint would leave the 1.20 m arena;
+- when no safe arc exists the car holds still and keeps scanning;
+- there is no automatic completion after two apertures: the operator saves or
+  stops the manual run when the intended physical set has been traversed.
+
+This open-ended rule is deliberately limited to the `Custom` Manual Gate
+Editor world. Fixed presets such as Hardware Lab keep their configured finite
+gate count and automatic `goal_reached` behaviour.
+
+The editor world is also normalized to the selected hardware scale as soon as
+the GUI state is initialized. The displayed start, goal and 1.20 m bounds can
+therefore no longer retain the raw 2.0 m preset geometry until the first
+manual edit.
+
+## Slam Toolbox crash follow-up — 2026-07-27
+
+The reported mapper abort was reproduced and traced to the Karto probability
+grid. With correlation dimension `0.35 m` and resolution `0.01 m`, Karto
+created 36 cells. Its coarse matcher samples at twice that resolution; the
+last sample therefore landed one cell beyond the even-sized probability grid
+and threw `Mapper FATAL ERROR - unable to get pointer in probability search`.
+
+The sidecar now uses:
+
+- `correlation_search_space_dimension: 0.36`, yielding the symmetric odd
+  count `0.36 / 0.01 + 1 = 37`;
+- `max_laser_range: 1.2`, matching the incoming hardware scan instead of the
+  previous 2.0 m setting;
+- validation on both the C++ and Python sides that drops non-finite metadata,
+  invalid beams and scans with fewer than eight finite returns;
+- lifecycle supervision that makes Docker exit nonzero if the real
+  `/slam_toolbox` node disappears, rather than leaving a misleadingly active
+  UDP-only container.
+
+The rebuilt Jazzy container survived an invalid-packet injection followed by
+201 synthetic full-circle scans. It remained active and returned 43 map
+updates, a 48 x 48 occupancy grid, valid corrected pose and 100 graph nodes.
+The synthetic exact-odometry path did not require a loop edge; loop closure
+must be assessed with the next real repeated-area hardware run.
+
+For GUI-driven hardware tests, the GUI forwards the Raspberry Pi stream to
+the sidecar on local UDP 9760. `--slam-bridge-host/port` belong only to a
+headless runner that sends directly to the workstation. Do not enable both
+forwarding paths for the same run, because alternating session identifiers
+would reset the pose graph.

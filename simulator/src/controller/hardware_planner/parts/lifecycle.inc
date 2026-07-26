@@ -674,6 +674,13 @@ int HardwarePlannerRunner::planning_interval_steps() const {
 }
 
 int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
+    // A Manual Gate Editor scene has no authoritative number of physical
+    // LiDAR apertures. Keep exploring until the operator stops the run instead
+    // of turning the second locally observed opening into a false mission end.
+    // Fixed presets such as Hardware Lab retain their configured finite count.
+    if (manual_unstructured_exploration(world_)) {
+        return std::numeric_limits<int>::max();
+    }
     return std::max(config_.gap_extraction.min_passed_gates_to_complete, 1);
 }
 

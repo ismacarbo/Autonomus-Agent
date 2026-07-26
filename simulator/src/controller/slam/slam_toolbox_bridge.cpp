@@ -87,14 +87,39 @@ bool SlamToolboxBridgeClient::submit_scan(const std::string& session,
     if (socket_fd_ < 0 || scan.empty()) {
         return false;
     }
+    if (session.empty() ||
+        !std::isfinite(timestamp_s) ||
+        !std::isfinite(odom_position.x) ||
+        !std::isfinite(odom_position.y) ||
+        !std::isfinite(odom_yaw) ||
+        !std::isfinite(min_range_m) ||
+        !std::isfinite(max_range_m) ||
+        !(min_range_m >= 0.0) ||
+        !(max_range_m > min_range_m)) {
+        last_error_ = "non-finite or inconsistent SLAM scan metadata";
+        return false;
+    }
+    std::vector<const LidarHit*> valid_hits;
+    valid_hits.reserve(scan.size());
+    for (const LidarHit& hit : scan) {
+        if (!(hit.distance > 0.0) ||
+            !std::isfinite(hit.distance) ||
+            !std::isfinite(hit.angle) ||
+            !std::isfinite(hit.point.x) ||
+            !std::isfinite(hit.point.y)) {
+            continue;
+        }
+        valid_hits.push_back(&hit);
+    }
+    if (valid_hits.size() < 8U) {
+        last_error_ = "too few finite LiDAR returns for SLAM Toolbox";
+        return false;
+    }
     std::ostringstream message;
     Vec2 lidar_origin = odom_position;
     std::size_t origin_samples = 0;
-    for (const LidarHit& hit : scan) {
-        if (!(hit.distance > 0.0) || !std::isfinite(hit.angle) ||
-            !std::isfinite(hit.point.x) || !std::isfinite(hit.point.y)) {
-            continue;
-        }
+    for (const LidarHit* hit_ptr : valid_hits) {
+        const LidarHit& hit = *hit_ptr;
         lidar_origin.x += hit.point.x - std::cos(hit.angle) * hit.distance - odom_position.x;
         lidar_origin.y += hit.point.y - std::sin(hit.angle) * hit.distance - odom_position.y;
         ++origin_samples;
@@ -116,10 +141,10 @@ bool SlamToolboxBridgeClient::submit_scan(const std::string& session,
             << odom_position.x << '|' << odom_position.y << '|' << odom_yaw << '|'
             << min_range_m << '|' << max_range_m << '|'
             << lidar_offset_x << '|' << lidar_offset_y << '|';
-    for (std::size_t i = 0; i < scan.size(); ++i) {
-        const LidarHit& hit = scan[i];
+    for (std::size_t i = 0; i < valid_hits.size(); ++i) {
+        const LidarHit& hit = *valid_hits[i];
         message << hit.angle << ',' << hit.distance << ',' << (hit.hit ? 1 : 0);
-        if (i + 1U < scan.size()) {
+        if (i + 1U < valid_hits.size()) {
             message << ';';
         }
     }
@@ -150,6 +175,7 @@ bool SlamToolboxBridgeClient::submit_scan(const std::string& session,
         last_error_ = std::string("sendto: ") + std::strerror(errno);
         return false;
     }
+    last_error_.clear();
     return true;
 }
 

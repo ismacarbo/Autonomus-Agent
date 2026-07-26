@@ -637,12 +637,15 @@ void sync_ui_state_from_sim(UiState* ui_state, const PlannerDrivenVehicleSim& si
     ui_state->last_hardware_report_error.clear();
     ui_state->last_hardware_world_path.clear();
     ui_state->last_hardware_world_error.clear();
-    ui_state->hardware_editor_world = make_world_from_mode(
+    WorldMap hardware_world = make_world_from_mode(
         static_cast<EnvironmentMode>(ui_state->hardware_environment_mode),
         static_cast<UnstructuredMapPreset>(ui_state->hardware_unstructured_preset),
         static_cast<StructuredMapPreset>(ui_state->hardware_structured_preset),
         GateBehaviorMode::Static,
         0);
+    hardware_world = apply_hardware_track_scale(*ui_state, std::move(hardware_world));
+    ui_state->hardware_editor_world =
+        sanitize_hardware_unstructured_world(std::move(hardware_world));
     ui_state->hardware_editor_dirty = false;
 }
 
