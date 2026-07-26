@@ -24,6 +24,7 @@ documentation/*
 !documentation/MVC_Code_Map.md
 !documentation/Codex_Handoff_Status_20260725.md
 !documentation/Guida_Tecnica_Punti_Principali_Codice_20260726.md
+!documentation/Hardware_Straight_Line_Calibration.md
 data_analisys/outputs/
 
 # Local papers, validation datasets, and generated test results

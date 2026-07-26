@@ -268,6 +268,27 @@ target_link_libraries(thesis_robot_runner PRIVATE
   thesis_slam_bridge
 )
 
+add_library(thesis_hardware_calibration STATIC
+  src/controller/hardware_calibration/straight_line_calibration.cpp
+  src/controller/hardware_calibration/straight_line_report_writer.cpp
+)
+
+target_include_directories(thesis_hardware_calibration PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(thesis_hardware_calibration PUBLIC
+  thesis_robot_io
+)
+
+add_executable(thesis_straight_line_calibration
+  src/controller/hardware_calibration/main.cpp
+)
+
+target_link_libraries(thesis_straight_line_calibration PRIVATE
+  thesis_hardware_calibration
+)
+
 if(BUILD_TESTING)
   add_executable(thesis_structured_path_model_smoke
     src/tests/unit/structured_path_model_test.cpp
@@ -325,4 +346,18 @@ if(BUILD_TESTING)
   )
 
   add_test(NAME thesis_world_stream_roundtrip COMMAND thesis_world_stream_smoke)
+
+  add_executable(thesis_straight_line_calibration_smoke
+    src/tests/unit/straight_line_calibration_test.cpp
+  )
+
+  target_include_directories(thesis_straight_line_calibration_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
+  target_link_libraries(thesis_straight_line_calibration_smoke PRIVATE
+    thesis_hardware_calibration
+  )
+
+  add_test(NAME thesis_straight_line_calibration_math COMMAND thesis_straight_line_calibration_smoke)
 endif()
