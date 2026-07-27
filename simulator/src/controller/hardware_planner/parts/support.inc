@@ -19,6 +19,7 @@ namespace {
 
 using thesis_sim::mvc::model::apply_start_motion_boost;
 using thesis_sim::mvc::model::clamp_motion_pwm_band;
+using thesis_sim::mvc::model::enforce_forward_differential_pwm;
 using thesis_sim::mvc::model::enforce_forward_tracked_turn_authority;
 using thesis_sim::mvc::model::scale_motion_pwm_pair_to_full_scale;
 using thesis_sim::mvc::model::slew_limit_pwm;

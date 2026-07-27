@@ -149,6 +149,34 @@ void apply_start_motion_boost(int min_pwm,
     }
 }
 
+void enforce_forward_differential_pwm(double target_yaw_rate,
+                                      int minimum_pwm_delta,
+                                      int max_pwm,
+                                      int* pwm_left,
+                                      int* pwm_right) {
+    if (pwm_left == nullptr || pwm_right == nullptr ||
+        minimum_pwm_delta <= 0 || max_pwm <= 0 ||
+        std::abs(target_yaw_rate) < 1e-6) {
+        return;
+    }
+
+    const int safe_max = std::max(0, max_pwm);
+    const int delta = std::clamp(minimum_pwm_delta, 1, safe_max);
+    *pwm_left = std::clamp(*pwm_left, 0, safe_max);
+    *pwm_right = std::clamp(*pwm_right, 0, safe_max);
+
+    int* inner = target_yaw_rate > 0.0 ? pwm_left : pwm_right;
+    int* outer = target_yaw_rate > 0.0 ? pwm_right : pwm_left;
+    if (*outer - *inner >= delta) {
+        return;
+    }
+
+    *outer = std::min(safe_max, *inner + delta);
+    if (*outer - *inner < delta) {
+        *inner = std::max(0, *outer - delta);
+    }
+}
+
 void enforce_forward_tracked_turn_authority(double target_yaw_rate,
                                             int outer_min_pwm,
                                             int inner_min_pwm,

@@ -47,8 +47,18 @@ int main(int argc, char** argv) {
         apply_tracked_mixed_hardware_config(world, &planner_config);
 
         if (options.simulate) {
+            // The synthetic controller already follows canonical physical
+            // left/right ordering; wiring compensation is real-hardware only.
+            planner_config.controller_motor_channels_swapped = false;
             return run_simulated(options, world, std::move(bridge_options), base_planner_config, planner_config);
         }
+
+        std::cout << "startup_calibration_profile_version="
+                  << planner_config.calibration_profile_version << '\n';
+        std::cout << "startup_calibration_profile_hash="
+                  << planner_config.calibration_profile_hash << '\n';
+        std::cout << "startup_controller_motor_channels_swapped="
+                  << (planner_config.controller_motor_channels_swapped ? 1 : 0) << '\n';
 
         runner = std::make_unique<HardwarePlannerRunner>(
             world,
@@ -239,6 +249,8 @@ int main(int argc, char** argv) {
                   << planner_config.calibration_profile_version << '\n';
         std::cout << "calibration_profile_hash="
                   << planner_config.calibration_profile_hash << '\n';
+        std::cout << "controller_motor_channels_swapped="
+                  << (planner_config.controller_motor_channels_swapped ? 1 : 0) << '\n';
         std::cout << "wheel_radius_calibrated="
                   << (planner_config.wheel_radius_calibrated ? 1 : 0) << '\n';
         std::cout << "mcu_velocity_closed_loop="

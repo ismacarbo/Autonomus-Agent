@@ -222,16 +222,32 @@ int HardwarePlannerRunner::wheel_speed_to_pwm(double wheel_speed_mps, double sca
 }
 
 void HardwarePlannerRunner::send_last_control_command(bool force) {
+    // Planner, odometry and encoder feedback use physical left/right sides.
+    // Some controller harnesses expose those motors in the opposite electrical
+    // channel order, so compensate exactly once at the transport boundary.
+    const auto controller_channel_order = [this](auto physical_left,
+                                                  auto physical_right) {
+        if (config_.controller_motor_channels_swapped) {
+            return std::pair{physical_right, physical_left};
+        }
+        return std::pair{physical_left, physical_right};
+    };
     if (config_.use_mcu_velocity_closed_loop) {
-        bridge_.send_wheel_velocity_mps(
+        const auto controller_targets = controller_channel_order(
             last_command_.target_left_wheel_speed_mps,
-            last_command_.target_right_wheel_speed_mps,
+            last_command_.target_right_wheel_speed_mps);
+        bridge_.send_wheel_velocity_mps(
+            controller_targets.first,
+            controller_targets.second,
             force);
         return;
     }
-    bridge_.send_pwm(
+    const auto controller_pwm = controller_channel_order(
         static_cast<std::int16_t>(last_command_.pwm_left),
-        static_cast<std::int16_t>(last_command_.pwm_right),
+        static_cast<std::int16_t>(last_command_.pwm_right));
+    bridge_.send_pwm(
+        controller_pwm.first,
+        controller_pwm.second,
         force,
         MotorControlMode::SafeDirectPwm);
 }

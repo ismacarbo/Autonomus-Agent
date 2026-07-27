@@ -151,6 +151,9 @@ bool load_robot_calibration_profile(const std::string& path,
     read_number(json, "track_center_distance_m", &parsed.track_center_distance_m);
     read_number(json, "wheel_radius_m", &parsed.wheel_radius_m);
     read_bool(json, "wheel_radius_calibrated", &parsed.wheel_radius_calibrated);
+    read_bool(json,
+              "controller_motor_channels_swapped",
+              &parsed.controller_motor_channels_swapped);
     double encoder_ticks = 0.0;
     read_number(json, "encoder_ticks_per_revolution", &encoder_ticks);
     parsed.encoder_ticks_per_revolution = static_cast<std::int32_t>(std::llround(encoder_ticks));

@@ -21,6 +21,7 @@ struct RobotCalibrationProfile {
     double track_center_distance_m = 0.0;
     double wheel_radius_m = 0.0;
     bool wheel_radius_calibrated = false;
+    bool controller_motor_channels_swapped = false;
     std::int32_t encoder_ticks_per_revolution = 0;
 
     int min_effective_pwm = 0;

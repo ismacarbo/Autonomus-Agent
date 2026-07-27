@@ -182,6 +182,8 @@ struct HardwarePlannerConfig {
     bool mapping_lidar_enabled = false;
     // Opt-in until firmware 1.3 (car) / 1.11 (tank) has been flashed.
     bool use_mcu_velocity_closed_loop = false;
+    // Electrical controller channel order. Encoder/localization sides remain physical.
+    bool controller_motor_channels_swapped = false;
     std::string calibration_profile_name = "builtin_defaults";
     std::string calibration_profile_version = "0";
     std::string calibration_profile_path;

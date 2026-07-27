@@ -1404,6 +1404,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (forward_arc_command) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, config_.pwm.min_effective_pwm);
         last_command_.pwm_right = std::max(last_command_.pwm_right, config_.pwm.min_effective_pwm);
+        if (std::abs(last_command_.target_yaw_rate) > 0.015) {
+            const int minimum_turn_delta = std::clamp(
+                static_cast<int>(std::lround(
+                    6.0 + 55.0 * std::abs(last_command_.target_yaw_rate))),
+                8,
+                18);
+            enforce_forward_differential_pwm(
+                last_command_.target_yaw_rate,
+                minimum_turn_delta,
+                config_.pwm.max_pwm,
+                &last_command_.pwm_left,
+                &last_command_.pwm_right);
+        }
     }
     if (!commanding_motion && std::abs(last_command_.pwm_left) < 4) {
         last_command_.pwm_left = 0;

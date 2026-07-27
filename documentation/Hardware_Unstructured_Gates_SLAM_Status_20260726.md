@@ -334,3 +334,57 @@ After the change all six deterministic unstructured car presets reach the goal
 in both Ideal and Calibrated modes (12/12), and all five CTest tests pass. The
 Manual Gate Editor itself requires a real LiDAR rerun because its geometry is
 operator-defined and intentionally has no deterministic preset.
+
+## Car clothoid actuation follow-up — 2026-07-27 02:20
+
+Runs analysed:
+
+- `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_021855_700`;
+- `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_022027_774`.
+
+The earlier trajectory fix is active: the two runs retain an MPC reference for
+60 and 180 samples respectively, instead of the 36--41 samples seen before.
+The remaining straight motion is downstream of the clothoid:
+
+- in run `021855`, all 60 reference samples request non-zero yaw, but 56/60
+  planned commands are flattened to equal PWM; the mean requested yaw is
+  `0.122 rad/s` while the mean wheel PWM difference is only `0.67`;
+- in run `022027`, all 180 reference samples request non-zero yaw and the mean
+  wheel PWM difference is `14.94`, but every one of the 135 samples with both
+  a meaningful PWM difference and encoder motion responds on the opposite
+  physical encoder side (`0/135` matching, `135/135` opposite).
+
+Equal-PWM straight-line calibration cannot reveal this second issue. The data
+show that the controller's electrical motor channels are reversed relative to
+the physical left/right encoder labels. The calibrated car profile is therefore
+version `1.2.0` and records `controller_motor_channels_swapped: true`.
+
+The planner, MPC, wheel feedback and localization continue to use physical
+left/right semantics. Only the final hardware transport swaps motor targets;
+encoder observations are deliberately not swapped. The same mapping is applied
+to direct PWM and to the future MCU wheel-velocity mode. Synthetic controllers
+retain canonical channel ordering, so the wiring compatibility flag is disabled
+under `--simulate`.
+
+The compact forward-arc controller now also preserves a yaw-dependent PWM
+difference after slew limiting and after the final minimum-PWM floor. A non-zero
+clothoid turn can no longer collapse to `70/70`; the enforced difference is
+bounded to 8--18 PWM according to requested yaw rate.
+
+Verification after the complete change:
+
+- `thesis_robot_runner`, `thesis_planner_sim` and
+  `thesis_world_stream_smoke` build successfully;
+- all five CTest unit/integration tests pass;
+- all six deterministic unstructured car presets reach the goal in both Ideal
+  and Calibrated dynamics: 12/12 runs;
+- the structured hardware-runner simulation reaches `goal_reached` in 490
+  steps, confirming that real wiring compensation is not applied to the
+  synthetic controller.
+
+The next Manual Gate Editor hardware run must confirm the physical result. At
+startup it must print `startup_calibration_profile_version=1.2.0` and
+`startup_controller_motor_channels_swapped=1`. In the next report the planned
+logical PWM faster side should agree with the faster physical encoder side,
+while controller target telemetry is expected to show the intentionally
+swapped electrical channel order.

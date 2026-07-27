@@ -57,6 +57,24 @@ int main() {
         return 1;
     }
 
+    int left_turn_left = 70;
+    int left_turn_right = 70;
+    enforce_forward_differential_pwm(
+        0.12, 10, 255, &left_turn_left, &left_turn_right);
+    if (left_turn_right - left_turn_left < 10) {
+        std::cerr << "left_turn_pwm_authority_failed\n";
+        return 1;
+    }
+
+    int right_turn_left = 70;
+    int right_turn_right = 70;
+    enforce_forward_differential_pwm(
+        -0.12, 10, 255, &right_turn_left, &right_turn_right);
+    if (right_turn_left - right_turn_right < 10) {
+        std::cerr << "right_turn_pwm_authority_failed\n";
+        return 1;
+    }
+
     std::cout << "actuation_model_smoke: ok\n";
     return 0;
 }

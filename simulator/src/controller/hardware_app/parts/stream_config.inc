@@ -140,6 +140,8 @@ void apply_robot_calibration_profile(const AppOptions& options,
     config->calibration_profile_path = profile.source_path;
     config->calibration_profile_hash = profile.content_hash;
     config->wheel_radius_calibrated = profile.wheel_radius_calibrated;
+    config->controller_motor_channels_swapped =
+        profile.controller_motor_channels_swapped;
     config->drive.body_length = profile.body_length_m;
     config->drive.body_width = profile.body_width_m;
     config->drive.wheel_or_belt_length = profile.wheel_or_belt_length_m;

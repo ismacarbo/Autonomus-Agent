@@ -35,6 +35,12 @@ void apply_start_motion_boost(int min_pwm,
                               int* pwm_left,
                               int* pwm_right);
 
+void enforce_forward_differential_pwm(double target_yaw_rate,
+                                      int minimum_pwm_delta,
+                                      int max_pwm,
+                                      int* pwm_left,
+                                      int* pwm_right);
+
 void enforce_forward_tracked_turn_authority(double target_yaw_rate,
                                             int outer_min_pwm,
                                             int inner_min_pwm,
