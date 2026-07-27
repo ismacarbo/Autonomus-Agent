@@ -35,6 +35,7 @@ void HardwarePlannerRunner::restart_unstructured_scan() {
     diagnostics_.candidate_gates = 0;
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
     diagnostics_.planner_has_reference = false;
+    structured_anchor_hint_index_ = 0;
 }
 
 void HardwarePlannerRunner::update_unstructured_scan_direction(bool flip_when_aligned) {
@@ -206,10 +207,22 @@ void HardwarePlannerRunner::set_locked_gap_goal(
     locked_gap_set_time_s_ = sim_time_;
 
     const Vec2 fallback_direction{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
-    const Vec2 raw_direction{
+    const Vec2 direction_from_aperture{
+        target.x - locked_gap_crossing_point_.x,
+        target.y - locked_gap_crossing_point_.y,
+    };
+    const Vec2 direction_from_robot{
         target.x - estimate_.position.x,
         target.y - estimate_.position.y,
     };
+    // The detector places the target beyond the aperture midpoint. That short
+    // segment is the measured gate normal and therefore the correct terminal
+    // heading for the clothoid. Robot-to-target instead cuts diagonally toward
+    // lateral gates and can make a valid path miss the physical opening.
+    const Vec2 raw_direction =
+        std::hypot(direction_from_aperture.x, direction_from_aperture.y) > 0.025
+            ? direction_from_aperture
+            : direction_from_robot;
     locked_gap_approach_direction_ = normalize_with_fallback(raw_direction, fallback_direction);
 
     const double usable_gap_width = std::max(
@@ -221,6 +234,7 @@ void HardwarePlannerRunner::set_locked_gap_goal(
         std::max(0.5 * config_.gap_extraction.min_gap_width_m, 0.05));
     locked_gap_crossed_ = false;
     locked_gap_invalid_streak_ = 0;
+    structured_anchor_hint_index_ = 0;
 }
 
 double HardwarePlannerRunner::locked_gap_longitudinal_progress(const Vec2& position) const {

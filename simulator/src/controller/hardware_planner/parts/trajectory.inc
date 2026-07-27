@@ -298,9 +298,14 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         planner_speed_ref_,
         closed_structured_loop);
     planned_trajectory_ = extract_reference_positions(reference_trajectory_);
+    if (manual_unstructured_exploration(world_)) {
+        // This local reference is rebuilt from the robot's current projection
+        // every cycle. An anchor index inherited from the previous reference
+        // points near the old endpoint and makes the MPC skip the new clothoid.
+        structured_anchor_hint_index_ = 0;
+    }
     diagnostics_.planner_has_reference = reference_trajectory_.size() >= 2;
     if (!diagnostics_.planner_has_reference) {
         assign_structured_centerline_fallback();
     }
 }
-

@@ -292,3 +292,45 @@ the sidecar on local UDP 9760. `--slam-bridge-host/port` belong only to a
 headless runner that sends directly to the workstation. Do not enable both
 forwarding paths for the same run, because alternating session identifiers
 would reset the pose graph.
+
+## Dynamic clothoid tracking follow-up — 2026-07-27 02:00
+
+Runs analysed:
+
+- `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_020004_126`;
+- `thesis_hardware_unstructured_manual_gate_editor_gui_bundle_20260727_020210_466`.
+
+The first run passed one gate, but a planner reference existed for only 36 of
+321 samples. The second run passed none and had a reference for 41 of 203
+samples. In those 41 samples, 38 commands still used a large direct yaw rate.
+The GUI clothoid was therefore valid and visible, but it was not the command
+contract executed by the wheels.
+
+Four causes were found in the trajectory-to-control hand-off:
+
+1. Manual Gate Editor inherited the generic MPC preview of `1.4 m` and minimum
+   lookahead of `0.6 m`; both are larger than the local 0.2--0.5 m clothoids.
+2. The MPC anchor index survived when a reference was regenerated from the
+   robot's new projection, so it could start near the previous endpoint.
+3. Any gate-heading error above about eight degrees replaced the valid MPC
+   result with direct pursuit of the gate centre.
+4. Close-range loss of the two LiDAR boundary returns could unlock the target
+   before the robot centre crossed the aperture plane.
+
+The Manual Gate Editor car now uses an 0.10 m preview and 0.055 m minimum
+lookahead, resets the anchor for every regenerated local reference, and keeps
+the selected static aperture committed for up to 30 seconds or until its
+physical crossing. The terminal clothoid heading comes from the measured
+aperture-midpoint-to-beyond-gate segment instead of the diagonal
+robot-to-target chord.
+
+While a valid clothoid exists, normal heading corrections come exclusively
+from its MPC follower. Direct acquisition is reserved for a path-tangent error
+above 40 degrees, with a 20-degree release threshold; even that recovery aligns
+to the clothoid tangent rather than to the gate centre. Structured, Mixed,
+tracked vehicles and fixed unstructured completion rules are unchanged.
+
+After the change all six deterministic unstructured car presets reach the goal
+in both Ideal and Calibrated modes (12/12), and all five CTest tests pass. The
+Manual Gate Editor itself requires a real LiDAR rerun because its geometry is
+operator-defined and intentionally has no deterministic preset.

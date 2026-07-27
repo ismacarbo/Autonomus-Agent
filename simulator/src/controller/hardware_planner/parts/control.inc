@@ -352,11 +352,22 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         have_reference_trajectory &&
         (!strict_locked_motion || locked_gap_goal_.has_value()) &&
         have_motion_heading) {
-        const double heading_threshold =
-            gap_recovery_turn_active_
-                ? config_.gap_extraction.gap_acquire_hold_heading_rad
-                : config_.gap_extraction.gap_acquire_enter_heading_rad;
-        const double heading_error = motion_heading_local;
+        const bool manual_clothoid_tracking =
+            manual_unstructured_exploration(world_) &&
+            !tracked_vehicle &&
+            last_mpc_command_.has_value();
+        // With a valid local path, acquisition must align to the path tangent,
+        // not to the straight chord from the robot to the gate centre. The old
+        // eight-degree threshold replaced almost every MPC output with direct
+        // yaw control even while the GUI displayed a valid clothoid.
+        const double heading_error = manual_clothoid_tracking
+            ? -last_mpc_command_->heading_error
+            : motion_heading_local;
+        const double heading_threshold = manual_clothoid_tracking
+            ? (gap_recovery_turn_active_ ? 0.35 : 0.70)
+            : (gap_recovery_turn_active_
+                   ? config_.gap_extraction.gap_acquire_hold_heading_rad
+                   : config_.gap_extraction.gap_acquire_enter_heading_rad);
         const bool motion_heading_supported =
             motion_sector_clearance <= 0.0 || motion_sector_clearance > gap_acquire_clearance;
         if (std::abs(heading_error) > heading_threshold && motion_heading_supported) {

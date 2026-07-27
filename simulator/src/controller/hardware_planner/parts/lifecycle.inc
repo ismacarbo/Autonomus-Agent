@@ -188,6 +188,9 @@ void HardwarePlannerRunner::apply_config(HardwarePlannerConfig config) {
 void HardwarePlannerRunner::reset() {
     geometry_ = make_vehicle_geometry(config_);
     const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
+    const bool compact_manual_unstructured_car =
+        manual_unstructured_exploration(world_) &&
+        config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
     if (micro_structured_world(world_)) {
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.35);
         geometry_.max_curvature = std::max(geometry_.max_curvature, 14.0);
@@ -198,7 +201,26 @@ void HardwarePlannerRunner::reset() {
     estimator_.set_geometry(geometry_);
     estimator_.set_tracked_vehicle(config_.vehicle_model == VehicleModelKind::TrackedVehicle);
     MpcFollowerConfig mpc_config{};
-    if (tiny_indoor_loop) {
+    if (compact_manual_unstructured_car) {
+        // Dynamic gate clothoids are only a few decimetres long. The generic
+        // 0.6/1.4 m MPC lookahead jumps directly to their endpoint and turns
+        // path following back into point pursuit in the 1.20 m editor arena.
+        mpc_config.horizon_steps = 8;
+        mpc_config.horizon_dt = 0.08;
+        mpc_config.preview_distance = 0.10;
+        mpc_config.min_lookahead_distance = 0.055;
+        mpc_config.preview_min_index = 1;
+        mpc_config.min_accel = -1.4;
+        mpc_config.max_accel = 1.0;
+        mpc_config.max_steer_rate = 3.20;
+        mpc_config.w_cross_track = 32.0;
+        mpc_config.w_heading = 22.0;
+        mpc_config.w_speed = 0.65;
+        mpc_config.w_steer = 0.30;
+        mpc_config.w_accel = 0.14;
+        mpc_config.w_steer_rate = 0.06;
+        mpc_config.w_terminal = 12.0;
+    } else if (tiny_indoor_loop) {
         mpc_config.horizon_steps = 5;
         mpc_config.horizon_dt = 0.06;
         mpc_config.preview_distance = 0.045;

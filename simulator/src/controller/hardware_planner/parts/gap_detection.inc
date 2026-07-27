@@ -509,8 +509,25 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             dynamic_gap_point_allowed(*locked_gap_goal_) &&
             gap_distance <= std::max(config_.gap_extraction.max_target_distance_m * 1.10, 0.70) &&
             gate_heading_local <= 2.35;
+        const bool committed_manual_gate =
+            manual_exploration &&
+            dynamic_gap_point_allowed(*locked_gap_goal_) &&
+            gap_distance <= std::max(
+                config_.gap_extraction.max_target_distance_m * 1.40,
+                0.80) &&
+            sim_time_ - locked_gap_set_time_s_ <= 30.0;
 
         if (!missed_locked_gap && strong_support_locked_gap) {
+            locked_gap_invalid_streak_ = 0;
+            publish_locked_gap_goal();
+            return;
+        }
+
+        if (committed_manual_gate) {
+            // Manual Editor apertures are static. Close-range occlusion and a
+            // temporary loss of both boundary returns must not destroy the
+            // selected clothoid before the centre of the robot crosses the
+            // gate plane. Crossing is evaluated before every rebuild.
             locked_gap_invalid_streak_ = 0;
             publish_locked_gap_goal();
             return;
