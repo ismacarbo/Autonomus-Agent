@@ -426,3 +426,39 @@ valida, la clotoide e' il riferimento autoritativo di Manual Gate Editor:
 - l'acquisizione diretta verso il centro del gate non puo' sovrascrivere l'MPC;
 - ricerca libera e recovery diretto restano disponibili prima che esista una
   clotoide oppure dopo la sua invalidazione.
+
+## Correzione definitiva dell'ordine dei canali motore — 2026-08-18
+
+La conclusione sul profilo `1.3.0` era basata sul solo segno dello yaw durante
+una manovra nella quale entrambi i lati erano in movimento. Le run successive
+hanno fornito una prova molto piu' discriminante:
+
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_011033_098`;
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_011134_646`.
+
+Nella seconda run il riferimento MPC e' attivo in 121 campioni su 126 e
+richiede sempre una curva a destra: `target_yaw_rate` e' compreso circa tra
+`-0.100` e `-0.027 rad/s`. Il mapping produce coerentemente il comando logico
+`PWM left/right = 110/70`, ma la telemetria del controller mostra un'eccitazione
+monolaterale inequivocabile: l'encoder sinistro resta a zero mentre soltanto
+l'encoder destro accumula tick. Lo yaw IMU resta quasi nullo. Lo `stall boost`,
+vedendo fermo il lato logico sinistro, continua quindi ad aumentare lo stesso
+canale elettrico che muove il lato opposto; questo rende rettilinea la risposta
+anche se MPC e clotoide stanno chiedendo una curvatura non nulla.
+
+Il profilo car `1.4.0` ripristina percio'
+`controller_motor_channels_swapped: true`. Lo scambio avviene esclusivamente
+nell'ultimo passaggio verso il protocollo del controller:
+
+- planner, clotoide, MPC, encoder ed EKF conservano semantica fisica
+  sinistra/destra;
+- i due target motore vengono scambiati soltanto prima dell'invio seriale;
+- le letture encoder non vengono scambiate;
+- la simulazione continua a disabilitare questa compensazione di cablaggio.
+
+Al prossimo avvio hardware devono comparire
+`startup_calibration_profile_version=1.4.0` e
+`startup_controller_motor_channels_swapped=1`. Nel report, quando il PWM
+logico sinistro e' maggiore, deve ora crescere l'encoder fisico sinistro; il
+segno dello yaw IMU va poi validato separatamente durante la traiettoria, senza
+dedurre da esso l'associazione elettrica dei motori.
