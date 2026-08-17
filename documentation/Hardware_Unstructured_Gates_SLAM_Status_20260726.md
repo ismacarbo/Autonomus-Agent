@@ -388,3 +388,41 @@ startup it must print `startup_calibration_profile_version=1.2.0` and
 logical PWM faster side should agree with the faster physical encoder side,
 while controller target telemetry is expected to show the intentionally
 swapped electrical channel order.
+
+## Correzione del verso di attuazione — 2026-08-18
+
+La conclusione del paragrafo precedente sui canali scambiati e' stata superata
+da due run che contengono contemporaneamente riferimento MPC, comando ruote e
+IMU:
+
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_003409_816`;
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_003511_490`.
+
+Nella seconda run l'MPC richiede in modo continuo `target_yaw_rate > 0` tra
+circa `0.68 s` e `3.13 s`, ma lo yaw misurato diminuisce. Il profilo `1.2.0`
+scambia i due target al confine seriale, mentre il firmware car assegna gia'
+semanticamente l'argomento sinistro al lato fisico sinistro e quello destro al
+lato fisico destro (`set_motor_hw`). Lo scambio nel profilo era quindi un
+doppio scambio e invertiva la curva richiesta dalla clotoide.
+
+Il profilo car `1.3.0` imposta percio'
+`controller_motor_channels_swapped: false`. La verifica hardware successiva
+deve mostrare `startup_controller_motor_channels_swapped=0`; per un comando
+`target_yaw_rate > 0` deve risultare la ruota destra piu' veloce e lo yaw IMU
+deve crescere con lo stesso segno.
+
+Nelle stesse run il target LiDAR finale era troppo vicino o oltre il bordo:
+`(1.116, 0.272) m` e `(1.237, 0.951) m` in un'arena che termina a `1.20 m`.
+Manual Gate Editor ora accetta come target soltanto punti per i quali il centro
+del robot conserva il raggio circoscritto del footprint piu' `15 mm` di
+margine. Con la car `25 x 15 cm` l'intervallo valido del centro e' circa
+`[0.161, 1.039] m` su entrambi gli assi.
+
+Infine, quando esistono almeno due waypoint e l'MPC restituisce una soluzione
+valida, la clotoide e' il riferimento autoritativo di Manual Gate Editor:
+
+- il gate rimane la condizione terminale, non un riferimento di sterzo diretto;
+- le verifiche settoriali usano la tangente locale della clotoide;
+- l'acquisizione diretta verso il centro del gate non puo' sovrascrivere l'MPC;
+- ricerca libera e recovery diretto restano disponibili prima che esista una
+  clotoide oppure dopo la sua invalidazione.

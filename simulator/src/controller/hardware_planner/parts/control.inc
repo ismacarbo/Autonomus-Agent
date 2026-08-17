@@ -342,9 +342,27 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const double lateral_stop_distance = std::max(
         config_.localization.min_valid_range_m + 0.02,
         config_.localization.obstacle_stop_distance_m - 0.07);
+    const bool manual_clothoid_mpc_active =
+        manual_unstructured_exploration(world_) &&
+        !tracked_vehicle &&
+        have_reference_trajectory &&
+        last_mpc_command_.has_value();
     double motion_heading_local = 0.0;
     bool have_motion_heading = false;
-    if (locked_gap_goal_.has_value()) {
+    if (manual_clothoid_mpc_active) {
+        // In Manual Gate Editor the gate centre is only the terminal condition.
+        // Once a clothoid exists, obstacle-sector checks and steering decisions
+        // must use its local tangent; using the robot-to-gate chord here made a
+        // curved reference look blocked and handed control back to point pursuit.
+        const int tangent_index = std::clamp(
+            last_mpc_command_->anchor_index + 1,
+            0,
+            static_cast<int>(reference_trajectory_.size()) - 1);
+        motion_heading_local = wrap_angle(
+            reference_trajectory_[static_cast<size_t>(tangent_index)].yaw -
+            estimate_.yaw);
+        have_motion_heading = true;
+    } else if (locked_gap_goal_.has_value()) {
         motion_heading_local =
             wrap_angle(angle_to(estimate_.position, *locked_gap_goal_) - estimate_.yaw);
         have_motion_heading = true;
@@ -384,27 +402,20 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                    config_.localization.min_valid_range_m + 0.035)
         : std::max(config_.localization.obstacle_stop_distance_m + 0.07,
                    config_.localization.min_valid_range_m + 0.14);
-    if (!scanning_startup &&
+    if (!manual_clothoid_mpc_active &&
+        !scanning_startup &&
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
         (!strict_locked_motion || locked_gap_goal_.has_value()) &&
         have_motion_heading) {
-        const bool manual_clothoid_tracking =
-            manual_unstructured_exploration(world_) &&
-            !tracked_vehicle &&
-            last_mpc_command_.has_value();
-        // With a valid local path, acquisition must align to the path tangent,
-        // not to the straight chord from the robot to the gate centre. The old
-        // eight-degree threshold replaced almost every MPC output with direct
-        // yaw control even while the GUI displayed a valid clothoid.
-        const double heading_error = manual_clothoid_tracking
-            ? -last_mpc_command_->heading_error
-            : motion_heading_local;
-        const double heading_threshold = manual_clothoid_tracking
-            ? (gap_recovery_turn_active_ ? 0.35 : 0.70)
-            : (gap_recovery_turn_active_
-                   ? config_.gap_extraction.gap_acquire_hold_heading_rad
-                   : config_.gap_extraction.gap_acquire_enter_heading_rad);
+        // Point-acquisition is a fallback for modes that do not make the local
+        // clothoid authoritative. Manual Editor is excluded above while its
+        // MPC solution is valid.
+        const double heading_error = motion_heading_local;
+        const double heading_threshold =
+            gap_recovery_turn_active_
+                ? config_.gap_extraction.gap_acquire_hold_heading_rad
+                : config_.gap_extraction.gap_acquire_enter_heading_rad;
         const bool motion_heading_supported =
             motion_sector_clearance <= 0.0 || motion_sector_clearance > gap_acquire_clearance;
         if (std::abs(heading_error) > heading_threshold && motion_heading_supported) {
@@ -466,7 +477,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_mpc_command_.reset();
         }
     }
-    if (!handled_gap_priority_tracking &&
+    if (!manual_clothoid_mpc_active &&
+        !handled_gap_priority_tracking &&
         !scanning_startup &&
         lidar_front_blocked_for_recovery &&
         use_dynamic_gap_gates_ &&

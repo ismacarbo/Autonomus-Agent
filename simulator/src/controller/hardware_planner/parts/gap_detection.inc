@@ -303,6 +303,21 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     std::vector<TargetCandidate> candidates;
     std::optional<GateSpec> persisted_spec;
     std::optional<gate> persisted_gate;
+    const auto dynamic_gap_target_allowed = [&](const Vec2& target) {
+        if (!dynamic_gap_point_allowed(target)) {
+            return false;
+        }
+        if (!manual_exploration) {
+            return true;
+        }
+
+        // A LiDAR ray may legitimately end outside the editor rectangle, but
+        // the selected target is a robot-centre target. Keep the complete
+        // 25 x 15 cm footprint inside the 1.20 m arena for every orientation.
+        const double safe_center_margin =
+            0.5 * std::hypot(geometry_.body_length, geometry_.body_width) + 0.015;
+        return is_inside_bounds(world_, target, -safe_center_margin);
+    };
 
     auto try_persist_previous_gate = [&](int index) {
         if (index < 0 ||
@@ -510,12 +525,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             world_is_mixed(world_) &&
             world_span_m(world_) <= 1.25 &&
             !missed_locked_gap &&
-            dynamic_gap_point_allowed(*locked_gap_goal_) &&
+            dynamic_gap_target_allowed(*locked_gap_goal_) &&
             gap_distance <= std::max(config_.gap_extraction.max_target_distance_m * 1.10, 0.70) &&
             gate_heading_local <= 2.35;
         const bool committed_manual_gate =
             manual_exploration &&
-            dynamic_gap_point_allowed(*locked_gap_goal_) &&
+            dynamic_gap_target_allowed(*locked_gap_goal_) &&
             gap_distance <= std::max(
                 config_.gap_extraction.max_target_distance_m * 1.40,
                 0.80) &&
@@ -594,7 +609,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                                  const Vec2& crossing_point,
                                  double base_score,
                                  double observed_gap_width) {
-        if (!dynamic_gap_point_allowed(target)) {
+        if (!dynamic_gap_target_allowed(target)) {
             return;
         }
 
@@ -1242,7 +1257,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                         estimate_.position.x + forward.x * ahead + lateral.x * side * lateral_offset,
                         estimate_.position.y + forward.y * ahead + lateral.y * side * lateral_offset,
                     };
-                    if (!dynamic_gap_point_allowed(target)) {
+                    if (!dynamic_gap_target_allowed(target)) {
                         continue;
                     }
                     const double target_distance = distance(lidar_origin, target);
