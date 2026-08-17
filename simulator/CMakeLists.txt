@@ -190,6 +190,14 @@ target_include_directories(thesis_planner_stack PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# GCC 10+ emits a psABI compatibility note for functions returning
+# std::pair<double, double> when compiling as C++17. Every component in this
+# build uses the same ABI, so the note is not actionable and obscures real
+# diagnostics on the Raspberry Pi. Keep all other warnings enabled.
+target_compile_options(thesis_planner_stack PRIVATE
+  $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
+)
+
 target_compile_definitions(thesis_planner_stack PUBLIC
   THESIS_SOURCE_REVISION="${THESIS_SOURCE_REVISION_VALUE}"
   THESIS_PLANNER_SUBMODULE_REVISION="${THESIS_PLANNER_SUBMODULE_REVISION_VALUE}"
@@ -207,6 +215,10 @@ add_library(thesis_hardware_planner STATIC
 
 target_include_directories(thesis_hardware_planner PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_options(thesis_hardware_planner PRIVATE
+  $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
 )
 
 target_link_libraries(thesis_hardware_planner PUBLIC
