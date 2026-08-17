@@ -462,3 +462,45 @@ Al prossimo avvio hardware devono comparire
 logico sinistro e' maggiore, deve ora crescere l'encoder fisico sinistro; il
 segno dello yaw IMU va poi validato separatamente durante la traiettoria, senza
 dedurre da esso l'associazione elettrica dei motori.
+
+## Avvicinamento finale e validazione della clotoide — 2026-08-18
+
+Run analizzate:
+
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_012213_773`;
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_012314_238`.
+
+Il mapping `1.4.0` rende finalmente efficace lo sterzo, ma i nuovi dati hanno
+mostrato due problemi successivi. Nella seconda run il robot resta fermo per
+circa cinque secondi con `32--36` ritorni LiDAR sotto la soglia laterale e una
+distanza minima di circa `0.168 m`. Il comando di break-away `110/122` viene
+mantenuto per tutto l'intervallo: il contatore riattivava a ogni ciclo un boost
+che era stato progettato per durarne soltanto due. Quando una ruota si libera,
+lo yaw rate IMU raggiunge transitoriamente oltre `2.5 rad/s`, causando un forte
+overshoot della clotoide.
+
+Il break-away della car non strutturata e' ora realmente pulsato: due cicli di
+spinta, seguiti da una pausa, con un nuovo tentativo soltanto ogni dieci cicli
+se gli encoder restano fermi. Anche il boost della singola ruota segue la stessa
+regola e non puo' piu' restare attivo indefinitamente contro un ostacolo.
+
+Le pose finali mostravano inoltre gate ancora selezionati a circa `107` e `141`
+gradi rispetto alla prua. Il LiDAR deve continuare a rilevare aperture a 360
+gradi, ma una car forward-only non puo' consegnarle direttamente al generatore
+di clotoidi. Manual Editor ora blocca un gate soltanto entro `85` gradi; negli
+altri casi continua l'arco di ricerca finche' l'apertura entra nel settore
+raggiungibile.
+
+Infine non viene piu' validato soltanto il segmento rettilineo robot--target.
+Prima di autorizzare l'MPC vengono campionati tutti i waypoint della clotoide e
+la sagoma orientata `25 x 15 cm`, con `10 mm` di margine, deve:
+
+- rimanere interamente dentro l'arena `1.20 x 1.20 m`;
+- non contenere alcun endpoint di ostacolo della scansione LiDAR corrente.
+
+Una clotoide non sicura viene scartata prima del primo comando motore e riporta
+il sistema alla ricerca forward-arc. Build e tutti i sette test CTest risultano
+corretti. Tutte le sei mappe non strutturate deterministiche della car
+raggiungono `goal_reached` sia in Ideal sia in Calibrated (12/12); il Manual
+Editor richiede la nuova verifica hardware perche' la geometria e' definita
+dalla scansione reale.

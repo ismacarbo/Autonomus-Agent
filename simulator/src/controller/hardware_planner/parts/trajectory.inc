@@ -303,6 +303,65 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         closed_structured_loop);
     planned_trajectory_ = extract_reference_positions(reference_trajectory_);
     if (manual_unstructured_exploration(world_)) {
+        // A clear straight chord to the detected aperture does not guarantee
+        // that the car-like clothoid is safe. Validate the complete oriented
+        // footprint against both the editor bounds and the current LiDAR
+        // endpoints before the MPC is allowed to follow it. This catches the
+        // outward loop produced by lateral/rear gates and curved approaches
+        // that graze one of the two aperture posts.
+        const double footprint_margin_m = 0.010;
+        const double half_length = 0.5 * geometry_.body_length + footprint_margin_m;
+        const double half_width = 0.5 * geometry_.body_width + footprint_margin_m;
+        bool reference_is_safe = true;
+        for (const ReferenceWaypoint& waypoint : reference_trajectory_) {
+            const auto corners = make_box_corners(
+                waypoint.position,
+                waypoint.yaw,
+                geometry_.body_length + 2.0 * footprint_margin_m,
+                geometry_.body_width + 2.0 * footprint_margin_m);
+            if (std::any_of(
+                    corners.begin(),
+                    corners.end(),
+                    [&](const Vec2& corner) {
+                        return !is_inside_bounds(world_, corner);
+                    })) {
+                reference_is_safe = false;
+                break;
+            }
+
+            const double cos_yaw = std::cos(waypoint.yaw);
+            const double sin_yaw = std::sin(waypoint.yaw);
+            for (const LidarHit& hit : lidar_hits_) {
+                if (!hit.hit ||
+                    !(hit.distance > 0.0) ||
+                    hit.distance >= config_.localization.max_range_m - 0.03) {
+                    continue;
+                }
+                const double dx = hit.point.x - waypoint.position.x;
+                const double dy = hit.point.y - waypoint.position.y;
+                const double longitudinal = cos_yaw * dx + sin_yaw * dy;
+                const double lateral = -sin_yaw * dx + cos_yaw * dy;
+                if (std::abs(longitudinal) <= half_length &&
+                    std::abs(lateral) <= half_width) {
+                    reference_is_safe = false;
+                    break;
+                }
+            }
+            if (!reference_is_safe) {
+                break;
+            }
+        }
+
+        if (!reference_is_safe) {
+            // Return to perception/search without executing even the first
+            // sample of an unsafe reference. The scan timer prevents an
+            // immediate relock and lets the forward arc improve the approach
+            // angle before the candidate is reconsidered.
+            restart_unstructured_scan();
+            diagnostics_.planner_has_reference = false;
+            return;
+        }
+
         // This local reference is rebuilt from the robot's current projection
         // every cycle. An anchor index inherited from the previous reference
         // points near the old endpoint and makes the MPC skip the new clothoid.

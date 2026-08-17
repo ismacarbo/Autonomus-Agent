@@ -1270,7 +1270,18 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const int stall_boost_cycles_required =
         use_dynamic_gap_gates_ ? std::max(1, config_.pwm.stall_boost_after_cycles - 1)
                                : config_.pwm.stall_boost_after_cycles;
-    if (no_motion_command_cycles_ >= stall_boost_cycles_required ||
+    const int compact_breakaway_retry_cycles = 10;
+    const bool compact_breakaway_pulse =
+        compact_unstructured_car &&
+        no_motion_command_cycles_ >= stall_boost_cycles_required &&
+        ((no_motion_command_cycles_ - stall_boost_cycles_required) %
+             compact_breakaway_retry_cycles <
+         2);
+    const bool continuous_breakaway_boost =
+        !compact_unstructured_car &&
+        no_motion_command_cycles_ >= stall_boost_cycles_required;
+    if (compact_breakaway_pulse ||
+        continuous_breakaway_boost ||
         (forward_only_tracked_tracks && commanding_motion && robot_is_still)) {
         apply_start_motion_boost(
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
@@ -1329,10 +1340,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         // Two 10 Hz control cycles are enough to cross static friction without
         // turning the break-away level into the sustained cruise command.
         constexpr int kBreakawayHoldCycles = 2;
-        if (left_wheel_stall_cycles_ >= stall_boost_cycles_required && left_requested) {
+        const auto wheel_breakaway_pulse_due = [&](int stall_cycles) {
+            return stall_cycles >= stall_boost_cycles_required &&
+                   ((stall_cycles - stall_boost_cycles_required) %
+                        compact_breakaway_retry_cycles ==
+                    0);
+        };
+        if (wheel_breakaway_pulse_due(left_wheel_stall_cycles_) && left_requested) {
             left_wheel_breakaway_hold_cycles_ = kBreakawayHoldCycles;
         }
-        if (right_wheel_stall_cycles_ >= stall_boost_cycles_required && right_requested) {
+        if (wheel_breakaway_pulse_due(right_wheel_stall_cycles_) && right_requested) {
             right_wheel_breakaway_hold_cycles_ = kBreakawayHoldCycles;
         }
         if (left_wheel_breakaway_hold_cycles_ > 0 && left_requested) {

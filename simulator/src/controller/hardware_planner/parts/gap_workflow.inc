@@ -1205,10 +1205,15 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             for (const GateSpec& spec : gate_specs_) {
                 const double heading_error = std::abs(
                     wrap_angle(angle_to(estimate_.position, spec.position) - estimate_.yaw));
+                const bool manual_car =
+                    manual_unstructured_exploration(world_) &&
+                    config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
                 const double forward_lock_angle = strict_locked_motion
-                    ? (manual_unstructured_exploration(world_)
-                           ? 145.0 * kPi / 180.0
-                           : 72.0 * kPi / 180.0)
+                    ? (manual_car
+                           ? 85.0 * kPi / 180.0
+                           : (manual_unstructured_exploration(world_)
+                                  ? 145.0 * kPi / 180.0
+                                  : 72.0 * kPi / 180.0))
                     : 28.0 * kPi / 180.0;
                 if (heading_error <= forward_lock_angle) {
                     have_forward_candidate = true;
@@ -1268,8 +1273,17 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     size_t preferred_gate_index = 0;
     double best_gate_score = -std::numeric_limits<double>::infinity();
     const bool manual_exploration = manual_unstructured_exploration(world_);
+    const bool manual_car =
+        manual_exploration &&
+        config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
+    // A differential car can observe a gate with the 360-degree LiDAR before
+    // it can reach it with a forward clothoid. Keep those rear candidates in
+    // perception, but let the forward search arc rotate the vehicle before a
+    // target is locked. Directly locking a 100--145 degree candidate creates
+    // a looping clothoid and can send the footprint outside the small arena.
     const double reachable_heading_limit =
-        (manual_exploration ? 145.0 : 85.0) * kPi / 180.0;
+        (manual_car ? 85.0 : (manual_exploration ? 145.0 : 85.0)) *
+        kPi / 180.0;
     bool have_reachable_gate = false;
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const double heading_error = std::abs(
@@ -1279,10 +1293,24 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             break;
         }
     }
+    if (manual_car && !have_reachable_gate) {
+        // Preserve the 360-degree detections, but do not hand a rear target to
+        // the forward-only car planner. Continue the bounded search arc until
+        // at least one observed aperture enters the reachable sector.
+        startup_scan_complete_ = false;
+        startup_scan_elapsed_s_ = 0.0;
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+        return;
+    }
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const Vec2& target = gate_specs_[i].position;
         const double heading_error = std::abs(
             wrap_angle(angle_to(estimate_.position, target) - estimate_.yaw));
+        if (have_reachable_gate && heading_error > reachable_heading_limit) {
+            continue;
+        }
         const double gate_distance = distance(estimate_.position, target);
         const double forward_progress =
             std::max(std::cos(heading_error), 0.0) * gate_distance;
