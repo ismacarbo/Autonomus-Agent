@@ -122,6 +122,30 @@ int main() {
         }
     }
 
+    thesis_sim::WorldMap empty_manual_world = thesis_sim::WorldMap::unstructured_demo(
+        thesis_sim::UnstructuredMapPreset::Custom,
+        thesis_sim::GateBehaviorMode::Static,
+        0);
+    empty_manual_world.set_bounds({0.0, 0.0, 1.20, 1.20});
+    empty_manual_world.set_start({0.22, 0.60});
+    empty_manual_world.set_goal({1.00, 0.60});
+    empty_manual_world.editable_gates().clear();
+    const std::vector<std::uint8_t> empty_manual_payload =
+        thesis_sim::serialize_world_blob(empty_manual_world);
+    thesis_sim::WorldMap decoded_empty_manual;
+    if (!thesis_sim::deserialize_world_blob(
+            empty_manual_payload,
+            &decoded_empty_manual)) {
+        return fail("empty Manual Editor world deserialization failed");
+    }
+    if (!decoded_empty_manual.gates().empty()) {
+        return fail("empty Manual Editor world resurrected a stale template gate");
+    }
+    if (!near(decoded_empty_manual.goal().x, 1.00) ||
+        !near(decoded_empty_manual.goal().y, 0.60)) {
+        return fail("empty Manual Editor goal changed during roundtrip");
+    }
+
     std::cout << "world_stream_smoke: ok"
               << " payload_bytes=" << payload.size()
               << " road_points=" << decoded.road_centerline().size()

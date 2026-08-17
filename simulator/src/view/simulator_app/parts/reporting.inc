@@ -288,6 +288,10 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"slam_position_innovation_m\":" << sample.slam_position_innovation_m
         << ",\"slam_yaw_innovation_deg\":" << sample.slam_yaw_innovation_deg
         << ",\"slam_correction_accepted\":" << sample.slam_correction_accepted
+        << ",\"stall_boost_active\":" << sample.stall_boost_active
+        << ",\"left_wheel_stall_cycles\":" << sample.left_wheel_stall_cycles
+        << ",\"right_wheel_stall_cycles\":" << sample.right_wheel_stall_cycles
+        << ",\"encoder_slip_guard_active\":" << sample.encoder_slip_guard_active
         << "}";
 }
 
@@ -595,7 +599,8 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
            "external_pose_quality,external_pose_age_s,external_position_error_m,external_yaw_error_deg,"
            "controller_age_s,lidar_age_s,lidar_scan_duration_s,lidar_scan_reused,mcu_clock_offset_s,mcu_clock_jitter_s,"
            "imu_age_s,encoder_age_s,slam_pose_valid,slam_pose_x,slam_pose_y,slam_pose_yaw,"
-           "slam_position_innovation_m,slam_yaw_innovation_deg,slam_correction_accepted\n";
+           "slam_position_innovation_m,slam_yaw_innovation_deg,slam_correction_accepted,"
+           "stall_boost_active,left_wheel_stall_cycles,right_wheel_stall_cycles,encoder_slip_guard_active\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
             << sample.position_x << ','
@@ -659,7 +664,11 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.slam_pose_yaw << ','
             << sample.slam_position_innovation_m << ','
             << sample.slam_yaw_innovation_deg << ','
-            << sample.slam_correction_accepted << '\n';
+            << sample.slam_correction_accepted << ','
+            << sample.stall_boost_active << ','
+            << sample.left_wheel_stall_cycles << ','
+            << sample.right_wheel_stall_cycles << ','
+            << sample.encoder_slip_guard_active << '\n';
     }
     return true;
 }

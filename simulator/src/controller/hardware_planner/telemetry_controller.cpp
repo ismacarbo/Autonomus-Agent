@@ -172,6 +172,10 @@ void HardwarePlannerRunner::push_history() {
         last_slam_position_innovation_m_,
         last_slam_yaw_innovation_rad_ * 180.0 / kPi,
         last_slam_correction_accepted_ ? 1.0 : 0.0,
+        stall_boost_active_ ? 1.0 : 0.0,
+        static_cast<double>(left_wheel_stall_cycles_),
+        static_cast<double>(right_wheel_stall_cycles_),
+        encoder_slip_guard_active_ ? 1.0 : 0.0,
     });
 
     if (static_cast<int>(history_.size()) > config_.max_history) {

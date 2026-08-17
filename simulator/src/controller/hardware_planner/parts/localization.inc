@@ -2,6 +2,64 @@
 
 namespace thesis_sim {
 
+void HardwarePlannerRunner::mitigate_compact_unstructured_encoder_slip(
+    double measured_yaw_rate,
+    double left_wheel_speed,
+    double right_wheel_speed,
+    double* odom_speed,
+    double* odom_yaw_rate) {
+    encoder_slip_guard_active_ = false;
+    if (odom_speed == nullptr || odom_yaw_rate == nullptr ||
+        config_.vehicle_model != VehicleModelKind::CarLikeBicycle ||
+        world_.environment_mode() != EnvironmentMode::UnstructuredGates ||
+        world_span_m(world_) > 1.25) {
+        return;
+    }
+
+    const double left_abs = std::abs(left_wheel_speed);
+    const double right_abs = std::abs(right_wheel_speed);
+    const double faster_wheel = std::max(left_abs, right_abs);
+    const double slower_wheel = std::min(left_abs, right_abs);
+    const bool severe_wheel_imbalance =
+        faster_wheel > std::max(0.070, 2.5 * config_.pwm.stall_speed_threshold_mps) &&
+        slower_wheel < std::max(0.012, 0.18 * faster_wheel);
+    if (!severe_wheel_imbalance) {
+        return;
+    }
+
+    const double encoder_yaw_rate = *odom_yaw_rate;
+    const double yaw_disagreement =
+        std::abs(encoder_yaw_rate - measured_yaw_rate);
+    const bool opposite_rotation =
+        std::abs(measured_yaw_rate) > 0.08 &&
+        encoder_yaw_rate * measured_yaw_rate < 0.0;
+    const bool body_did_not_confirm_rotation =
+        std::abs(measured_yaw_rate) < 0.18 &&
+        std::abs(encoder_yaw_rate) > 0.45;
+    const bool inconsistent_rotation =
+        yaw_disagreement > std::max(0.40, 0.55 * std::abs(encoder_yaw_rate));
+    if (!opposite_rotation &&
+        !body_did_not_confirm_rotation &&
+        !inconsistent_rotation) {
+        return;
+    }
+
+    // A spinning wheel does not provide trustworthy travelled distance. Keep
+    // a small conservative translation component, and let the independent IMU
+    // describe the body rotation until both encoders regain traction.
+    const double yaw_consistency =
+        std::abs(measured_yaw_rate) /
+        std::max(std::abs(encoder_yaw_rate), 0.10);
+    const double translation_scale =
+        clamp_value(0.10 + yaw_consistency, 0.15, 0.45);
+    *odom_speed *= translation_scale;
+    *odom_yaw_rate = clamp_value(
+        measured_yaw_rate,
+        -config_.drive.max_yaw_rate,
+        config_.drive.max_yaw_rate);
+    encoder_slip_guard_active_ = true;
+}
+
 void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObservation& observation, double dt) {
     if (!observation.have_controller_telemetry) {
         return;
@@ -67,6 +125,7 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     const bool encoder_ready =
         controller_encoder_odometry_usable(telemetry, left_delta_ticks, right_delta_ticks, encoder_dt);
 
+    encoder_slip_guard_active_ = false;
     double odom_speed = 0.0;
     double odom_yaw_rate = 0.0;
     const double half_track = config_.drive.track_width * 0.5;
@@ -89,6 +148,12 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         measured_wheel_speeds_valid_ = true;
         odom_speed = encoder_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / encoder_dt : 0.0;
         odom_yaw_rate = encoder_dt > 1e-6 ? odom_delta_yaw / encoder_dt : 0.0;
+        mitigate_compact_unstructured_encoder_slip(
+            measured_yaw_rate,
+            measured_left_wheel_speed_,
+            measured_right_wheel_speed_,
+            &odom_speed,
+            &odom_yaw_rate);
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
         odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {
@@ -342,6 +407,7 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
     const bool encoder_ready =
         controller_encoder_odometry_usable(telemetry, left_delta_ticks, right_delta_ticks, effective_dt);
 
+    encoder_slip_guard_active_ = false;
     double odom_speed = 0.0;
     double odom_yaw_rate = 0.0;
     const double half_track = config_.drive.track_width * 0.5;
@@ -364,6 +430,12 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         measured_wheel_speeds_valid_ = true;
         odom_speed = effective_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / effective_dt : 0.0;
         odom_yaw_rate = effective_dt > 1e-6 ? odom_delta_yaw / effective_dt : 0.0;
+        mitigate_compact_unstructured_encoder_slip(
+            measured_yaw_rate,
+            measured_left_wheel_speed_,
+            measured_right_wheel_speed_,
+            &odom_speed,
+            &odom_yaw_rate);
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
         odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {

@@ -323,6 +323,8 @@ void HardwarePlannerRunner::reset() {
     no_motion_command_cycles_ = 0;
     left_wheel_stall_cycles_ = 0;
     right_wheel_stall_cycles_ = 0;
+    left_wheel_breakaway_hold_cycles_ = 0;
+    right_wheel_breakaway_hold_cycles_ = 0;
     stuck_motion_elapsed_s_ = 0.0;
     stuck_recovery_until_s_ = -1.0;
     stuck_recovery_direction_ = 1.0;
@@ -337,6 +339,7 @@ void HardwarePlannerRunner::reset() {
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
     gap_recovery_turn_active_ = false;
     stall_boost_active_ = false;
+    encoder_slip_guard_active_ = false;
     history_.clear();
     trail_.clear();
     planned_trajectory_.clear();
@@ -415,6 +418,13 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     wheel_speed_error_integral_right_ = 0.0;
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
+    no_motion_command_cycles_ = 0;
+    left_wheel_stall_cycles_ = 0;
+    right_wheel_stall_cycles_ = 0;
+    left_wheel_breakaway_hold_cycles_ = 0;
+    right_wheel_breakaway_hold_cycles_ = 0;
+    stall_boost_active_ = false;
+    encoder_slip_guard_active_ = false;
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();

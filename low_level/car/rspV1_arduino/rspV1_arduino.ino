@@ -82,8 +82,8 @@ const uint8_t RSP_MSG_MOTOR_CMD = 0x10;
 const uint8_t RSP_MSG_STOP_CMD = 0x11;
 const uint8_t RSP_MSG_MODE_CMD = 0x12;
 const uint8_t RSP_MSG_GYRO_ZERO_CMD = 0x13;
-const uint8_t RSP_MSG_CONFIG_SET = 0x14;T_CMD = 0x15;
-const uint8_t RSP_MSG_HEARTBEA
+const uint8_t RSP_MSG_CONFIG_SET = 0x14;
+const uint8_t RSP_MSG_HEARTBEAT_CMD = 0x15;
 const uint8_t RSP_MSG_IMU_TELEMETRY = 0x20;
 const uint8_t RSP_MSG_SAFETY_TELEMETRY = 0x21;
 const uint8_t RSP_MSG_ENCODER_TELEMETRY = 0x22;

@@ -22,7 +22,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 10U;
+constexpr std::uint16_t kPacketVersion = 11U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 2U;
 constexpr std::uint16_t kPacketHello = 0U;
@@ -350,13 +350,16 @@ bool read_world(const std::vector<std::uint8_t>& data, std::size_t* offset, Worl
     restored.set_start_heading(start_heading);
     restored.editable_obstacles() = std::move(obstacles);
     restored.editable_perception_obstacles() = std::move(perception_obstacles);
+    const bool serialized_gates_empty = gates.empty();
     restored.editable_gates() = std::move(gates);
     restored.editable_road_centerline() = std::move(road_centerline);
     // Do not finalize deserialized stream worlds here. The sender already
     // sanitizes custom maps before queueing them; finalizing again would
     // downgrade built-in structured presets (for example Hardware Track or
     // Circle Loop) to Custom and can also re-close/open the centerline.
-    if (env == EnvironmentMode::UnstructuredGates) {
+    if (env == EnvironmentMode::UnstructuredGates &&
+        !serialized_gates_empty &&
+        static_cast<GateBehaviorMode>(gate_behavior) != GateBehaviorMode::Static) {
         restored.set_gate_behavior(static_cast<GateBehaviorMode>(gate_behavior), gate_seed);
     }
     *world = std::move(restored);
@@ -511,6 +514,10 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.slam_position_innovation_m);
     write_pod(out, sample.slam_yaw_innovation_deg);
     write_pod(out, sample.slam_correction_accepted);
+    write_pod(out, sample.stall_boost_active);
+    write_pod(out, sample.left_wheel_stall_cycles);
+    write_pod(out, sample.right_wheel_stall_cycles);
+    write_pod(out, sample.encoder_slip_guard_active);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
@@ -591,7 +598,11 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->slam_pose_yaw) &&
            read_pod(data, offset, &sample->slam_position_innovation_m) &&
            read_pod(data, offset, &sample->slam_yaw_innovation_deg) &&
-           read_pod(data, offset, &sample->slam_correction_accepted);
+           read_pod(data, offset, &sample->slam_correction_accepted) &&
+           read_pod(data, offset, &sample->stall_boost_active) &&
+           read_pod(data, offset, &sample->left_wheel_stall_cycles) &&
+           read_pod(data, offset, &sample->right_wheel_stall_cycles) &&
+           read_pod(data, offset, &sample->encoder_slip_guard_active);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {

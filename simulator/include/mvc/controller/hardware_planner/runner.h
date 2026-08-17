@@ -306,6 +306,10 @@ struct HardwareTelemetrySample {
     double slam_position_innovation_m = 0.0;
     double slam_yaw_innovation_deg = 0.0;
     double slam_correction_accepted = 0.0;
+    double stall_boost_active = 0.0;
+    double left_wheel_stall_cycles = 0.0;
+    double right_wheel_stall_cycles = 0.0;
+    double encoder_slip_guard_active = 0.0;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -441,6 +445,11 @@ class HardwarePlannerRunner {
                                                          double dt,
                                                          double measured_yaw,
                                                          double measured_yaw_rate);
+    void mitigate_compact_unstructured_encoder_slip(double measured_yaw_rate,
+                                                     double left_wheel_speed,
+                                                     double right_wheel_speed,
+                                                     double* odom_speed,
+                                                     double* odom_yaw_rate);
     bool controller_encoder_odometry_usable(const ControllerTelemetry& telemetry,
                                             std::int32_t left_delta_ticks,
                                             std::int32_t right_delta_ticks,
@@ -609,6 +618,8 @@ class HardwarePlannerRunner {
     int no_motion_command_cycles_ = 0;
     int left_wheel_stall_cycles_ = 0;
     int right_wheel_stall_cycles_ = 0;
+    int left_wheel_breakaway_hold_cycles_ = 0;
+    int right_wheel_breakaway_hold_cycles_ = 0;
     double stuck_motion_elapsed_s_ = 0.0;
     double stuck_recovery_until_s_ = -1.0;
     double stuck_recovery_direction_ = 1.0;
@@ -618,6 +629,7 @@ class HardwarePlannerRunner {
     bool gap_recovery_turn_active_ = false;
     int locked_gap_invalid_streak_ = 0;
     bool stall_boost_active_ = false;
+    bool encoder_slip_guard_active_ = false;
     bool connected_ = false;
     bool telemetry_ready_ = false;
     bool goal_reached_ = false;

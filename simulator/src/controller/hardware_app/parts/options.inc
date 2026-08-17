@@ -208,7 +208,11 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     config->goal_tolerance_m = 0.070;
     config->goal_stop_speed_mps = 0.075;
     config->localization.max_range_m = 1.20;
-    config->localization.obstacle_stop_distance_m = 0.16;
+    // The LiDAR sits behind the front edge of the 25 cm body. Reserve enough
+    // distance for that offset plus one direct-PWM control interval; 16 cm
+    // stopped only after the synthetic footprint had already touched the
+    // obstacle margin.
+    config->localization.obstacle_stop_distance_m = 0.19;
     config->gap_extraction.planning_max_range_m = 1.20;
     config->gap_extraction.free_distance_threshold_m = 0.24;
     config->gap_extraction.min_gap_width_m =
@@ -244,13 +248,13 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     config->gap_extraction.gap_track_max_misses = 18;
     config->gap_extraction.min_passed_gates_to_complete = 2;
 
-    // PWM 90 is the first physically measured point for this car. Keep normal
-    // motion below that value when feedback allows it, but never return to the
-    // 60-PWM plateau that repeatedly left one wheel stationary in gate runs.
-    // A stalled wheel receives a short per-channel break-away command at 90.
+    // PWM 90 moved both unloaded wheels in the straight calibration, but the
+    // Manual Editor reports show one loaded/inner wheel still stationary at
+    // 90 while the other side advances. Normal motion can remain at 70; only
+    // a wheel whose encoder stays still receives the 110-PWM break-away pulse.
     if (config->vehicle_model == VehicleModelKind::CarLikeBicycle) {
         config->pwm.min_effective_pwm = std::max(config->pwm.min_effective_pwm, 70);
-        config->pwm.start_motion_pwm = 90;
+        config->pwm.start_motion_pwm = 110;
     }
     config->pwm.stall_target_speed_threshold_mps =
         std::min(config->pwm.stall_target_speed_threshold_mps, 0.018);

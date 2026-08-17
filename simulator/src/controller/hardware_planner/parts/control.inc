@@ -57,6 +57,39 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
         world_span_m(world_) <= 1.25;
     const bool forward_arc_gate_car = compact_hardware_car || compact_unstructured_car;
+
+    const auto unstructured_footprint = make_box_corners(
+        estimate_.position,
+        estimate_.yaw,
+        geometry_.body_length,
+        geometry_.body_width);
+    const bool unstructured_footprint_outside_bounds =
+        compact_unstructured_car &&
+        std::any_of(
+            unstructured_footprint.begin(),
+            unstructured_footprint.end(),
+            [&](const Vec2& corner) {
+                return !is_inside_bounds(world_, corner);
+            });
+    if (unstructured_footprint_outside_bounds) {
+        // Encoder slip must never let an open-ended Manual Editor run keep
+        // driving after its estimated footprint has left the physical arena.
+        safety_stop_active_ = true;
+        commanded_speed_ = 0.0;
+        commanded_steer_angle_ = 0.0;
+        last_command_ = {};
+        last_command_.safety_stop = true;
+        wheel_speed_error_integral_left_ = 0.0;
+        wheel_speed_error_integral_right_ = 0.0;
+        no_motion_command_cycles_ = 0;
+        left_wheel_stall_cycles_ = 0;
+        right_wheel_stall_cycles_ = 0;
+        left_wheel_breakaway_hold_cycles_ = 0;
+        right_wheel_breakaway_hold_cycles_ = 0;
+        diagnostics_.no_motion_command_cycles = 0;
+        diagnostics_.stall_boost_active = false;
+        return;
+    }
     const bool forward_only_tracked_tracks =
         tracked_vehicle && world_has_structured_reference(world_) && !mixed_gate_active;
     const bool simple_tiny_tracked_loop =
@@ -645,6 +678,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
     const bool dynamic_gap_safety_stop_enabled =
         use_dynamic_gap_gates_ && following_dynamic_gate && have_reference_trajectory;
+    const bool compact_unstructured_search_safety_enabled =
+        compact_unstructured_car &&
+        use_dynamic_gap_gates_ &&
+        !have_reference_trajectory;
     bool locked_gap_about_to_cross = false;
     if (dynamic_gap_safety_stop_enabled && locked_gap_goal_.has_value()) {
         const double crossing_progress =
@@ -684,9 +721,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.localization.min_valid_range_m + 0.16);
     const bool effective_lidar_front_blocked =
         lidar_front_blocked && !mixed_gate_side_motion_clear && !static_map_front_block_only;
-    if ((config_.planner_safety_stop_enabled || dynamic_gap_safety_stop_enabled) &&
-        !scanning_startup &&
-        !use_gap_recovery_turn &&
+    if ((config_.planner_safety_stop_enabled ||
+         dynamic_gap_safety_stop_enabled ||
+         compact_unstructured_search_safety_enabled) &&
+        (!scanning_startup || compact_unstructured_car) &&
+        (!use_gap_recovery_turn || compact_unstructured_car) &&
         (effective_lidar_front_blocked || lidar_side_clearance_blocked)) {
         safety_stop_active_ = true;
         last_command_.safety_stop = true;
@@ -904,8 +943,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
 
     const bool micro_hardware_recovery_world =
-        compact_hardware_mixed_lab_world(world_) &&
-        config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
+        config_.vehicle_model == VehicleModelKind::CarLikeBicycle &&
+        (compact_hardware_mixed_lab_world(world_) || compact_unstructured_car);
     if (micro_hardware_recovery_world &&
         !goal_reached_ &&
         sim_time_ < stuck_recovery_until_s_) {
@@ -920,13 +959,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
         safety_stop_active_ = false;
         gap_recovery_turn_active_ = true;
-        allow_reverse_recovery_motion = false;
+        const bool reverse_unstructured_recovery = compact_unstructured_car;
+        allow_reverse_recovery_motion = reverse_unstructured_recovery;
         use_direct_yaw_rate_command = true;
         direct_yaw_rate_command = clamp_value(
-            stuck_recovery_direction_ * 0.58,
+            stuck_recovery_direction_ *
+                (reverse_unstructured_recovery ? 0.20 : 0.58),
             -0.70 * config_.drive.max_yaw_rate,
             0.70 * config_.drive.max_yaw_rate);
-        last_command_.target_speed = 0.0;
+        last_command_.target_speed =
+            reverse_unstructured_recovery ? -0.035 : 0.0;
         last_command_.target_curvature = 0.0;
         commanded_speed_ = last_command_.target_speed;
         commanded_steer_angle_ = 0.0;
@@ -1045,14 +1087,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         }
     }
     if (compact_unstructured_car && use_direct_yaw_rate_command) {
-        if (last_command_.target_speed <= 1e-4) {
+        if (std::abs(last_command_.target_speed) <= 1e-4) {
             // Never convert a search or recovery request into opposing wheel
             // commands: with asymmetric traction that produced false encoder
             // translation and an indefinitely moving gate estimate.
             last_command_.target_yaw_rate = 0.0;
         } else {
             const double forward_arc_yaw_limit =
-                0.68 * last_command_.target_speed / std::max(half_track, 1e-3);
+                0.68 * std::abs(last_command_.target_speed) /
+                std::max(half_track, 1e-3);
             last_command_.target_yaw_rate = clamp_value(
                 last_command_.target_yaw_rate,
                 -forward_arc_yaw_limit,
@@ -1226,17 +1269,44 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
     const bool forward_arc_command =
         compact_unstructured_car && last_command_.target_speed > 1e-4;
-    if (forward_arc_command && measured_wheel_speeds_valid_) {
+    if (forward_arc_command) {
         const double wheel_target_threshold = 0.010;
         const double wheel_motion_threshold = 0.008;
         const bool left_requested = left_wheel_speed > wheel_target_threshold;
         const bool right_requested = right_wheel_speed > wheel_target_threshold;
+
+        // The old direct-PWM firmware can expose usable raw encoder deltas in
+        // a cycle where the higher-level odometry readiness streak is not yet
+        // valid. Use those deltas for per-wheel break-away detection instead
+        // of falling back to the aggregate robot speed, where one spinning
+        // wheel masks the stalled side.
+        double left_speed_for_stall = std::abs(measured_left_wheel_speed);
+        double right_speed_for_stall = std::abs(measured_right_wheel_speed);
+        const double raw_encoder_dt_s = latest_controller_encoder_dt_ms_ * 0.001;
+        const bool raw_encoder_motion_available =
+            encoder_ticks_initialized_ && raw_encoder_dt_s > 1e-4;
+        if (raw_encoder_motion_available) {
+            const double meters_per_tick =
+                (2.0 * kPi * geometry_.wheel_radius) /
+                static_cast<double>(
+                    std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
+            left_speed_for_stall =
+                std::abs(static_cast<double>(latest_controller_left_encoder_delta_)) *
+                meters_per_tick / raw_encoder_dt_s;
+            right_speed_for_stall =
+                std::abs(static_cast<double>(latest_controller_right_encoder_delta_)) *
+                meters_per_tick / raw_encoder_dt_s;
+        }
+        const bool have_individual_wheel_motion =
+            measured_wheel_speeds_valid_ || raw_encoder_motion_available;
         left_wheel_stall_cycles_ =
-            left_requested && std::abs(measured_left_wheel_speed) < wheel_motion_threshold
+            have_individual_wheel_motion &&
+                    left_requested && left_speed_for_stall < wheel_motion_threshold
                 ? left_wheel_stall_cycles_ + 1
                 : 0;
         right_wheel_stall_cycles_ =
-            right_requested && std::abs(measured_right_wheel_speed) < wheel_motion_threshold
+            have_individual_wheel_motion &&
+                    right_requested && right_speed_for_stall < wheel_motion_threshold
                 ? right_wheel_stall_cycles_ + 1
                 : 0;
 
@@ -1244,19 +1314,36 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
             0,
             config_.pwm.max_pwm);
+        // Two 10 Hz control cycles are enough to cross static friction without
+        // turning the break-away level into the sustained cruise command.
+        constexpr int kBreakawayHoldCycles = 2;
         if (left_wheel_stall_cycles_ >= stall_boost_cycles_required && left_requested) {
+            left_wheel_breakaway_hold_cycles_ = kBreakawayHoldCycles;
+        }
+        if (right_wheel_stall_cycles_ >= stall_boost_cycles_required && right_requested) {
+            right_wheel_breakaway_hold_cycles_ = kBreakawayHoldCycles;
+        }
+        if (left_wheel_breakaway_hold_cycles_ > 0 && left_requested) {
             last_command_.pwm_left = std::max(last_command_.pwm_left, per_wheel_breakaway_pwm);
             wheel_speed_error_integral_left_ = 0.0;
             stall_boost_active_ = true;
+            --left_wheel_breakaway_hold_cycles_;
+        } else {
+            left_wheel_breakaway_hold_cycles_ = 0;
         }
-        if (right_wheel_stall_cycles_ >= stall_boost_cycles_required && right_requested) {
+        if (right_wheel_breakaway_hold_cycles_ > 0 && right_requested) {
             last_command_.pwm_right = std::max(last_command_.pwm_right, per_wheel_breakaway_pwm);
             wheel_speed_error_integral_right_ = 0.0;
             stall_boost_active_ = true;
+            --right_wheel_breakaway_hold_cycles_;
+        } else {
+            right_wheel_breakaway_hold_cycles_ = 0;
         }
     } else {
         left_wheel_stall_cycles_ = 0;
         right_wheel_stall_cycles_ = 0;
+        left_wheel_breakaway_hold_cycles_ = 0;
+        right_wheel_breakaway_hold_cycles_ = 0;
     }
 
     if (commanding_motion) {
