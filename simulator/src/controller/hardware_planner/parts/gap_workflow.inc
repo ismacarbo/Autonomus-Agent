@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 bool HardwarePlannerRunner::startup_scan_active() const {
     return use_dynamic_gap_gates_ &&
            world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
@@ -1340,3 +1344,5 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         gate_specs_[preferred_gate_index].anchor_position);
     publish_locked_gap_goal();
 }
+
+}  // namespace thesis_sim

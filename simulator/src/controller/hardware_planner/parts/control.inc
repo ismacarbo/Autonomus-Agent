@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void HardwarePlannerRunner::compute_control_command(double dt) {
     const int previous_pwm_left = last_command_.pwm_left;
     const int previous_pwm_right = last_command_.pwm_right;
@@ -1428,3 +1432,5 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
     diagnostics_.stall_boost_active = stall_boost_active_;
 }
+
+}  // namespace thesis_sim

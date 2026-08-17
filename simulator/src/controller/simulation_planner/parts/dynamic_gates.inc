@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void PlannerDrivenVehicleSim::update_dynamic_lidar_gates() {
     if (!use_dynamic_lidar_gates()) {
         dynamic_lidar_candidate_count_ = 0;
@@ -658,3 +662,5 @@ std::vector<int> PlannerDrivenVehicleSim::active_gate_indices() const {
     }
     return indices;
 }
+
+}  // namespace thesis_sim

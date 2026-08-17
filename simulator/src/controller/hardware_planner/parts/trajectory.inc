@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void HardwarePlannerRunner::update_planner_references(double dt) {
     planner_accel_ref_ = clamp_value(
         estimate_.accel + last_j_ * dt,
@@ -309,3 +313,5 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         assign_structured_centerline_fallback();
     }
 }
+
+}  // namespace thesis_sim

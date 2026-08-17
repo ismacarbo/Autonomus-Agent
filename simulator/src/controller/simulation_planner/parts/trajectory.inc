@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void PlannerDrivenVehicleSim::update_selected_trajectory() {
     planned_trajectory_.clear();
     reference_trajectory_.clear();
@@ -580,3 +584,5 @@ int PlannerDrivenVehicleSim::lidar_update_interval_steps() const {
             return 1;
     }
 }
+
+}  // namespace thesis_sim

@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 HardwarePlannerRunner::HardwarePlannerRunner(WorldMap world,
                                              RealRobotBridge::Options bridge_options,
                                              HardwarePlannerConfig config)
@@ -937,3 +941,5 @@ bool HardwarePlannerRunner::lidar_pose_correction_enabled_for_current_mode() con
             return false;
     }
 }
+
+}  // namespace thesis_sim

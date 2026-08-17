@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void HardwarePlannerRunner::plan_if_needed() {
     if (step_count_ % planning_interval_steps() != 0) {
         return;
@@ -109,3 +113,4 @@ void HardwarePlannerRunner::plan_if_needed() {
     }
 }
 
+}  // namespace thesis_sim

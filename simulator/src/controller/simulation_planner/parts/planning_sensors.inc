@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void PlannerDrivenVehicleSim::plan_if_needed() {
     if (step_count_ % planning_interval_steps() != 0) {
         return;
@@ -496,3 +500,5 @@ void PlannerDrivenVehicleSim::regenerate_gate_layout(std::uint32_t seed) {
     world_.update_gate_layout(sim_time_);
     sync_gate_specs_from_world(false);
 }
+
+}  // namespace thesis_sim

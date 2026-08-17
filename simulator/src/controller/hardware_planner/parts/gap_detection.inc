@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA1::ScanPoint>& scan) {
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
     diagnostics_.dynamic_gap_gates = use_dynamic_gap_gates_;
@@ -1563,3 +1567,5 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
 }
+
+}  // namespace thesis_sim

@@ -165,6 +165,18 @@ target_include_directories(thesis_robot_io PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+add_library(thesis_initial_lidar_matcher STATIC
+  src/model/navigation/initial_lidar_matcher.cpp
+)
+
+target_include_directories(thesis_initial_lidar_matcher PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(thesis_initial_lidar_matcher PUBLIC
+  thesis_world
+)
+
 add_library(thesis_planner_stack STATIC
   src/model/navigation/actuation_model.cpp
   src/model/navigation/mpc_path_follower.cpp
@@ -289,6 +301,25 @@ target_link_libraries(thesis_straight_line_calibration PRIVATE
   thesis_hardware_calibration
 )
 
+add_executable(thesis_lidar_start_matcher
+  src/controller/hardware_calibration/lidar_start_matcher_main.cpp
+)
+
+target_link_libraries(thesis_lidar_start_matcher PRIVATE
+  thesis_initial_lidar_matcher
+  thesis_robot_io
+)
+
+add_executable(thesis_sim_lidar_start_matcher
+  src/controller/simulation_calibration/lidar_start_matcher_sim_main.cpp
+)
+
+target_link_libraries(thesis_sim_lidar_start_matcher PRIVATE
+  thesis_initial_lidar_matcher
+  thesis_planner_stack
+  thesis_world
+)
+
 if(BUILD_TESTING)
   add_executable(thesis_structured_path_model_smoke
     src/tests/unit/structured_path_model_test.cpp
@@ -360,4 +391,27 @@ if(BUILD_TESTING)
   )
 
   add_test(NAME thesis_straight_line_calibration_math COMMAND thesis_straight_line_calibration_smoke)
+
+  add_executable(thesis_initial_lidar_matcher_smoke
+    src/tests/unit/initial_lidar_matcher_test.cpp
+  )
+
+  target_include_directories(thesis_initial_lidar_matcher_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
+  target_link_libraries(thesis_initial_lidar_matcher_smoke PRIVATE
+    thesis_initial_lidar_matcher
+  )
+
+  add_test(NAME thesis_initial_lidar_matcher_math COMMAND thesis_initial_lidar_matcher_smoke)
+
+  add_test(
+    NAME thesis_sim_initial_lidar_matcher_comparison
+    COMMAND thesis_sim_lidar_start_matcher
+      --scenario mixed
+      --mixed-map obstacle
+      --seed 20260730
+      --output-dir ${CMAKE_CURRENT_BINARY_DIR}/initial_lidar_matcher_test_artifacts
+  )
 endif()

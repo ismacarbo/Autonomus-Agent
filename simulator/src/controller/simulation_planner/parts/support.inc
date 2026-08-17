@@ -1,3 +1,5 @@
+#pragma once
+
 #include "mvc/controller/simulation_planner/simulator.h"
 
 #include "mvc/model/perception/perception_model.h"
@@ -899,3 +901,5 @@ const char* range_sensor_profile_name(RangeSensorProfile profile) {
             return "Unknown";
     }
 }
+
+}  // namespace thesis_sim

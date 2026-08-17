@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObservation& observation, double dt) {
     if (!observation.have_controller_telemetry) {
         return;
@@ -1076,3 +1080,5 @@ void HardwarePlannerRunner::update_lidar_hits_world(const std::vector<RPLidarA1:
         estimate_.front_lidar_distance > 0.0 &&
         estimate_.front_lidar_distance < config_.localization.obstacle_stop_distance_m;
 }
+
+}  // namespace thesis_sim

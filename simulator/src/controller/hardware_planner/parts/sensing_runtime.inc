@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 double HardwarePlannerRunner::compute_min_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const {
     double min_range = config_.localization.max_range_m;
     for (const RPLidarA1::ScanPoint& point : scan) {

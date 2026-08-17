@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 const char* PlannerDrivenVehicleSim::localization_mode_name() const {
     if (config_.calibrated_conditions && gate_environment(world_)) {
         return "Encoders + IMU (LiDAR perception only)";
@@ -640,3 +644,5 @@ void PlannerDrivenVehicleSim::refresh_gate_diagnostics() {
         }
     }
 }
+
+}  // namespace thesis_sim

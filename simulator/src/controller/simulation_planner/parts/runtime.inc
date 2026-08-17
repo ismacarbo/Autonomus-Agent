@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 void PlannerDrivenVehicleSim::step() {
     if (goal_reached_ || collision_) {
         return;

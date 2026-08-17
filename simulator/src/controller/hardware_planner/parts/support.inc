@@ -1,3 +1,5 @@
+#pragma once
+
 #include "mvc/controller/hardware_planner/runner.h"
 
 #include "mvc/model/navigation/actuation_model.h"
@@ -1123,3 +1125,5 @@ const char* hardware_localization_policy_cli_name(HardwareLocalizationPolicy pol
             return "auto";
     }
 }
+
+}  // namespace thesis_sim

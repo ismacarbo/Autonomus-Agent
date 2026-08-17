@@ -1,3 +1,7 @@
+#include "support.inc"
+
+namespace thesis_sim {
+
 bool PlannerDrivenVehicleSim::use_dynamic_lidar_gates() const {
     return config_.dynamic_lidar_gates &&
            config_.lidar_enabled &&
@@ -1162,3 +1166,5 @@ PlannerDrivenVehicleSim::extract_dynamic_lidar_gate_candidates() const {
     });
     return candidates;
 }
+
+}  // namespace thesis_sim
