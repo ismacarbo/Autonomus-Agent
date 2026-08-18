@@ -248,6 +248,28 @@ For the tracked platform, use:
 
 Serial device names may differ depending on the machine and USB order.
 
+For the perception-only unstructured pipeline, start SLAM Toolbox on the GUI
+workstation and run the Raspberry client with the same workstation address:
+
+```bash
+./tools/slam_toolbox_bridge/run.sh
+
+./build/simulator/thesis_robot_runner \
+  --controller-port /dev/ttyACM0 \
+  --lidar-port /dev/ttyUSB0 \
+  --scenario unstructured \
+  --unstructured-map hardware_lab \
+  --stream-host <pc-ip> \
+  --stream-port 9559 \
+  --start-reference datasets/localization/car_unstructured_hardware_lab_start.csv
+```
+
+SLAM Toolbox and initial LiDAR start matching are enabled by default and can
+be toggled from the Hardware Planner GUI. Disabling start matching is an
+explicit debug bypass. The Raspberry runner is the sole hardware SLAM client;
+the GUI displays its optimized map and falls back to a persistent local grid
+if the sidecar is unavailable.
+
 ## Python Analysis Tools
 
 Install Python dependencies:

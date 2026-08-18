@@ -312,6 +312,12 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         const double footprint_margin_m = 0.010;
         const double half_length = 0.5 * geometry_.body_length + footprint_margin_m;
         const double half_width = 0.5 * geometry_.body_width + footprint_margin_m;
+        const double global_map_resolution =
+            exploration_map_source_ == ExplorationMapSource::SlamToolbox
+                ? std::max(slam_toolbox_snapshot_.map_resolution_m, 0.02)
+                : std::max(config_.frontier_exploration.grid_resolution_m, 0.02);
+        const double known_free_tolerance =
+            std::max(1.8 * global_map_resolution, 0.055);
         bool reference_is_safe = true;
         for (const ReferenceWaypoint& waypoint : reference_trajectory_) {
             const auto corners = make_box_corners(
@@ -329,8 +335,36 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 break;
             }
 
+            if (!global_free_points_.empty()) {
+                const bool waypoint_is_known_free = std::any_of(
+                    global_free_points_.begin(),
+                    global_free_points_.end(),
+                    [&](const Vec2& free_cell) {
+                        return distance(free_cell, waypoint.position) <=
+                               known_free_tolerance;
+                    });
+                if (!waypoint_is_known_free) {
+                    reference_is_safe = false;
+                    break;
+                }
+            }
+
             const double cos_yaw = std::cos(waypoint.yaw);
             const double sin_yaw = std::sin(waypoint.yaw);
+            for (const Vec2& occupied : global_occupied_points_) {
+                const double dx = occupied.x - waypoint.position.x;
+                const double dy = occupied.y - waypoint.position.y;
+                const double longitudinal = cos_yaw * dx + sin_yaw * dy;
+                const double lateral = -sin_yaw * dx + cos_yaw * dy;
+                if (std::abs(longitudinal) <= half_length &&
+                    std::abs(lateral) <= half_width) {
+                    reference_is_safe = false;
+                    break;
+                }
+            }
+            if (!reference_is_safe) {
+                break;
+            }
             for (const LidarHit& hit : lidar_hits_) {
                 if (!hit.hit ||
                     !(hit.distance > 0.0) ||
@@ -354,10 +388,18 @@ void HardwarePlannerRunner::update_selected_trajectory() {
 
         if (!reference_is_safe) {
             // Return to perception/search without executing even the first
-            // sample of an unsafe reference. The scan timer prevents an
-            // immediate relock and lets the forward arc improve the approach
-            // angle before the candidate is reconsidered.
-            restart_unstructured_scan();
+            // sample of an unsafe reference. Frontier targets are blacklisted
+            // and replanned; physical gates return to stationary perception
+            // before they can be reconsidered.
+            if (navigation_target_kind_ == NavigationTargetKind::ExplorationFrontier) {
+                if (selected_frontier_.has_value()) {
+                    visited_frontiers_.push_back(*selected_frontier_);
+                }
+                clear_exploration_target("frontier_clothoid_failed_footprint_validation");
+                last_frontier_plan_step_ = -1;
+            } else {
+                restart_unstructured_scan();
+            }
             diagnostics_.planner_has_reference = false;
             return;
         }

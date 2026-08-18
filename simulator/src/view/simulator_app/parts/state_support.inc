@@ -46,6 +46,7 @@ using thesis_sim::LidarHit;
 using thesis_sim::LiveFrameSnapshot;
 using thesis_sim::LiveGateFrame;
 using thesis_sim::LiveSceneSnapshot;
+using thesis_sim::LiveRuntimeSettings;
 using thesis_sim::LiveVehicleState;
 using thesis_sim::LiveViewStreamServer;
 using thesis_sim::SlamToolboxBridgeClient;
@@ -151,6 +152,9 @@ struct UiState {
     int hardware_mixed_preset = 1;
     int hardware_vehicle_model = static_cast<int>(VehicleModelKind::CarLikeBicycle);
     int hardware_localization_policy = static_cast<int>(HardwareLocalizationPolicy::Auto);
+    bool hardware_start_matching_enabled = true;
+    bool hardware_slam_toolbox_enabled = true;
+    std::uint64_t hardware_runtime_settings_revision = 1;
     float hardware_track_scale = kHardwareTrackDefaultScale;
     bool show_grid = true;
     bool show_trails = true;
@@ -233,6 +237,10 @@ struct HardwareThesisMetrics {
 };
 
 std::string hardware_launch_hint(const UiState& ui_state);
+bool queue_hardware_runtime_settings(UiState* ui_state,
+                                     LiveViewStreamServer* hardware_server,
+                                     const char* queued_message,
+                                     const char* failure_message);
 VehicleModelKind vehicle_model_from_live_name(const std::string& name);
 
 bool simulation_uses_dynamic_gates(const PlannerDrivenVehicleSim& sim) {

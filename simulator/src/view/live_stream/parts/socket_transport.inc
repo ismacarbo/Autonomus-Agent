@@ -102,6 +102,30 @@ bool deserialize_robot_profile(const std::vector<std::uint8_t>& payload,
     return false;
 }
 
+std::vector<std::uint8_t> serialize_runtime_settings(
+    const LiveRuntimeSettings& settings) {
+    std::vector<std::uint8_t> payload;
+    write_bool(&payload, settings.start_matching_enabled);
+    write_bool(&payload, settings.slam_toolbox_enabled);
+    write_pod(&payload, settings.revision);
+    return payload;
+}
+
+bool deserialize_runtime_settings(const std::vector<std::uint8_t>& payload,
+                                  LiveRuntimeSettings* settings) {
+    if (settings == nullptr) return false;
+    std::size_t offset = 0;
+    LiveRuntimeSettings parsed;
+    if (!read_bool(payload, &offset, &parsed.start_matching_enabled) ||
+        !read_bool(payload, &offset, &parsed.slam_toolbox_enabled) ||
+        !read_pod(payload, &offset, &parsed.revision) ||
+        offset != payload.size()) {
+        return false;
+    }
+    *settings = parsed;
+    return true;
+}
+
 bool recv_all_with_timeout(int fd, std::uint8_t* data, std::size_t size, int timeout_ms) {
     if (fd < 0 || data == nullptr) {
         return false;
@@ -196,4 +220,3 @@ bool receive_server_hello(int fd, std::string* error) {
     }
     return true;
 }
-

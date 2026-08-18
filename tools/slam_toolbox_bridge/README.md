@@ -22,11 +22,15 @@ The launcher is idempotent. If the named sidecar is already running, it
 attaches to its logs instead of attempting to create a conflicting container;
 `Ctrl+C` then stops only the log view.
 
-Then start the GUI normally. It automatically sends the live hardware scans to
-UDP `127.0.0.1:9760`. The SLAM panel changes from `LiDAR reconstruction` to
-`SLAM Toolbox` after the first map response.
+Then start the GUI and the Raspberry runner normally. The Raspberry runner is
+the only hardware SLAM client and sends odometry plus LiDAR directly to UDP
+`9760` on the workstation. The GUI only renders the resulting occupancy grid;
+it never forwards hardware scans a second time. This avoids interleaved
+sessions and accidental pose-graph resets.
 
-Each new simulation or hardware run resets the active pose graph. The bridge
+Each new process/run has a unique session ID and resets the active pose graph
+once. Duplicated or reordered UDP packets are discarded and do not reset the
+map. The bridge
 publishes:
 
 - `odom -> base_link` and `base_link -> laser` transforms;
@@ -44,13 +48,14 @@ When saving a thesis bundle:
 - the JSON `slam_backend` object records which backend actually produced the
   reference image.
 
-Docker and host networking are required by `run.sh`. For a headless runner
-connected directly to a sidecar, add `--slam-bridge-port 9760` and optionally
-`--slam-bridge-host HOST`. When the GUI is open, leave those runner flags out:
-the GUI already forwards each streamed hardware scan to its local sidecar.
-Enabling both paths would interleave two sessions and repeatedly reset the
-same pose graph. Do not enable `--slam-pose-feedback` until the map pose has
-been checked against the independent external ground truth.
+Docker and host networking are required by `run.sh`. SLAM is enabled by
+default in the runner. With `--stream-host <pc-ip>`, that host is also used as
+the default SLAM bridge host; the GUI launch hint nevertheless emits the
+endpoint explicitly. The GUI `SLAM Toolbox` checkbox can disable or re-enable
+submission at runtime. If disabled or disconnected, navigation falls back to
+a non-decaying local free/occupied grid for the current run. Do not enable
+`--slam-pose-feedback` until the map pose has been checked against independent
+external ground truth.
 
 ## Input and Karto grid constraints
 

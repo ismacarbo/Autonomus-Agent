@@ -854,7 +854,12 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
     }
 
     static const std::vector<Vec2> empty_points;
-    const std::vector<Vec2>& fallback_slam_points = show_live_scene ? frame.slam_points : empty_points;
+    const std::vector<Vec2>& fallback_slam_points =
+        show_live_scene
+            ? (!frame.global_occupied_points.empty()
+                   ? frame.global_occupied_points
+                   : frame.local_safety_occupied_points)
+            : empty_points;
     const std::vector<Vec2>& slam_points =
         slam_snapshot != nullptr && slam_snapshot->connected &&
                 !slam_snapshot->occupied_points.empty()
@@ -924,14 +929,14 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
                 std::snprintf(hud_line,
                               sizeof(hud_line),
                               "sensing | map %d",
-                              static_cast<int>(frame.slam_points.size()));
+                              static_cast<int>(frame.global_occupied_points.size()));
             } else if (show_live_scene) {
                 std::snprintf(hud_line,
                               sizeof(hud_line),
                               "gate %s | cand %d | map %d",
                               active_target,
                               frame.candidate_gates,
-                              static_cast<int>(frame.slam_points.size()));
+                              static_cast<int>(frame.global_occupied_points.size()));
             } else {
                 std::snprintf(hud_line, sizeof(hud_line), "preview gates %d", static_cast<int>(world.gates().size()));
             }
@@ -1338,4 +1343,3 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
     }
     ImGui::EndChild();
 }
-

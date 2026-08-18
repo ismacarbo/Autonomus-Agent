@@ -40,6 +40,7 @@ using thesis_sim::HardwarePlannerRunner;
 using thesis_sim::HardwareLocalizationPolicy;
 using thesis_sim::LidarHit;
 using thesis_sim::LiveViewStreamClient;
+using thesis_sim::LiveRuntimeSettings;
 using thesis_sim::MotorControlMode;
 using thesis_sim::mvc::model::RobotCalibrationProfile;
 using thesis_sim::mvc::model::load_robot_calibration_profile;
@@ -121,8 +122,11 @@ struct AppOptions {
     ExternalPoseTransform external_pose_transform{};
     double external_pose_timeout_s = 0.25;
     std::string slam_bridge_host = "127.0.0.1";
-    int slam_bridge_port = 0;
+    int slam_bridge_port = 9760;
+    bool slam_toolbox_enabled = true;
     bool slam_pose_feedback = false;
+    bool start_matching_enabled = true;
+    std::string start_reference_path;
     std::string calibration_profile_path;
 };
 
@@ -599,6 +603,9 @@ void print_usage(const char* argv0) {
         << "  --slam-bridge-port N      stream odometry + LiDAR to the SLAM Toolbox UDP bridge\n"
         << "  --slam-bridge-host HOST   bridge host (default 127.0.0.1)\n"
         << "  --slam-pose-feedback      enable bounded SLAM-to-EKF corrections\n"
+        << "  --no-slam-toolbox         disable SLAM Toolbox (GUI can override at runtime)\n"
+        << "  --start-reference PATH    initial LiDAR reference used before motor enable\n"
+        << "  --no-start-matching       bypass initial LiDAR start matching for debug\n"
         << "  --calibration-profile P   override the versioned robot calibration JSON\n";
 }
 
@@ -717,6 +724,12 @@ AppOptions parse_args(int argc, char** argv) {
             options.slam_bridge_host = argv[++i];
         } else if (arg == "--slam-pose-feedback") {
             options.slam_pose_feedback = true;
+        } else if (arg == "--no-slam-toolbox") {
+            options.slam_toolbox_enabled = false;
+        } else if (arg == "--start-reference" && i + 1 < argc) {
+            options.start_reference_path = argv[++i];
+        } else if (arg == "--no-start-matching") {
+            options.start_matching_enabled = false;
         } else if (arg == "--calibration-profile" && i + 1 < argc) {
             options.calibration_profile_path = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
@@ -730,6 +743,16 @@ AppOptions parse_args(int argc, char** argv) {
     options.slam_bridge_port = std::max(options.slam_bridge_port, 0);
     if (options.slam_pose_feedback && options.slam_bridge_port == 0) {
         throw std::runtime_error("--slam-pose-feedback requires --slam-bridge-port");
+    }
+    if (options.start_reference_path.empty()) {
+        options.start_reference_path =
+            options.vehicle_profile == VehicleProfile::Tank
+                ? "datasets/localization/tank_validation_start.csv"
+                : "datasets/localization/car_unstructured_hardware_lab_start.csv";
+    }
+    if (!options.stream_host.empty() &&
+        options.slam_bridge_host == "127.0.0.1") {
+        options.slam_bridge_host = options.stream_host;
     }
     return options;
 }

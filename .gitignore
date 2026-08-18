@@ -30,6 +30,7 @@ documentation/*
 !documentation/Mappa_Pipeline_Gate_Clotoide_PWM_20260728.md
 !documentation/Initial_LiDAR_Start_Matcher_20260730.md
 !documentation/Hardware_Unstructured_Legacy_PWM_Fix_20260818.md
+!documentation/Unstructured_Exploration_SLAM_GUI_Status_20260818.md
 data_analisys/outputs/
 
 # Local papers, validation datasets, and generated test results

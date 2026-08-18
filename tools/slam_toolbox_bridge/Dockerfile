@@ -5,6 +5,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY bridge_node.py /opt/thesis_slam_bridge/bridge_node.py
+COPY sequence_policy.py /opt/thesis_slam_bridge/sequence_policy.py
 COPY mapper_params.yaml /opt/thesis_slam_bridge/mapper_params.yaml
 COPY entrypoint.sh /opt/thesis_slam_bridge/entrypoint.sh
 RUN chmod +x /opt/thesis_slam_bridge/entrypoint.sh

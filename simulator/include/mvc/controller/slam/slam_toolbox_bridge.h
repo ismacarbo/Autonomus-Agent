@@ -11,6 +11,8 @@
 namespace thesis_sim {
 
 struct SlamToolboxSnapshot {
+    std::string session_id;
+    std::uint64_t sequence = 0;
     bool connected = false;
     bool pose_valid = false;
     Vec2 corrected_position{};
@@ -21,6 +23,7 @@ struct SlamToolboxSnapshot {
     double map_resolution_m = 0.03;
     std::vector<Vec2> free_points;
     std::vector<Vec2> occupied_points;
+    std::string reset_reason;
     std::string status = "LiDAR reconstruction fallback";
 };
 

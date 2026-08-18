@@ -2,6 +2,7 @@
 #include "parts/lifecycle.inc"
 #include "parts/planning.inc"
 #include "parts/localization.inc"
+#include "parts/exploration.inc"
 #include "parts/gap_detection.inc"
 #include "parts/gap_workflow.inc"
 #include "parts/trajectory.inc"

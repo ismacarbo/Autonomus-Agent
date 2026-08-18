@@ -21,6 +21,7 @@ void HardwarePlannerRunner::clear_locked_gap_goal() {
     locked_gap_set_time_s_ = 0.0;
     locked_gap_crossed_ = false;
     locked_gap_invalid_streak_ = 0;
+    navigation_target_kind_ = NavigationTargetKind::None;
 }
 
 void HardwarePlannerRunner::restart_unstructured_scan() {
@@ -205,6 +206,8 @@ void HardwarePlannerRunner::set_locked_gap_goal(
     }
 
     locked_gap_goal_ = target;
+    navigation_target_kind_ = NavigationTargetKind::PhysicalGate;
+    exploration_state_ = UnstructuredExplorationState::GateLocked;
     locked_gap_name_ = persistent_name.empty() ? "locked_gap_goal" : persistent_name;
     locked_gap_crossing_point_ = crossing_point.value_or(target);
     locked_gap_start_position_ = estimate_.position;
@@ -288,7 +291,9 @@ void HardwarePlannerRunner::publish_locked_gap_goal() {
     spec.motion_frequency_hz = 0.0;
     spec.motion_phase_rad = 0.0;
     spec.heading_hint = std::atan2(locked_gap_approach_direction_.y, locked_gap_approach_direction_.x);
-    spec.final = world_.environment_mode() == EnvironmentMode::UnstructuredGates;
+    spec.final =
+        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        navigation_target_kind_ == NavigationTargetKind::PhysicalGate;
 
     gate_specs_.assign(1, spec);
 
@@ -1183,13 +1188,47 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         }
     }
 
+    const bool frontier_exploration_enabled =
+        manual_unstructured_exploration(world_) &&
+        config_.frontier_exploration.enabled;
+    if (frontier_exploration_enabled) {
+        const double initial_scan_duration =
+            std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
+        if (!startup_scan_complete_) {
+            startup_scan_elapsed_s_ += std::max(dt, 0.0);
+            startup_scan_complete_ = startup_scan_elapsed_s_ >= initial_scan_duration;
+            exploration_state_ = UnstructuredExplorationState::InitialScan;
+            if (!startup_scan_complete_) {
+                gates_.clear();
+                gate_specs_.clear();
+                visible_gate_indices_.clear();
+                chosen_gate_index_ = -1;
+                return;
+            }
+        }
+
+        if (gate_specs_.empty()) {
+            chosen_gate_index_ = -1;
+            visible_gate_indices_.clear();
+            diagnostics_.candidate_gates = 0;
+            update_exploration_target();
+            return;
+        }
+
+        // A confirmed aperture always preempts frontier navigation.
+        clear_exploration_target("physical_gate_preempted_frontier");
+        startup_scan_complete_ = true;
+    }
+
     const bool strict_locked_motion = strict_locked_gate_motion_enabled();
     if (strict_locked_motion && gate_specs_.empty()) {
         unstructured_no_candidate_scan_elapsed_s_ += std::max(dt, 0.0);
     } else {
         unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     }
-    const bool startup_scan_enabled = config_.gap_extraction.startup_scan_duration_s > 1e-3;
+    const bool startup_scan_enabled =
+        !frontier_exploration_enabled &&
+        config_.gap_extraction.startup_scan_duration_s > 1e-3;
     if (!startup_scan_enabled) {
         startup_scan_complete_ = true;
     } else {
@@ -1277,9 +1316,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         manual_exploration &&
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
     // A differential car can observe a gate with the 360-degree LiDAR before
-    // it can reach it with a forward clothoid. Keep those rear candidates in
-    // perception, but let the forward search arc rotate the vehicle before a
-    // target is locked. Directly locking a 100--145 degree candidate creates
+        // it can reach it with a forward clothoid. Keep those rear candidates in
+        // perception, but select a reachable exploration frontier before a gate
+        // target is locked. Directly locking a 100--145 degree candidate creates
     // a looping clothoid and can send the footprint outside the small arena.
     const double reachable_heading_limit =
         (manual_car ? 85.0 : (manual_exploration ? 145.0 : 85.0)) *
@@ -1295,8 +1334,14 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     }
     if (manual_car && !have_reachable_gate) {
         // Preserve the 360-degree detections, but do not hand a rear target to
-        // the forward-only car planner. Continue the bounded search arc until
-        // at least one observed aperture enters the reachable sector.
+        // the forward-only car planner. Use a map frontier to improve the
+        // viewpoint until an aperture enters the reachable sector.
+        if (frontier_exploration_enabled) {
+            gates_.clear();
+            gate_specs_.clear();
+            update_exploration_target();
+            return;
+        }
         startup_scan_complete_ = false;
         startup_scan_elapsed_s_ = 0.0;
         visible_gate_indices_.clear();

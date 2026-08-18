@@ -345,9 +345,11 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
 
     const auto lidar_start = std::chrono::steady_clock::now();
     if (lidar_enabled && synchronized_observation.have_lidar_scan) {
+        update_start_matching(synchronized_observation.lidar_scan);
         correct_pose_with_lidar(synchronized_observation.lidar_scan);
         update_lidar_hits_world(synchronized_observation.lidar_scan);
-        if (dynamic_gap_mode_enabled()) {
+        update_global_exploration_map(synchronized_observation.lidar_scan);
+        if (dynamic_gap_mode_enabled() && motion_permitted_by_start_match()) {
             // Validate the currently locked gate before rebuilding candidates.
             // Once the aperture is behind the robot it may legitimately lose
             // scan support; rebuilding first used to discard that gate before
@@ -355,6 +357,13 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             count_mixed_gate_crossing_if_needed();
             rebuild_dynamic_gap_gates(synchronized_observation.lidar_scan);
             update_unstructured_gap_workflow(bounded_dt);
+        } else if (dynamic_gap_mode_enabled()) {
+            clear_locked_gap_goal();
+            gates_.clear();
+            gate_specs_.clear();
+            reference_trajectory_.clear();
+            planned_trajectory_.clear();
+            exploration_state_ = UnstructuredExplorationState::StartMatching;
         }
     } else {
         estimate_.min_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
@@ -508,7 +517,21 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         if (passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
             distance_to_goal_ = 0.0;
             goal_reached_ = true;
+            exploration_state_ = UnstructuredExplorationState::Complete;
         } else if (locked_gap_goal_.has_value()) {
+            if (navigation_target_kind_ == NavigationTargetKind::ExplorationFrontier) {
+                const double frontier_target_distance =
+                    distance(estimate_.position, *locked_gap_goal_);
+                distance_to_goal_ = -1.0;
+                goal_reached_ = false;
+                if (frontier_target_distance <=
+                    config_.frontier_exploration.target_reached_radius_m) {
+                    clear_locked_gap_goal();
+                    reference_trajectory_.clear();
+                    planned_trajectory_.clear();
+                    last_frontier_plan_step_ = -1;
+                }
+            } else {
             const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
             const bool require_center_crossing =
                 compact_hardware_unstructured_world(world_);
@@ -559,6 +582,12 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             const bool gate_crossed =
                 lateral_offset <= pass_lateral_limit &&
                 (crossing_progress >= crossing_margin || gate_nearly_crossed);
+            if (!gate_crossed &&
+                crossing_distance <=
+                    std::max(2.0 * crossing_margin, 0.08)) {
+                exploration_state_ =
+                    UnstructuredExplorationState::VerifyingGateCrossing;
+            }
             if (gate_crossed) {
                 const Vec2 completed_gap = *locked_gap_goal_;
                 locked_gap_crossed_ = true;
@@ -579,12 +608,19 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                     diagnostics_.planner_has_reference = false;
                 } else {
                     restart_unstructured_scan();
+                    if (manual_unstructured_exploration(world_) &&
+                        config_.frontier_exploration.enabled) {
+                        startup_scan_complete_ = true;
+                        startup_scan_elapsed_s_ =
+                            config_.gap_extraction.startup_scan_duration_s;
+                    }
                     commanded_speed_ = 0.0;
                     commanded_steer_angle_ = 0.0;
                     last_command_ = {};
                     last_mpc_command_.reset();
                 }
                 distance_to_goal_ = goal_reached_ ? 0.0 : -1.0;
+            }
             }
         } else if (chosen_gate_index_ >= 0 && chosen_gate_index_ < static_cast<int>(gate_specs_.size())) {
             distance_to_goal_ =
@@ -662,6 +698,21 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         commanded_steer_angle_ = 0.0;
         last_command_ = {};
     }
+    diagnostics_.map_source = exploration_map_source_;
+    diagnostics_.exploration_state = exploration_state_;
+    diagnostics_.control_source = control_source_;
+    diagnostics_.selected_frontier_valid = selected_frontier_.has_value();
+    diagnostics_.selected_frontier = selected_frontier_.value_or(Vec2{});
+    diagnostics_.global_free_cells = static_cast<int>(global_free_points_.size());
+    diagnostics_.global_occupied_cells = static_cast<int>(global_occupied_points_.size());
+    diagnostics_.slam_enabled = config_.slam_toolbox_enabled;
+    diagnostics_.slam_connected = slam_toolbox_snapshot_.connected;
+    diagnostics_.slam_map_age_s =
+        slam_snapshot_received_sim_time_s_ >= 0.0
+            ? std::max(0.0, sim_time_ - slam_snapshot_received_sim_time_s_)
+            : -1.0;
+    diagnostics_.slam_session_id = slam_toolbox_snapshot_.session_id;
+    diagnostics_.slam_reset_reason = slam_toolbox_snapshot_.reset_reason;
     step_compute_ms_ = elapsed_ms(step_start, std::chrono::steady_clock::now());
     push_history();
 

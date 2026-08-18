@@ -32,6 +32,12 @@ int main(int argc, char** argv) {
         planner_config.use_encoder_odometry = true;
         planner_config.planner_safety_stop_enabled = options.planner_safety_stop_enabled;
         planner_config.mapping_lidar_enabled = options.simulate || !options.lidar_port.empty();
+        planner_config.slam_toolbox_enabled =
+            options.slam_toolbox_enabled && !structured_mode;
+        planner_config.slam_pose_feedback_enabled = options.slam_pose_feedback;
+        planner_config.start_matching.enabled =
+            options.start_matching_enabled && !options.simulate && !structured_mode;
+        planner_config.start_matching.reference_path = options.start_reference_path;
         planner_config.use_mcu_velocity_closed_loop =
             options.mcu_velocity_closed_loop && !options.simulate;
         planner_config.localization_policy = options.localization_policy;
@@ -71,6 +77,11 @@ int main(int argc, char** argv) {
         LiveViewStreamClient streamer;
         SlamToolboxBridgeClient slam_bridge;
         std::uint64_t slam_sequence = 0;
+        int slam_session_epoch = 1;
+        const std::string slam_run_id =
+            "hardware_" +
+            std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count());
         if (options.slam_bridge_port > 0 &&
             !slam_bridge.open(
                 options.slam_bridge_host,
@@ -153,6 +164,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             if (world_applied) {
+                ++slam_session_epoch;
                 if (!send_stream_scene(options, *runner, &streamer)) {
                     runner->disconnect();
                     return 2;
@@ -165,7 +177,9 @@ int main(int argc, char** argv) {
             }
             poll_external_pose(options, &external_pose_receiver, runner.get());
             runner->step();
-            if (slam_bridge.active() && !runner->lidar_hits().empty()) {
+            if (slam_bridge.active() &&
+                runner->config().slam_toolbox_enabled &&
+                !runner->lidar_hits().empty()) {
                 const RealRobotObservation& slam_observation =
                     runner->bridge().observation();
                 const double scan_timestamp =
@@ -173,9 +187,11 @@ int main(int argc, char** argv) {
                         ? slam_observation.lidar_scan_mid_timestamp_s
                         : slam_observation.host_timestamp_s;
                 slam_bridge.submit_scan(
-                    options.vehicle_profile == VehicleProfile::Tank
-                        ? "hardware_tank"
-                        : "hardware_car",
+                    slam_run_id +
+                        (runner->config().vehicle_model == VehicleModelKind::TrackedVehicle
+                             ? "_tank_"
+                             : "_car_") +
+                        std::to_string(slam_session_epoch),
                     ++slam_sequence,
                     scan_timestamp,
                     runner->estimate().position,
@@ -183,13 +199,14 @@ int main(int argc, char** argv) {
                     runner->lidar_hits(),
                     planner_config.localization.min_valid_range_m,
                     planner_config.localization.max_range_m);
-                if (slam_bridge.poll() &&
-                    options.slam_pose_feedback &&
-                    slam_bridge.snapshot().connected &&
-                    slam_bridge.snapshot().pose_valid) {
-                    runner->apply_slam_pose_correction(
-                        slam_bridge.snapshot().corrected_position,
-                        slam_bridge.snapshot().corrected_yaw);
+            }
+            if (slam_bridge.active()) {
+                const bool slam_updated = slam_bridge.poll();
+                const auto& snapshot = slam_bridge.snapshot();
+                const bool connection_state_changed =
+                    runner->slam_toolbox_snapshot().connected != snapshot.connected;
+                if (slam_updated || connection_state_changed) {
+                    runner->apply_slam_toolbox_snapshot(snapshot);
                 }
             }
             stream_frame_if_due(options, *runner, &streamer);

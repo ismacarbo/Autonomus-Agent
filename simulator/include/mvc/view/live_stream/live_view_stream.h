@@ -59,6 +59,8 @@ struct LiveSceneSnapshot {
     std::string calibration_profile_hash;
     bool wheel_radius_calibrated = false;
     bool mcu_velocity_closed_loop = false;
+    bool start_matching_enabled = false;
+    bool slam_toolbox_enabled = true;
     int active_lidar_beams = 360;
     double active_lidar_fov_rad = 6.28318530717958647692;
     double active_lidar_range = 8.0;
@@ -92,6 +94,28 @@ struct LiveFrameSnapshot {
     int chosen_gate_index = -1;
     int passed_gates = 0;
     double occupancy_cell_size_m = 0.03;
+    ExplorationMapSource map_source = ExplorationMapSource::LocalPersistentGrid;
+    UnstructuredExplorationState exploration_state = UnstructuredExplorationState::Disabled;
+    HardwareControlSource control_source = HardwareControlSource::Hold;
+    bool selected_frontier_valid = false;
+    Vec2 selected_frontier{};
+    bool start_matching_enabled = false;
+    bool start_matching_complete = false;
+    bool start_matching_accepted = false;
+    double start_matching_confidence = 0.0;
+    std::string start_matching_status;
+    bool slam_enabled = true;
+    bool slam_connected = false;
+    bool slam_pose_valid = false;
+    int slam_map_updates = 0;
+    int slam_graph_nodes = 0;
+    int slam_loop_edges = 0;
+    double slam_map_resolution_m = 0.03;
+    double slam_map_age_s = -1.0;
+    std::string slam_session_id;
+    std::string slam_reset_reason;
+    std::string slam_status;
+    std::string reference_invalidation_reason;
     LiveVehicleState vehicle{};
     Vec2 navigation_position;
     double navigation_yaw = 0.0;
@@ -103,12 +127,20 @@ struct LiveFrameSnapshot {
     std::vector<int> visible_gate_indices;
     std::vector<Vec2> trail;
     std::vector<Vec2> planned_trajectory;
-    std::vector<Vec2> slam_points;
+    std::vector<Vec2> local_safety_occupied_points;
+    std::vector<Vec2> global_free_points;
+    std::vector<Vec2> global_occupied_points;
     std::vector<LidarHit> lidar_hits;
     bool has_last_mpc_command = false;
     LiveMpcCommandView last_mpc_command{};
     bool has_latest_sample = false;
     HardwareTelemetrySample latest_sample{};
+};
+
+struct LiveRuntimeSettings {
+    bool start_matching_enabled = true;
+    bool slam_toolbox_enabled = true;
+    std::uint64_t revision = 0;
 };
 
 struct LiveControlAck {
@@ -118,6 +150,16 @@ struct LiveControlAck {
 
 std::vector<std::uint8_t> serialize_world_blob(const WorldMap& world);
 bool deserialize_world_blob(const std::vector<std::uint8_t>& data, WorldMap* world);
+std::vector<std::uint8_t> serialize_runtime_settings_blob(
+    const LiveRuntimeSettings& settings);
+bool deserialize_runtime_settings_blob(
+    const std::vector<std::uint8_t>& data,
+    LiveRuntimeSettings* settings);
+std::vector<std::uint8_t> serialize_live_frame_blob(
+    const LiveFrameSnapshot& frame);
+bool deserialize_live_frame_blob(
+    const std::vector<std::uint8_t>& data,
+    LiveFrameSnapshot* frame);
 
 LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner);
 LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner);
@@ -127,8 +169,10 @@ class LiveViewStreamClient {
     struct PollResult {
         bool world_received = false;
         bool robot_profile_received = false;
+        bool runtime_settings_received = false;
         std::optional<WorldMap> world;
         std::optional<VehicleModelKind> robot_profile;
+        std::optional<LiveRuntimeSettings> runtime_settings;
     };
 
     LiveViewStreamClient() = default;
@@ -180,10 +224,13 @@ class LiveViewStreamServer {
     const std::string& last_error() const { return last_error_; }
     bool has_pending_world() const { return pending_world_.has_value(); }
     bool has_pending_robot_profile() const { return pending_robot_profile_.has_value(); }
+    bool has_pending_runtime_settings() const { return pending_runtime_settings_.has_value(); }
     bool queue_world(const WorldMap& world);
     void clear_pending_world();
     bool queue_robot_profile(VehicleModelKind vehicle_model);
     void clear_pending_robot_profile();
+    bool queue_runtime_settings(const LiveRuntimeSettings& settings);
+    void clear_pending_runtime_settings();
 
   private:
     void close_client();
@@ -193,6 +240,7 @@ class LiveViewStreamServer {
     bool send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload);
     void flush_pending_world();
     void flush_pending_robot_profile();
+    void flush_pending_runtime_settings();
 
     int listen_fd_ = -1;
     int client_fd_ = -1;
@@ -202,6 +250,7 @@ class LiveViewStreamServer {
     std::vector<std::uint8_t> recv_buffer_;
     std::optional<WorldMap> pending_world_;
     std::optional<VehicleModelKind> pending_robot_profile_;
+    std::optional<LiveRuntimeSettings> pending_runtime_settings_;
 };
 
 }  // namespace thesis_sim

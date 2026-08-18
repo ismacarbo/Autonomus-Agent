@@ -507,7 +507,12 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
 
     const bool toolbox_active =
         toolbox_snapshot != nullptr && toolbox_snapshot->connected;
-    if (toolbox_active && !toolbox_snapshot->free_points.empty()) {
+    const bool persistent_grid_active =
+        toolbox_snapshot != nullptr &&
+        !toolbox_snapshot->connected &&
+        toolbox_snapshot->status == "persistent_local_grid";
+    const bool occupancy_grid_active = toolbox_active || persistent_grid_active;
+    if (occupancy_grid_active && !toolbox_snapshot->free_points.empty()) {
         const float half_cell_px = std::max(
             1.0f,
             static_cast<float>(0.55 * toolbox_snapshot->map_resolution_m * tx.scale));
@@ -522,7 +527,7 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
     }
 
     const size_t stride = slam_points.size() > 30000 ? 3 : (slam_points.size() > 12000 ? 2 : 1);
-    const float occupied_half_px = toolbox_active
+    const float occupied_half_px = occupancy_grid_active
         ? std::max(
               1.5f,
               static_cast<float>(0.55 * toolbox_snapshot->map_resolution_m * tx.scale))
@@ -532,8 +537,8 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
         draw_list->AddRectFilled(
             ImVec2(point.x - occupied_half_px, point.y - occupied_half_px),
             ImVec2(point.x + occupied_half_px, point.y + occupied_half_px),
-            toolbox_active ? IM_COL32(245, 88, 82, 245)
-                           : IM_COL32(220, 240, 233, 235));
+            occupancy_grid_active ? IM_COL32(245, 88, 82, 245)
+                                  : IM_COL32(220, 240, 233, 235));
     }
     draw_polyline(draw_list, tx, estimated_trail, IM_COL32(88, 193, 255, 235), 2.2f);
     const Vec2* displayed_robot_position = robot_position;
@@ -554,7 +559,9 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
         graph_status,
         sizeof(graph_status),
         toolbox_active ? "updates %d | graph nodes %d | loop edges %d"
-                       : "start tools/slam_toolbox_bridge/run.sh for graph SLAM",
+                       : (persistent_grid_active
+                              ? "non-decaying local fallback | no pose graph"
+                              : "start tools/slam_toolbox_bridge/run.sh for graph SLAM"),
         toolbox_active ? toolbox_snapshot->map_updates : 0,
         toolbox_active ? toolbox_snapshot->graph_nodes : 0,
         toolbox_active ? toolbox_snapshot->loop_edges : 0);
@@ -562,11 +569,17 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
         draw_list,
         ImVec2(canvas_pos.x + 12.0f, canvas_pos.y + 12.0f),
         std::min(canvas_size.x - 24.0f, 310.0f),
-        {{toolbox_active ? "SLAM Toolbox" : "LiDAR reconstruction",
+        {{toolbox_active
+              ? "SLAM Toolbox"
+              : (persistent_grid_active
+                     ? "Persistent exploration grid"
+                     : "LiDAR reconstruction"),
           IM_COL32(132, 232, 215, 255)},
          {toolbox_active
               ? "scan matching + loop closure + graph optimization"
-              : "estimated-pose endpoint accumulation",
+              : (persistent_grid_active
+                     ? "free/occupied cells retained for the full run"
+                     : "estimated-pose endpoint accumulation"),
           IM_COL32(213, 223, 223, 235)},
          {graph_status, IM_COL32(160, 177, 181, 235)},
          {point_count, IM_COL32(160, 177, 181, 235)}});
@@ -687,6 +700,20 @@ std::string hardware_launch_hint(const UiState& ui_state) {
     cmd << " --pose-fusion "
         << thesis_sim::hardware_localization_policy_cli_name(
                static_cast<HardwareLocalizationPolicy>(ui_state.hardware_localization_policy));
+    if (ui_state.hardware_start_matching_enabled) {
+        cmd << " --start-reference datasets/localization/"
+            << (static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model) ==
+                        VehicleModelKind::TrackedVehicle
+                    ? "tank_validation_start.csv"
+                    : "car_unstructured_hardware_lab_start.csv");
+    } else {
+        cmd << " --no-start-matching";
+    }
+    if (ui_state.hardware_slam_toolbox_enabled && !structured) {
+        cmd << " --slam-bridge-host <pc-ip> --slam-bridge-port 9760";
+    } else {
+        cmd << " --no-slam-toolbox";
+    }
     if (custom_world) {
         cmd << " --world-file <copied-custom-map.thmap>";
     } else if (structured) {
@@ -731,6 +758,7 @@ void clear_hardware_world_sync(UiState* ui_state,
     if (hardware_server != nullptr) {
         hardware_server->clear_pending_world();
         hardware_server->clear_pending_robot_profile();
+        hardware_server->clear_pending_runtime_settings();
     }
     ui_state->hardware_world_sync_pending = false;
     ui_state->hardware_world_sync_ok = false;
@@ -800,6 +828,35 @@ bool queue_hardware_robot_profile(UiState* ui_state,
     ui_state->last_hardware_world_sync_status =
         hardware_server->last_error().empty()
             ? (failure_message != nullptr ? failure_message : "Could not queue the robot profile for Raspberry sync.")
+            : hardware_server->last_error();
+    return false;
+}
+
+bool queue_hardware_runtime_settings(UiState* ui_state,
+                                     LiveViewStreamServer* hardware_server,
+                                     const char* queued_message,
+                                     const char* failure_message) {
+    if (ui_state == nullptr || hardware_server == nullptr) return false;
+    LiveRuntimeSettings settings;
+    settings.start_matching_enabled = ui_state->hardware_start_matching_enabled;
+    settings.slam_toolbox_enabled = ui_state->hardware_slam_toolbox_enabled;
+    settings.revision = ++ui_state->hardware_runtime_settings_revision;
+    if (hardware_server->queue_runtime_settings(settings)) {
+        ui_state->hardware_world_sync_pending = true;
+        ui_state->hardware_world_sync_ok = false;
+        ui_state->last_hardware_world_sync_status =
+            queued_message != nullptr
+                ? queued_message
+                : "Runtime settings queued for Raspberry sync.";
+        return true;
+    }
+    ui_state->hardware_world_sync_pending = false;
+    ui_state->hardware_world_sync_ok = false;
+    ui_state->last_hardware_world_sync_status =
+        hardware_server->last_error().empty()
+            ? (failure_message != nullptr
+                   ? failure_message
+                   : "Could not queue runtime settings.")
             : hardware_server->last_error();
     return false;
 }

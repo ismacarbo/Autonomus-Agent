@@ -58,15 +58,18 @@ bool RealRobotBridge::reconnect_lidar(bool log_failures) {
         }
         lidar_.disconnect();
     }
+    lidar_device_info_.reset();
 
     try {
         lidar_.connect();
+        lidar_device_info_ = lidar_.get_info();
         lidar_.start_scan();
         last_lidar_error_.clear();
         next_lidar_reconnect_time_s_ = 0.0;
         std::cout << "hardware_runner_status=LiDAR connected on " << options_.lidar_port << '\n';
         return true;
     } catch (const LidarError& e) {
+        lidar_device_info_.reset();
         last_lidar_error_ = e.what();
         refresh_lidar_snapshot({});
         if (lidar_.is_connected()) {
@@ -91,7 +94,9 @@ void RealRobotBridge::connect(bool start_lidar_scan) {
         } else {
             try {
                 lidar_.connect();
+                lidar_device_info_ = lidar_.get_info();
             } catch (const LidarError& e) {
+                lidar_device_info_.reset();
                 last_lidar_error_ = e.what();
                 if (lidar_.is_connected()) {
                     lidar_.disconnect();
@@ -114,6 +119,7 @@ void RealRobotBridge::disconnect() {
     if (controller_.is_connected()) {
         controller_.disconnect();
     }
+    lidar_device_info_.reset();
 }
 
 void RealRobotBridge::poll_controller(double timeout_s) {

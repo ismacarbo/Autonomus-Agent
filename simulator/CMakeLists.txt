@@ -223,6 +223,7 @@ target_compile_options(thesis_hardware_planner PRIVATE
 
 target_link_libraries(thesis_hardware_planner PUBLIC
   sabrina_planner
+  thesis_initial_lidar_matcher
   thesis_planner_stack
   thesis_robot_io
   thesis_world
@@ -417,6 +418,29 @@ if(BUILD_TESTING)
   )
 
   add_test(NAME thesis_initial_lidar_matcher_math COMMAND thesis_initial_lidar_matcher_smoke)
+
+  add_executable(thesis_unstructured_exploration_smoke
+    src/tests/integration/unstructured_exploration_smoke_test.cpp
+  )
+
+  target_include_directories(thesis_unstructured_exploration_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
+  target_link_libraries(thesis_unstructured_exploration_smoke PRIVATE
+    thesis_hardware_planner
+    thesis_world
+  )
+
+  add_test(
+    NAME thesis_unstructured_exploration_pipeline
+    COMMAND thesis_unstructured_exploration_smoke
+  )
+
+  add_test(
+    NAME thesis_slam_session_sequence_policy
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/slam_toolbox_bridge/test_sequence_policy.py
+  )
 
   add_test(
     NAME thesis_sim_initial_lidar_matcher_comparison

@@ -100,9 +100,7 @@ int run_gui(const AppOptions& options) {
     slam_bridge.open();
     std::uint64_t slam_sequence = 0;
     int last_slam_sim_step = -1;
-    int last_slam_hardware_step = -1;
     int slam_sim_session_epoch = 1;
-    int slam_hardware_session_epoch = 1;
     bool running = true;
     UiState ui_state;
     sync_ui_state_from_sim(&ui_state, sim);
@@ -130,6 +128,11 @@ int run_gui(const AppOptions& options) {
                 static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model),
                 "Current robot support queued automatically for the newly connected Raspberry runner. Waiting for runner ack.",
                 "Could not auto-queue the robot support profile for the Raspberry runner.");
+            queue_hardware_runtime_settings(
+                &ui_state,
+                &hardware_server,
+                "Current start-matching and SLAM settings queued automatically for the newly connected Raspberry runner.",
+                "Could not auto-queue runtime settings for the Raspberry runner.");
         }
         ui_state.hardware_stream_connected_prev = hardware_stream_connected;
         if (hardware_updates.scene_received && hardware_updates.scene.has_value()) {
@@ -137,6 +140,10 @@ int run_gui(const AppOptions& options) {
             hardware_view.has_scene = true;
             ui_state.hardware_vehicle_model =
                 static_cast<int>(vehicle_model_from_live_name(hardware_view.scene.vehicle_model_name));
+            ui_state.hardware_start_matching_enabled =
+                hardware_view.scene.start_matching_enabled;
+            ui_state.hardware_slam_toolbox_enabled =
+                hardware_view.scene.slam_toolbox_enabled;
             hardware_view.frame = {};
             hardware_view.history.clear();
             hardware_view.lidar_reconstruction.clear();
@@ -186,12 +193,6 @@ int run_gui(const AppOptions& options) {
             ++slam_sim_session_epoch;
             last_slam_sim_step = -1;
         }
-        if (hardware_view.has_scene &&
-            hardware_view.frame.step_count < last_slam_hardware_step) {
-            ++slam_hardware_session_epoch;
-            last_slam_hardware_step = -1;
-        }
-
         if (ui_state.workspace_source == kWorkspaceSourceSimulation &&
             sim.step_count() != last_slam_sim_step &&
             !sim.lidar_hits().empty()) {
@@ -205,20 +206,6 @@ int run_gui(const AppOptions& options) {
                 0.05,
                 std::max(sim.active_lidar_range(), 0.10));
             last_slam_sim_step = sim.step_count();
-        } else if (ui_state.workspace_source != kWorkspaceSourceSimulation &&
-                   hardware_view.has_scene &&
-                   hardware_view.frame.step_count != last_slam_hardware_step &&
-                   !hardware_view.frame.lidar_hits.empty()) {
-            slam_bridge.submit_scan(
-                "hardware_" + std::to_string(slam_hardware_session_epoch),
-                ++slam_sequence,
-                hardware_view.frame.sim_time,
-                hardware_view.frame.navigation_position,
-                hardware_view.frame.navigation_yaw,
-                hardware_view.frame.lidar_hits,
-                0.05,
-                std::max(hardware_view.scene.active_lidar_range, 0.10));
-            last_slam_hardware_step = hardware_view.frame.step_count;
         }
         slam_bridge.poll();
 
@@ -234,12 +221,40 @@ int run_gui(const AppOptions& options) {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
+        SlamToolboxSnapshot displayed_slam_snapshot = slam_bridge.snapshot();
+        if (ui_state.workspace_source != kWorkspaceSourceSimulation &&
+            hardware_view.has_scene) {
+            displayed_slam_snapshot.session_id = hardware_view.frame.slam_session_id;
+            displayed_slam_snapshot.connected =
+                hardware_view.frame.slam_connected &&
+                hardware_view.frame.map_source ==
+                    thesis_sim::ExplorationMapSource::SlamToolbox;
+            displayed_slam_snapshot.pose_valid = hardware_view.frame.slam_pose_valid;
+            displayed_slam_snapshot.corrected_position = hardware_view.frame.navigation_position;
+            displayed_slam_snapshot.corrected_yaw = hardware_view.frame.navigation_yaw;
+            displayed_slam_snapshot.map_updates = hardware_view.frame.slam_map_updates;
+            displayed_slam_snapshot.graph_nodes = hardware_view.frame.slam_graph_nodes;
+            displayed_slam_snapshot.loop_edges = hardware_view.frame.slam_loop_edges;
+            displayed_slam_snapshot.map_resolution_m = hardware_view.frame.slam_map_resolution_m;
+            displayed_slam_snapshot.free_points = hardware_view.frame.global_free_points;
+            displayed_slam_snapshot.occupied_points = hardware_view.frame.global_occupied_points;
+            displayed_slam_snapshot.reset_reason = hardware_view.frame.slam_reset_reason;
+            displayed_slam_snapshot.status = hardware_view.frame.slam_status;
+            if (!displayed_slam_snapshot.connected &&
+                hardware_view.frame.map_source ==
+                    thesis_sim::ExplorationMapSource::LocalPersistentGrid) {
+                displayed_slam_snapshot.map_resolution_m =
+                    hardware_view.frame.occupancy_cell_size_m;
+                displayed_slam_snapshot.status = "persistent_local_grid";
+            }
+        }
+
         render_workspace(
             sim,
             &hardware_view,
             &ui_state,
             &hardware_server,
-            &slam_bridge.snapshot());
+            &displayed_slam_snapshot);
 
         ImGui::Render();
         SDL_SetRenderDrawColor(renderer, 9, 12, 15, 255);

@@ -17,6 +17,8 @@ from slam_toolbox.srv import Reset
 from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
+from sequence_policy import classify_packet
+
 
 MIN_SLAM_RETURNS = 8
 
@@ -73,6 +75,7 @@ class UdpSlamBridge(Node):
         self.last_sequence = -1
         self.reset_future = None
         self.pending_reset_packet: ScanPacket | None = None
+        self.last_reset_reason = "startup"
         self.create_timer(0.01, self.poll_udp)
         self.get_logger().info("UDP bridge listening on 0.0.0.0:9760")
 
@@ -133,12 +136,14 @@ class UdpSlamBridge(Node):
             packet = self.parse_packet(raw, source)
             if packet is None:
                 continue
-            sequence_restarted = (
-                packet.session == self.active_session and
-                self.last_sequence >= 0 and
-                packet.sequence <= self.last_sequence
+            sequence_action = classify_packet(
+                self.active_session,
+                self.last_sequence,
+                packet.session,
+                packet.sequence,
             )
-            if packet.session != self.active_session or sequence_restarted:
+            if sequence_action == "new_session":
+                self.last_reset_reason = "session_changed"
                 self.active_session = packet.session
                 self.last_sequence = -1
                 self.map_updates = 0
@@ -148,6 +153,12 @@ class UdpSlamBridge(Node):
                 self.latest_corrected_pose = None
                 self.pending_reset_packet = packet
                 self.begin_reset_if_ready()
+                continue
+            # UDP may duplicate or reorder datagrams. A stale sequence is not
+            # a mapping restart and must never erase the pose graph. The C++
+            # runner gives every process/run a unique session ID, so an actual
+            # restart always arrives through the session-change branch above.
+            if sequence_action == "stale":
                 continue
             self.last_sequence = packet.sequence
             if self.pending_reset_packet is not None:
@@ -330,7 +341,8 @@ class UdpSlamBridge(Node):
             f"MAP|{packet.session}|{packet.sequence}|{int(pose_valid)}|"
             f"{pose_x:.9f}|{pose_y:.9f}|{pose_yaw:.9f}|{self.map_updates}|"
             f"{self.graph_nodes}|{self.loop_edges}|{resolution:.9f}|"
-            f"{origin_x:.9f}|{origin_y:.9f}|{width}|{height}|{occupied}|{free}"
+            f"{origin_x:.9f}|{origin_y:.9f}|{width}|{height}|{occupied}|{free}|"
+            f"{self.last_reset_reason}"
         ).encode("ascii")
         # Small thesis arenas fit in one datagram. For a larger map retain all
         # occupied cells and progressively thin only the free-space display
@@ -343,7 +355,8 @@ class UdpSlamBridge(Node):
                 f"MAP|{packet.session}|{packet.sequence}|{int(pose_valid)}|"
                 f"{pose_x:.9f}|{pose_y:.9f}|{pose_yaw:.9f}|{self.map_updates}|"
                 f"{self.graph_nodes}|{self.loop_edges}|{resolution:.9f}|"
-                f"{origin_x:.9f}|{origin_y:.9f}|{width}|{height}|{occupied}|{free}"
+                f"{origin_x:.9f}|{origin_y:.9f}|{width}|{height}|{occupied}|{free}|"
+                f"{self.last_reset_reason}"
             ).encode("ascii")
         if len(response) <= 65507:
             self.sock.sendto(response, packet.source)

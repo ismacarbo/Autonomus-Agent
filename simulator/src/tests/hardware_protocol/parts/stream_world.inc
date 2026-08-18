@@ -221,7 +221,7 @@ LiveFrameSnapshot make_smoke_frame(double sim_time,
     frame.navigation_speed = estimate.speed;
     frame.navigation_accel = estimate.accel;
     frame.trail = offset_trail_for_stream(trail, offset, 1600);
-    frame.slam_points = offset_points_for_stream(slam_points, offset);
+    frame.global_occupied_points = offset_points_for_stream(slam_points, offset);
     frame.lidar_hits = offset_hits_for_stream(current_scan_hits, offset);
     frame.gates.reserve(stream_world.gates().size());
     for (const auto& gate : stream_world.gates()) {
@@ -259,4 +259,3 @@ LiveFrameSnapshot make_smoke_frame(double sim_time,
     frame.latest_sample = sample;
     return frame;
 }
-

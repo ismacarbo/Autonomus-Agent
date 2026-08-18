@@ -11,6 +11,8 @@
 
 #include "action_selection.h"
 #include "mvc/controller/hardware_io/real_robot_bridge.h"
+#include "mvc/controller/slam/slam_toolbox_bridge.h"
+#include "mvc/model/navigation/initial_lidar_matcher.h"
 #include "mvc/model/navigation/mpc_path_follower.h"
 #include "mvc/model/navigation/state_estimator_ekf.h"
 #include "mvc/model/navigation/vehicle_dynamics.h"
@@ -143,8 +145,86 @@ enum class HardwareLocalizationPolicy {
     LidarPoseCorrection,
 };
 
+enum class ExplorationMapSource {
+    LocalPersistentGrid = 0,
+    SlamToolbox,
+};
+
+enum class UnstructuredExplorationState {
+    Disabled = 0,
+    StartMatching,
+    InitialScan,
+    ExploringFrontier,
+    GateLocked,
+    TrackingGateClothoid,
+    VerifyingGateCrossing,
+    Hold,
+    Complete,
+};
+
+enum class HardwareControlSource {
+    Hold = 0,
+    FrontierMpc,
+    GateMpc,
+    Recovery,
+    StructuredMpc,
+    SafetyStop,
+};
+
+enum class NavigationTargetKind {
+    None = 0,
+    ExplorationFrontier,
+    PhysicalGate,
+};
+
+const char* exploration_map_source_name(ExplorationMapSource source);
+const char* unstructured_exploration_state_name(UnstructuredExplorationState state);
+const char* hardware_control_source_name(HardwareControlSource source);
+
 const char* hardware_localization_policy_name(HardwareLocalizationPolicy policy);
 const char* hardware_localization_policy_cli_name(HardwareLocalizationPolicy policy);
+
+struct InitialStartMatchingConfig {
+    bool enabled = false;
+    std::string reference_path;
+    int scans_per_confirmation = 2;
+    int required_confirmations = 3;
+    int minimum_points_per_scan = 60;
+    mvc::model::InitialLidarMatcherConfig matcher{};
+    mvc::model::InitialLidarConfirmationConfig confirmation{};
+};
+
+struct FrontierExplorationConfig {
+    bool enabled = true;
+    double grid_resolution_m = 0.04;
+    double obstacle_inflation_m = 0.105;
+    double target_reached_radius_m = 0.10;
+    double path_lookahead_m = 0.30;
+    double minimum_frontier_distance_m = 0.14;
+    double maximum_frontier_distance_m = 1.20;
+    int replan_interval_steps = 5;
+};
+
+struct StartMatchingStatus {
+    bool enabled = false;
+    bool reference_loaded = false;
+    bool complete = false;
+    bool accepted = false;
+    int collected_scans = 0;
+    int completed_matches = 0;
+    Vec2 position_offset_m{};
+    double yaw_offset_rad = 0.0;
+    double confidence = 0.0;
+    std::string status = "disabled";
+};
+
+struct ExplorationOccupancyCell {
+    Vec2 center{};
+    bool free = false;
+    bool occupied = false;
+    int observations = 0;
+    int last_observed_step = -1;
+};
 
 struct PerceptionOccupancyCell {
     Vec2 center;
@@ -180,6 +260,8 @@ struct HardwarePlannerConfig {
     bool use_encoder_odometry = true;
     bool planner_safety_stop_enabled = false;
     bool mapping_lidar_enabled = false;
+    bool slam_toolbox_enabled = true;
+    bool slam_pose_feedback_enabled = false;
     // Opt-in until firmware 1.3 (car) / 1.11 (tank) has been flashed.
     bool use_mcu_velocity_closed_loop = false;
     // Electrical controller channel order. Encoder/localization sides remain physical.
@@ -195,6 +277,8 @@ struct HardwarePlannerConfig {
     MotorPwmMapperConfig pwm{};
     LidarLocalizationConfig localization{};
     GapExtractionConfig gap_extraction{};
+    InitialStartMatchingConfig start_matching{};
+    FrontierExplorationConfig frontier_exploration{};
 };
 
 struct HardwarePlannerEstimate {
@@ -310,6 +394,24 @@ struct HardwareTelemetrySample {
     double left_wheel_stall_cycles = 0.0;
     double right_wheel_stall_cycles = 0.0;
     double encoder_slip_guard_active = 0.0;
+    double exploration_map_source = 0.0;
+    double exploration_state = 0.0;
+    double control_source = 0.0;
+    double selected_frontier_valid = 0.0;
+    double selected_frontier_x = 0.0;
+    double selected_frontier_y = 0.0;
+    double global_free_cells = 0.0;
+    double global_occupied_cells = 0.0;
+    double start_matching_enabled = 0.0;
+    double start_matching_complete = 0.0;
+    double start_matching_accepted = 0.0;
+    double start_matching_confidence = 0.0;
+    double slam_toolbox_enabled = 0.0;
+    double slam_toolbox_connected = 0.0;
+    double slam_map_updates = 0.0;
+    double slam_graph_nodes = 0.0;
+    double slam_loop_edges = 0.0;
+    double slam_map_age_s = -1.0;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -330,6 +432,19 @@ struct HardwarePlannerDiagnostics {
     bool lidar_scan_reused = false;
     int stale_controller_drops = 0;
     int stale_lidar_drops = 0;
+    ExplorationMapSource map_source = ExplorationMapSource::LocalPersistentGrid;
+    UnstructuredExplorationState exploration_state = UnstructuredExplorationState::Disabled;
+    HardwareControlSource control_source = HardwareControlSource::Hold;
+    bool selected_frontier_valid = false;
+    Vec2 selected_frontier{};
+    int global_free_cells = 0;
+    int global_occupied_cells = 0;
+    bool slam_enabled = true;
+    bool slam_connected = false;
+    double slam_map_age_s = -1.0;
+    std::string slam_session_id;
+    std::string slam_reset_reason;
+    std::string reference_invalidation_reason;
 };
 
 struct HardwarePlannerReport {
@@ -392,6 +507,10 @@ class HardwarePlannerRunner {
     const std::optional<MpcCommand>& last_mpc_command() const { return last_mpc_command_; }
     const std::vector<LidarHit>& lidar_hits() const { return lidar_hits_; }
     const std::vector<Vec2>& lidar_map_points() const { return lidar_map_points_; }
+    const std::vector<Vec2>& global_free_points() const { return global_free_points_; }
+    const std::vector<Vec2>& global_occupied_points() const { return global_occupied_points_; }
+    const SlamToolboxSnapshot& slam_toolbox_snapshot() const { return slam_toolbox_snapshot_; }
+    const StartMatchingStatus& start_matching_status() const { return start_matching_status_; }
     void set_external_pose_reference(const ExternalPoseReference& reference,
                                      double timeout_s = 0.25);
     const ExternalPoseReference& external_pose_reference() const {
@@ -407,6 +526,7 @@ class HardwarePlannerRunner {
     const std::vector<int>& visible_gate_indices() const { return visible_gate_indices_; }
     const HardwarePlannerDiagnostics& diagnostics() const { return diagnostics_; }
     bool apply_slam_pose_correction(const Vec2& position, double yaw);
+    void apply_slam_toolbox_snapshot(const SlamToolboxSnapshot& snapshot);
     RealRobotBridge& bridge() { return bridge_; }
     const RealRobotBridge& bridge() const { return bridge_; }
 
@@ -488,6 +608,15 @@ class HardwarePlannerRunner {
     double locked_gap_lateral_offset(const Vec2& position) const;
     void publish_locked_gap_goal();
     bool startup_scan_active() const;
+    void reset_start_matching();
+    void update_start_matching(const std::vector<RPLidarA1::ScanPoint>& scan);
+    bool motion_permitted_by_start_match() const;
+    void update_global_exploration_map(const std::vector<RPLidarA1::ScanPoint>& scan);
+    void rebuild_global_map_vectors();
+    bool select_exploration_frontier();
+    bool update_exploration_target();
+    void clear_exploration_target(const std::string& reason = {});
+    void set_exploration_target(const Vec2& target, double heading);
 
     void update_planner_references(double dt);
     void update_selected_trajectory();
@@ -534,6 +663,24 @@ class HardwarePlannerRunner {
     std::vector<GateSpec> gate_specs_;
     std::vector<LidarHit> lidar_hits_;
     std::vector<Vec2> lidar_map_points_;
+    std::unordered_map<std::uint64_t, ExplorationOccupancyCell> exploration_cells_;
+    std::vector<Vec2> global_free_points_;
+    std::vector<Vec2> global_occupied_points_;
+    std::vector<Vec2> exploration_path_;
+    std::vector<Vec2> visited_frontiers_;
+    std::optional<Vec2> selected_frontier_;
+    int last_frontier_plan_step_ = -1;
+    ExplorationMapSource exploration_map_source_ = ExplorationMapSource::LocalPersistentGrid;
+    NavigationTargetKind navigation_target_kind_ = NavigationTargetKind::None;
+    UnstructuredExplorationState exploration_state_ = UnstructuredExplorationState::Disabled;
+    HardwareControlSource control_source_ = HardwareControlSource::Hold;
+    SlamToolboxSnapshot slam_toolbox_snapshot_{};
+    double slam_snapshot_received_sim_time_s_ = -1.0;
+    StartMatchingStatus start_matching_status_{};
+    mvc::model::InitialLidarReferenceCloud start_reference_{};
+    std::vector<Vec2> start_match_group_points_;
+    std::vector<mvc::model::InitialLidarMatchResult> start_match_results_;
+    int start_match_group_scan_count_ = 0;
     ExternalPoseReference external_pose_reference_{};
     double external_pose_received_sim_time_s_ = -1.0;
     double external_pose_timeout_s_ = 0.25;

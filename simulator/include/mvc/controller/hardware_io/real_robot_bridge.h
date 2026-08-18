@@ -44,6 +44,9 @@ class RealRobotBridge {
     bool controller_connected() const { return controller_.is_connected(); }
     bool lidar_connected() const { return lidar_.is_connected(); }
     const std::string& last_lidar_error() const { return last_lidar_error_; }
+    const std::optional<RPLidarA1::DeviceInfo>& lidar_device_info() const {
+        return lidar_device_info_;
+    }
 
     void poll_controller(double timeout_s = 0.0);
     std::vector<RPLidarA1::ScanPoint> read_lidar_scan(int min_points = 60);
@@ -93,6 +96,7 @@ class RealRobotBridge {
     Options options_;
     RSPSerialBridge controller_;
     RPLidarA1 lidar_;
+    std::optional<RPLidarA1::DeviceInfo> lidar_device_info_;
     std::string last_lidar_error_;
     double next_lidar_reconnect_time_s_ = 0.0;
     std::vector<RPLidarA1::ScanPoint> last_good_lidar_scan_;

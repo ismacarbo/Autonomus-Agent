@@ -25,6 +25,28 @@ bool deserialize_world_blob(const std::vector<std::uint8_t>& data, WorldMap* wor
     return offset == data.size();
 }
 
+std::vector<std::uint8_t> serialize_runtime_settings_blob(
+    const LiveRuntimeSettings& settings) {
+    return serialize_runtime_settings(settings);
+}
+
+bool deserialize_runtime_settings_blob(
+    const std::vector<std::uint8_t>& data,
+    LiveRuntimeSettings* settings) {
+    return deserialize_runtime_settings(data, settings);
+}
+
+std::vector<std::uint8_t> serialize_live_frame_blob(
+    const LiveFrameSnapshot& frame) {
+    return serialize_frame(frame);
+}
+
+bool deserialize_live_frame_blob(
+    const std::vector<std::uint8_t>& data,
+    LiveFrameSnapshot* frame) {
+    return deserialize_frame(data, frame);
+}
+
 LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) {
     const StructuredDisplayRemap remap = make_structured_display_remap(runner.world());
     const bool lidar_enabled = runner.lidar_enabled_for_current_mode();
@@ -63,6 +85,8 @@ LiveSceneSnapshot make_live_scene_snapshot(const HardwarePlannerRunner& runner) 
     scene.calibration_profile_hash = runner.config().calibration_profile_hash;
     scene.wheel_radius_calibrated = runner.config().wheel_radius_calibrated;
     scene.mcu_velocity_closed_loop = runner.config().use_mcu_velocity_closed_loop;
+    scene.start_matching_enabled = runner.config().start_matching.enabled;
+    scene.slam_toolbox_enabled = runner.config().slam_toolbox_enabled;
     scene.active_lidar_beams = lidar_enabled ? 360 : 0;
     scene.active_lidar_fov_rad = lidar_enabled ? kTwoPi : 0.0;
     scene.active_lidar_range = lidar_enabled ? runner.config().localization.max_range_m : 0.0;
@@ -98,9 +122,35 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     frame.candidate_gates = runner.diagnostics().candidate_gates;
     frame.accumulated_lidar_points = runner.diagnostics().accumulated_lidar_points;
     frame.no_motion_command_cycles = runner.diagnostics().no_motion_command_cycles;
-    frame.chosen_gate_index = runner.chosen_gate_index();
+    frame.chosen_gate_index =
+        runner.diagnostics().control_source == HardwareControlSource::FrontierMpc
+            ? -1
+            : runner.chosen_gate_index();
     frame.passed_gates = runner.passed_gate_count();
     frame.occupancy_cell_size_m = runner.config().gap_extraction.map_point_resolution_m;
+    frame.map_source = runner.diagnostics().map_source;
+    frame.exploration_state = runner.diagnostics().exploration_state;
+    frame.control_source = runner.diagnostics().control_source;
+    frame.selected_frontier_valid = runner.diagnostics().selected_frontier_valid;
+    frame.selected_frontier = runner.diagnostics().selected_frontier;
+    frame.start_matching_enabled = runner.start_matching_status().enabled;
+    frame.start_matching_complete = runner.start_matching_status().complete;
+    frame.start_matching_accepted = runner.start_matching_status().accepted;
+    frame.start_matching_confidence = runner.start_matching_status().confidence;
+    frame.start_matching_status = runner.start_matching_status().status;
+    frame.slam_enabled = runner.config().slam_toolbox_enabled;
+    frame.slam_connected = runner.slam_toolbox_snapshot().connected;
+    frame.slam_pose_valid = runner.slam_toolbox_snapshot().pose_valid;
+    frame.slam_map_updates = runner.slam_toolbox_snapshot().map_updates;
+    frame.slam_graph_nodes = runner.slam_toolbox_snapshot().graph_nodes;
+    frame.slam_loop_edges = runner.slam_toolbox_snapshot().loop_edges;
+    frame.slam_map_resolution_m = runner.slam_toolbox_snapshot().map_resolution_m;
+    frame.slam_map_age_s = runner.diagnostics().slam_map_age_s;
+    frame.slam_session_id = runner.slam_toolbox_snapshot().session_id;
+    frame.slam_reset_reason = runner.slam_toolbox_snapshot().reset_reason;
+    frame.slam_status = runner.slam_toolbox_snapshot().status;
+    frame.reference_invalidation_reason =
+        runner.diagnostics().reference_invalidation_reason;
     frame.navigation_position = runner.estimate().position;
     frame.navigation_yaw = runner.estimate().yaw;
     frame.navigation_yaw_rate = runner.estimate().yaw_rate;
@@ -110,7 +160,9 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     frame.visible_gate_indices = runner.visible_gate_indices();
     frame.trail = runner.trail();
     frame.planned_trajectory = runner.planned_trajectory();
-    frame.slam_points = runner.lidar_map_points();
+    frame.local_safety_occupied_points = runner.lidar_map_points();
+    frame.global_free_points = runner.global_free_points();
+    frame.global_occupied_points = runner.global_occupied_points();
     frame.lidar_hits = runner.lidar_hits();
 
     const HardwarePlannerEstimate& estimate = runner.estimate();
@@ -148,6 +200,9 @@ LiveFrameSnapshot make_live_frame_snapshot(const HardwarePlannerRunner& runner) 
     const auto& planner_gates = runner.gates();
     frame.gates.reserve(runtime_gate_specs.size());
     for (std::size_t i = 0; i < runtime_gate_specs.size(); ++i) {
+        if (runtime_gate_specs[i].name == "exploration_frontier") {
+            continue;
+        }
         LiveGateFrame gate_frame;
         gate_frame.spec = runtime_gate_specs[i];
         if (i < planner_gates.size()) {

@@ -659,6 +659,36 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             ImGui::TextWrapped("Tracked support uses the same MPC path follower; its speed and yaw-rate targets are converted into differential track velocities.");
         }
 
+        bool start_matching_enabled = ui_state->hardware_start_matching_enabled;
+        if (ImGui::Checkbox("Initial LiDAR start matching", &start_matching_enabled)) {
+            ui_state->hardware_start_matching_enabled = start_matching_enabled;
+            queue_hardware_runtime_settings(
+                ui_state,
+                hardware_server,
+                start_matching_enabled
+                    ? "Start matching enabled and queued; motors remain inhibited until the match is accepted."
+                    : "Start matching disabled for debug and queued.",
+                "Could not queue the start-matching setting.");
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Default ON. Disable only for debug; the runner is reset safely when this changes.");
+        }
+
+        bool slam_toolbox_enabled = ui_state->hardware_slam_toolbox_enabled;
+        if (ImGui::Checkbox("SLAM Toolbox", &slam_toolbox_enabled)) {
+            ui_state->hardware_slam_toolbox_enabled = slam_toolbox_enabled;
+            queue_hardware_runtime_settings(
+                ui_state,
+                hardware_server,
+                slam_toolbox_enabled
+                    ? "SLAM Toolbox enabled and queued for the runner."
+                    : "SLAM Toolbox disabled; exploration will use the persistent local occupancy grid.",
+                "Could not queue the SLAM Toolbox setting.");
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Default ON. The runner is the only hardware SLAM client; the GUI only renders its map.");
+        }
+
         const char* environment_items[] = {
             thesis_sim::environment_mode_name(EnvironmentMode::UnstructuredGates),
             thesis_sim::environment_mode_name(EnvironmentMode::StructuredRoad),
@@ -1020,7 +1050,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
         ImGui::Text("History samples = %d", static_cast<int>(hardware.history.size()));
         ImGui::Text("Current LiDAR hits = %d   map points = %d",
                     static_cast<int>(hardware.frame.lidar_hits.size()),
-                    static_cast<int>(hardware.frame.slam_points.size()));
+                    static_cast<int>(hardware.frame.global_occupied_points.size()));
         ImGui::Text("Reconstruction points = %d", static_cast<int>(hardware.lidar_reconstruction.size()));
         if (!ui_state->last_hardware_report_path.empty()) {
             ImGui::TextWrapped("JSON: %s", ui_state->last_hardware_report_path.c_str());
@@ -1329,6 +1359,50 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
                     hardware.frame.planner_has_reference ? "yes" : "no",
                     hardware.frame.dynamic_gap_gates ? "yes" : "no",
                     hardware.frame.stall_boost_active ? "yes" : "no");
+        ImGui::Text("pipeline = %s   control = %s",
+                    thesis_sim::unstructured_exploration_state_name(
+                        hardware.frame.exploration_state),
+                    thesis_sim::hardware_control_source_name(
+                        hardware.frame.control_source));
+        ImGui::Text("map = %s   free %d   occupied %d",
+                    thesis_sim::exploration_map_source_name(
+                        hardware.frame.map_source),
+                    static_cast<int>(hardware.frame.global_free_points.size()),
+                    static_cast<int>(hardware.frame.global_occupied_points.size()));
+        if (hardware.frame.selected_frontier_valid) {
+            ImGui::Text("frontier = (%.2f, %.2f) m",
+                        hardware.frame.selected_frontier.x,
+                        hardware.frame.selected_frontier.y);
+        }
+        if (hardware.frame.start_matching_enabled) {
+            ImGui::Text("start match = %s   confidence %.2f",
+                        hardware.frame.start_matching_accepted
+                            ? "accepted"
+                            : (hardware.frame.start_matching_complete
+                                   ? "rejected"
+                                   : "waiting"),
+                        hardware.frame.start_matching_confidence);
+            ImGui::TextWrapped("start match status: %s",
+                               hardware.frame.start_matching_status.c_str());
+        } else {
+            ImGui::Text("start match = disabled for debug");
+        }
+        ImGui::Text("SLAM = %s/%s   updates %d   nodes %d   loops %d   age %.2f s",
+                    hardware.frame.slam_enabled ? "enabled" : "disabled",
+                    hardware.frame.slam_connected ? "connected" : "fallback",
+                    hardware.frame.slam_map_updates,
+                    hardware.frame.slam_graph_nodes,
+                    hardware.frame.slam_loop_edges,
+                    hardware.frame.slam_map_age_s);
+        if (!hardware.frame.slam_reset_reason.empty()) {
+            ImGui::TextWrapped("SLAM reset: %s (%s)",
+                               hardware.frame.slam_reset_reason.c_str(),
+                               hardware.frame.slam_session_id.c_str());
+        }
+        if (!hardware.frame.reference_invalidation_reason.empty()) {
+            ImGui::TextWrapped("reference invalidated: %s",
+                               hardware.frame.reference_invalidation_reason.c_str());
+        }
         ImGui::Text("gates = %d candidates   chosen distance = %.2f m",
                     hardware.frame.candidate_gates,
                     hardware.frame.chosen_gate_distance);

@@ -178,6 +178,17 @@ bool LiveViewStreamClient::parse_next_packet(PollResult* result) {
         result->robot_profile = vehicle_model;
         return true;
     }
+    if (type == kPacketRuntimeSettings) {
+        LiveRuntimeSettings settings;
+        if (!deserialize_runtime_settings(payload, &settings)) {
+            last_error_ = "failed to decode live runtime settings command";
+            disconnect();
+            return false;
+        }
+        result->runtime_settings_received = true;
+        result->runtime_settings = settings;
+        return true;
+    }
 
     last_error_ = "unknown live stream packet type";
     disconnect();
@@ -195,4 +206,3 @@ LiveViewStreamClient::PollResult LiveViewStreamClient::poll() {
     }
     return result;
 }
-

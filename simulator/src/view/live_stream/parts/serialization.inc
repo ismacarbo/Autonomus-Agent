@@ -22,7 +22,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 11U;
+constexpr std::uint16_t kPacketVersion = 12U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 2U;
 constexpr std::uint16_t kPacketHello = 0U;
@@ -31,6 +31,7 @@ constexpr std::uint16_t kPacketFrame = 2U;
 constexpr std::uint16_t kPacketWorld = 3U;
 constexpr std::uint16_t kPacketControlAck = 4U;
 constexpr std::uint16_t kPacketRobotProfile = 5U;
+constexpr std::uint16_t kPacketRuntimeSettings = 6U;
 constexpr std::size_t kPacketHeaderSize = sizeof(std::uint32_t) + sizeof(std::uint16_t) + sizeof(std::uint16_t) + sizeof(std::uint32_t);
 constexpr std::uint32_t kMaxPacketBytes = 32U * 1024U * 1024U;
 constexpr std::uint32_t kMaxVectorElements = 200000U;
@@ -518,6 +519,24 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.left_wheel_stall_cycles);
     write_pod(out, sample.right_wheel_stall_cycles);
     write_pod(out, sample.encoder_slip_guard_active);
+    write_pod(out, sample.exploration_map_source);
+    write_pod(out, sample.exploration_state);
+    write_pod(out, sample.control_source);
+    write_pod(out, sample.selected_frontier_valid);
+    write_pod(out, sample.selected_frontier_x);
+    write_pod(out, sample.selected_frontier_y);
+    write_pod(out, sample.global_free_cells);
+    write_pod(out, sample.global_occupied_cells);
+    write_pod(out, sample.start_matching_enabled);
+    write_pod(out, sample.start_matching_complete);
+    write_pod(out, sample.start_matching_accepted);
+    write_pod(out, sample.start_matching_confidence);
+    write_pod(out, sample.slam_toolbox_enabled);
+    write_pod(out, sample.slam_toolbox_connected);
+    write_pod(out, sample.slam_map_updates);
+    write_pod(out, sample.slam_graph_nodes);
+    write_pod(out, sample.slam_loop_edges);
+    write_pod(out, sample.slam_map_age_s);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
@@ -602,7 +621,25 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->stall_boost_active) &&
            read_pod(data, offset, &sample->left_wheel_stall_cycles) &&
            read_pod(data, offset, &sample->right_wheel_stall_cycles) &&
-           read_pod(data, offset, &sample->encoder_slip_guard_active);
+           read_pod(data, offset, &sample->encoder_slip_guard_active) &&
+           read_pod(data, offset, &sample->exploration_map_source) &&
+           read_pod(data, offset, &sample->exploration_state) &&
+           read_pod(data, offset, &sample->control_source) &&
+           read_pod(data, offset, &sample->selected_frontier_valid) &&
+           read_pod(data, offset, &sample->selected_frontier_x) &&
+           read_pod(data, offset, &sample->selected_frontier_y) &&
+           read_pod(data, offset, &sample->global_free_cells) &&
+           read_pod(data, offset, &sample->global_occupied_cells) &&
+           read_pod(data, offset, &sample->start_matching_enabled) &&
+           read_pod(data, offset, &sample->start_matching_complete) &&
+           read_pod(data, offset, &sample->start_matching_accepted) &&
+           read_pod(data, offset, &sample->start_matching_confidence) &&
+           read_pod(data, offset, &sample->slam_toolbox_enabled) &&
+           read_pod(data, offset, &sample->slam_toolbox_connected) &&
+           read_pod(data, offset, &sample->slam_map_updates) &&
+           read_pod(data, offset, &sample->slam_graph_nodes) &&
+           read_pod(data, offset, &sample->slam_loop_edges) &&
+           read_pod(data, offset, &sample->slam_map_age_s);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {
@@ -624,6 +661,8 @@ std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {
     write_string(&out, scene.calibration_profile_hash);
     write_bool(&out, scene.wheel_radius_calibrated);
     write_bool(&out, scene.mcu_velocity_closed_loop);
+    write_bool(&out, scene.start_matching_enabled);
+    write_bool(&out, scene.slam_toolbox_enabled);
     write_pod(&out, scene.active_lidar_beams);
     write_pod(&out, scene.active_lidar_fov_rad);
     write_pod(&out, scene.active_lidar_range);
@@ -652,6 +691,8 @@ bool deserialize_scene(const std::vector<std::uint8_t>& data, LiveSceneSnapshot*
         !read_string(data, &offset, &parsed.calibration_profile_hash) ||
         !read_bool(data, &offset, &parsed.wheel_radius_calibrated) ||
         !read_bool(data, &offset, &parsed.mcu_velocity_closed_loop) ||
+        !read_bool(data, &offset, &parsed.start_matching_enabled) ||
+        !read_bool(data, &offset, &parsed.slam_toolbox_enabled) ||
         !read_pod(data, &offset, &parsed.active_lidar_beams) ||
         !read_pod(data, &offset, &parsed.active_lidar_fov_rad) ||
         !read_pod(data, &offset, &parsed.active_lidar_range) ||
@@ -691,6 +732,28 @@ std::vector<std::uint8_t> serialize_frame(const LiveFrameSnapshot& frame) {
     write_pod(&out, frame.no_motion_command_cycles);
     write_pod(&out, frame.chosen_gate_index);
     write_pod(&out, frame.passed_gates);
+    write_pod<std::int32_t>(&out, static_cast<std::int32_t>(frame.map_source));
+    write_pod<std::int32_t>(&out, static_cast<std::int32_t>(frame.exploration_state));
+    write_pod<std::int32_t>(&out, static_cast<std::int32_t>(frame.control_source));
+    write_bool(&out, frame.selected_frontier_valid);
+    write_vec2(&out, frame.selected_frontier);
+    write_bool(&out, frame.start_matching_enabled);
+    write_bool(&out, frame.start_matching_complete);
+    write_bool(&out, frame.start_matching_accepted);
+    write_pod(&out, frame.start_matching_confidence);
+    write_string(&out, frame.start_matching_status);
+    write_bool(&out, frame.slam_enabled);
+    write_bool(&out, frame.slam_connected);
+    write_bool(&out, frame.slam_pose_valid);
+    write_pod(&out, frame.slam_map_updates);
+    write_pod(&out, frame.slam_graph_nodes);
+    write_pod(&out, frame.slam_loop_edges);
+    write_pod(&out, frame.slam_map_resolution_m);
+    write_pod(&out, frame.slam_map_age_s);
+    write_string(&out, frame.slam_session_id);
+    write_string(&out, frame.slam_reset_reason);
+    write_string(&out, frame.slam_status);
+    write_string(&out, frame.reference_invalidation_reason);
     write_vehicle_state(&out, frame.vehicle);
     write_vec2(&out, frame.navigation_position);
     write_pod(&out, frame.navigation_yaw);
@@ -704,7 +767,9 @@ std::vector<std::uint8_t> serialize_frame(const LiveFrameSnapshot& frame) {
     });
     write_vector(&out, frame.trail, write_vec2);
     write_vector(&out, frame.planned_trajectory, write_vec2);
-    write_vector(&out, frame.slam_points, write_vec2);
+    write_vector(&out, frame.local_safety_occupied_points, write_vec2);
+    write_vector(&out, frame.global_free_points, write_vec2);
+    write_vector(&out, frame.global_occupied_points, write_vec2);
     write_vector(&out, frame.lidar_hits, write_lidar_hit);
     write_bool(&out, frame.has_last_mpc_command);
     if (frame.has_last_mpc_command) {
@@ -723,6 +788,9 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
     }
     std::size_t offset = 0;
     LiveFrameSnapshot parsed;
+    std::int32_t map_source = 0;
+    std::int32_t exploration_state = 0;
+    std::int32_t control_source = 0;
     if (!read_pod(data, &offset, &parsed.sim_time) ||
         !read_pod(data, &offset, &parsed.step_count) ||
         !read_bool(data, &offset, &parsed.connected) ||
@@ -749,6 +817,28 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
         !read_pod(data, &offset, &parsed.no_motion_command_cycles) ||
         !read_pod(data, &offset, &parsed.chosen_gate_index) ||
         !read_pod(data, &offset, &parsed.passed_gates) ||
+        !read_pod(data, &offset, &map_source) ||
+        !read_pod(data, &offset, &exploration_state) ||
+        !read_pod(data, &offset, &control_source) ||
+        !read_bool(data, &offset, &parsed.selected_frontier_valid) ||
+        !read_vec2(data, &offset, &parsed.selected_frontier) ||
+        !read_bool(data, &offset, &parsed.start_matching_enabled) ||
+        !read_bool(data, &offset, &parsed.start_matching_complete) ||
+        !read_bool(data, &offset, &parsed.start_matching_accepted) ||
+        !read_pod(data, &offset, &parsed.start_matching_confidence) ||
+        !read_string(data, &offset, &parsed.start_matching_status) ||
+        !read_bool(data, &offset, &parsed.slam_enabled) ||
+        !read_bool(data, &offset, &parsed.slam_connected) ||
+        !read_bool(data, &offset, &parsed.slam_pose_valid) ||
+        !read_pod(data, &offset, &parsed.slam_map_updates) ||
+        !read_pod(data, &offset, &parsed.slam_graph_nodes) ||
+        !read_pod(data, &offset, &parsed.slam_loop_edges) ||
+        !read_pod(data, &offset, &parsed.slam_map_resolution_m) ||
+        !read_pod(data, &offset, &parsed.slam_map_age_s) ||
+        !read_string(data, &offset, &parsed.slam_session_id) ||
+        !read_string(data, &offset, &parsed.slam_reset_reason) ||
+        !read_string(data, &offset, &parsed.slam_status) ||
+        !read_string(data, &offset, &parsed.reference_invalidation_reason) ||
         !read_vehicle_state(data, &offset, &parsed.vehicle) ||
         !read_vec2(data, &offset, &parsed.navigation_position) ||
         !read_pod(data, &offset, &parsed.navigation_yaw) ||
@@ -762,7 +852,9 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
         }) ||
         !read_vector(data, &offset, &parsed.trail, read_vec2) ||
         !read_vector(data, &offset, &parsed.planned_trajectory, read_vec2) ||
-        !read_vector(data, &offset, &parsed.slam_points, read_vec2) ||
+        !read_vector(data, &offset, &parsed.local_safety_occupied_points, read_vec2) ||
+        !read_vector(data, &offset, &parsed.global_free_points, read_vec2) ||
+        !read_vector(data, &offset, &parsed.global_occupied_points, read_vec2) ||
         !read_vector(data, &offset, &parsed.lidar_hits, read_lidar_hit) ||
         !read_bool(data, &offset, &parsed.has_last_mpc_command)) {
         return false;
@@ -781,6 +873,9 @@ bool deserialize_frame(const std::vector<std::uint8_t>& data, LiveFrameSnapshot*
         return false;
     }
 
+    parsed.map_source = static_cast<ExplorationMapSource>(map_source);
+    parsed.exploration_state = static_cast<UnstructuredExplorationState>(exploration_state);
+    parsed.control_source = static_cast<HardwareControlSource>(control_source);
     *frame = std::move(parsed);
     return true;
 }

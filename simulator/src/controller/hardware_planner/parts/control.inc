@@ -10,6 +10,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     stall_boost_active_ = false;
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
+    control_source_ = HardwareControlSource::Hold;
+
+    if (!motion_permitted_by_start_match()) {
+        commanded_speed_ = 0.0;
+        commanded_steer_angle_ = 0.0;
+        last_command_ = {};
+        last_mpc_command_.reset();
+        exploration_state_ = UnstructuredExplorationState::StartMatching;
+        return;
+    }
 
     if (goal_reached_) {
         commanded_speed_ = 0.0;
@@ -88,6 +98,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         right_wheel_breakaway_hold_cycles_ = 0;
         diagnostics_.no_motion_command_cycles = 0;
         diagnostics_.stall_boost_active = false;
+        control_source_ = HardwareControlSource::SafetyStop;
         return;
     }
     const bool forward_only_tracked_tracks =
@@ -222,7 +233,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     tracking_state.target_steer_angle = commanded_steer_angle_;
 
     if (scanning_startup) {
-        if (!apply_forward_gate_search()) {
+        if (manual_unstructured_exploration(world_) &&
+            config_.frontier_exploration.enabled) {
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+            use_direct_yaw_rate_command = false;
+            last_mpc_command_.reset();
+            exploration_state_ = UnstructuredExplorationState::InitialScan;
+        } else if (!apply_forward_gate_search()) {
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
@@ -299,6 +319,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             tracker_heading_error_deg_ =
                 std::abs(mpc_command.heading_error) * 180.0 / kPi;
             last_mpc_command_ = mpc_command;
+            control_source_ =
+                navigation_target_kind_ == NavigationTargetKind::ExplorationFrontier
+                    ? HardwareControlSource::FrontierMpc
+                    : (following_dynamic_gate
+                           ? HardwareControlSource::GateMpc
+                           : HardwareControlSource::StructuredMpc);
+            if (navigation_target_kind_ == NavigationTargetKind::PhysicalGate) {
+                exploration_state_ = UnstructuredExplorationState::TrackingGateClothoid;
+            }
             structured_anchor_hint_index_ = std::max(mpc_command.anchor_index, 0);
         } else {
             commanded_speed_ = 0.0;
@@ -514,7 +543,18 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                !scanning_startup &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
-        if (strict_locked_motion) {
+        if (manual_unstructured_exploration(world_) &&
+            config_.frontier_exploration.enabled) {
+            gap_recovery_turn_active_ = false;
+            use_gap_recovery_turn = false;
+            use_direct_yaw_rate_command = false;
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+            last_mpc_command_.reset();
+            exploration_state_ = UnstructuredExplorationState::Hold;
+        } else if (strict_locked_motion) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;
             use_direct_yaw_rate_command = true;
@@ -1547,6 +1587,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
     diagnostics_.no_motion_command_cycles = no_motion_command_cycles_;
     diagnostics_.stall_boost_active = stall_boost_active_;
+    if (control_source_ == HardwareControlSource::Hold &&
+        (use_gap_recovery_turn || allow_unlocked_recovery_motion)) {
+        control_source_ = HardwareControlSource::Recovery;
+    }
+    if (safety_stop_active_) {
+        control_source_ = HardwareControlSource::SafetyStop;
+    }
 }
 
 }  // namespace thesis_sim

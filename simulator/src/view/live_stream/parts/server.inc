@@ -130,6 +130,20 @@ void LiveViewStreamServer::clear_pending_robot_profile() {
     pending_robot_profile_.reset();
 }
 
+bool LiveViewStreamServer::queue_runtime_settings(
+    const LiveRuntimeSettings& settings) {
+    pending_runtime_settings_ = settings;
+    if (client_fd_ >= 0) {
+        flush_pending_runtime_settings();
+        return client_fd_ >= 0;
+    }
+    return true;
+}
+
+void LiveViewStreamServer::clear_pending_runtime_settings() {
+    pending_runtime_settings_.reset();
+}
+
 void LiveViewStreamServer::flush_pending_world() {
     if (client_fd_ < 0 || !pending_world_.has_value()) {
         return;
@@ -148,6 +162,16 @@ void LiveViewStreamServer::flush_pending_robot_profile() {
         return;
     }
     pending_robot_profile_.reset();
+}
+
+void LiveViewStreamServer::flush_pending_runtime_settings() {
+    if (client_fd_ < 0 || !pending_runtime_settings_.has_value()) return;
+    if (!send_packet(
+            kPacketRuntimeSettings,
+            serialize_runtime_settings(*pending_runtime_settings_))) {
+        return;
+    }
+    pending_runtime_settings_.reset();
 }
 
 void LiveViewStreamServer::read_client_data() {
@@ -269,6 +293,7 @@ LiveViewStreamServer::PollResult LiveViewStreamServer::poll() {
     }
     flush_pending_world();
     flush_pending_robot_profile();
+    flush_pending_runtime_settings();
     read_client_data();
     while (parse_next_packet(&result)) {
     }

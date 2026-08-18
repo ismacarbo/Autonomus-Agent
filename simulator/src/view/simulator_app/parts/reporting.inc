@@ -292,6 +292,24 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"left_wheel_stall_cycles\":" << sample.left_wheel_stall_cycles
         << ",\"right_wheel_stall_cycles\":" << sample.right_wheel_stall_cycles
         << ",\"encoder_slip_guard_active\":" << sample.encoder_slip_guard_active
+        << ",\"exploration_map_source\":" << sample.exploration_map_source
+        << ",\"exploration_state\":" << sample.exploration_state
+        << ",\"control_source\":" << sample.control_source
+        << ",\"selected_frontier_valid\":" << sample.selected_frontier_valid
+        << ",\"selected_frontier_x\":" << sample.selected_frontier_x
+        << ",\"selected_frontier_y\":" << sample.selected_frontier_y
+        << ",\"global_free_cells\":" << sample.global_free_cells
+        << ",\"global_occupied_cells\":" << sample.global_occupied_cells
+        << ",\"start_matching_enabled\":" << sample.start_matching_enabled
+        << ",\"start_matching_complete\":" << sample.start_matching_complete
+        << ",\"start_matching_accepted\":" << sample.start_matching_accepted
+        << ",\"start_matching_confidence\":" << sample.start_matching_confidence
+        << ",\"slam_toolbox_enabled\":" << sample.slam_toolbox_enabled
+        << ",\"slam_toolbox_connected\":" << sample.slam_toolbox_connected
+        << ",\"slam_map_updates\":" << sample.slam_map_updates
+        << ",\"slam_graph_nodes\":" << sample.slam_graph_nodes
+        << ",\"slam_loop_edges\":" << sample.slam_loop_edges
+        << ",\"slam_map_age_s\":" << sample.slam_map_age_s
         << "}";
 }
 
@@ -398,6 +416,50 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "    \"chosen_gate_index\": " << hardware.frame.chosen_gate_index << ",\n";
     out << "    \"passed_gates\": " << hardware.frame.passed_gates << ",\n";
     out << "    \"occupancy_cell_size_m\": " << hardware.frame.occupancy_cell_size_m << ",\n";
+    out << "    \"map_source\": \""
+        << json_escape(thesis_sim::exploration_map_source_name(hardware.frame.map_source))
+        << "\",\n";
+    out << "    \"exploration_state\": \""
+        << json_escape(thesis_sim::unstructured_exploration_state_name(
+               hardware.frame.exploration_state))
+        << "\",\n";
+    out << "    \"control_source\": \""
+        << json_escape(thesis_sim::hardware_control_source_name(
+               hardware.frame.control_source))
+        << "\",\n";
+    out << "    \"selected_frontier_valid\": "
+        << (hardware.frame.selected_frontier_valid ? "true" : "false") << ",\n";
+    out << "    \"selected_frontier\": ";
+    write_vec2_json(out, hardware.frame.selected_frontier);
+    out << ",\n";
+    out << "    \"start_matching_enabled\": "
+        << (hardware.frame.start_matching_enabled ? "true" : "false") << ",\n";
+    out << "    \"start_matching_complete\": "
+        << (hardware.frame.start_matching_complete ? "true" : "false") << ",\n";
+    out << "    \"start_matching_accepted\": "
+        << (hardware.frame.start_matching_accepted ? "true" : "false") << ",\n";
+    out << "    \"start_matching_confidence\": "
+        << hardware.frame.start_matching_confidence << ",\n";
+    out << "    \"start_matching_status\": \""
+        << json_escape(hardware.frame.start_matching_status) << "\",\n";
+    out << "    \"slam_enabled\": "
+        << (hardware.frame.slam_enabled ? "true" : "false") << ",\n";
+    out << "    \"slam_connected\": "
+        << (hardware.frame.slam_connected ? "true" : "false") << ",\n";
+    out << "    \"slam_pose_valid\": "
+        << (hardware.frame.slam_pose_valid ? "true" : "false") << ",\n";
+    out << "    \"slam_map_updates\": " << hardware.frame.slam_map_updates << ",\n";
+    out << "    \"slam_graph_nodes\": " << hardware.frame.slam_graph_nodes << ",\n";
+    out << "    \"slam_loop_edges\": " << hardware.frame.slam_loop_edges << ",\n";
+    out << "    \"slam_map_age_s\": " << hardware.frame.slam_map_age_s << ",\n";
+    out << "    \"slam_session_id\": \""
+        << json_escape(hardware.frame.slam_session_id) << "\",\n";
+    out << "    \"slam_reset_reason\": \""
+        << json_escape(hardware.frame.slam_reset_reason) << "\",\n";
+    out << "    \"slam_status\": \""
+        << json_escape(hardware.frame.slam_status) << "\",\n";
+    out << "    \"reference_invalidation_reason\": \""
+        << json_escape(hardware.frame.reference_invalidation_reason) << "\",\n";
     out << "    \"vehicle\": ";
     write_live_vehicle_state_json(out, hardware.frame.vehicle);
     out << ",\n";
@@ -455,11 +517,28 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
         out << (i + 1 < hardware.frame.planned_trajectory.size() ? ",\n" : "\n");
     }
     out << "    ],\n";
-    out << "    \"slam_points\": [\n";
-    for (size_t i = 0; i < hardware.frame.slam_points.size(); ++i) {
+    out << "    \"local_safety_occupied_points\": [\n";
+    for (size_t i = 0;
+         i < hardware.frame.local_safety_occupied_points.size(); ++i) {
         out << "      ";
-        write_vec2_json(out, hardware.frame.slam_points[i]);
-        out << (i + 1 < hardware.frame.slam_points.size() ? ",\n" : "\n");
+        write_vec2_json(out, hardware.frame.local_safety_occupied_points[i]);
+        out << (i + 1 < hardware.frame.local_safety_occupied_points.size()
+                    ? ",\n"
+                    : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"global_free_points\": [\n";
+    for (size_t i = 0; i < hardware.frame.global_free_points.size(); ++i) {
+        out << "      ";
+        write_vec2_json(out, hardware.frame.global_free_points[i]);
+        out << (i + 1 < hardware.frame.global_free_points.size() ? ",\n" : "\n");
+    }
+    out << "    ],\n";
+    out << "    \"global_occupied_points\": [\n";
+    for (size_t i = 0; i < hardware.frame.global_occupied_points.size(); ++i) {
+        out << "      ";
+        write_vec2_json(out, hardware.frame.global_occupied_points[i]);
+        out << (i + 1 < hardware.frame.global_occupied_points.size() ? ",\n" : "\n");
     }
     out << "    ],\n";
     out << "    \"lidar_hits\": [\n";
@@ -472,9 +551,20 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "  },\n";
     const bool slam_toolbox_connected =
         slam_snapshot != nullptr && slam_snapshot->connected;
+    const bool persistent_grid_active =
+        slam_snapshot != nullptr &&
+        !slam_snapshot->connected &&
+        slam_snapshot->status == "persistent_local_grid" &&
+        !slam_snapshot->occupied_points.empty();
+    const bool occupancy_map_available =
+        slam_toolbox_connected || persistent_grid_active;
     out << "  \"slam_backend\": {\n";
     out << "    \"backend\": \""
-        << (slam_toolbox_connected ? "slam_toolbox" : "passive_lidar_reconstruction")
+        << (slam_toolbox_connected
+                ? "slam_toolbox"
+                : (persistent_grid_active
+                       ? "persistent_local_grid"
+                       : "passive_lidar_reconstruction"))
         << "\",\n";
     out << "    \"connected\": " << (slam_toolbox_connected ? "true" : "false") << ",\n";
     out << "    \"pose_valid\": "
@@ -486,15 +576,18 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "    \"loop_edges\": "
         << (slam_toolbox_connected ? slam_snapshot->loop_edges : 0) << ",\n";
     out << "    \"map_resolution_m\": "
-        << (slam_toolbox_connected ? slam_snapshot->map_resolution_m : 0.0) << ",\n";
+        << (occupancy_map_available ? slam_snapshot->map_resolution_m : 0.0) << ",\n";
     out << "    \"free_cells\": "
-        << (slam_toolbox_connected ? slam_snapshot->free_points.size() : 0U) << ",\n";
+        << (occupancy_map_available ? slam_snapshot->free_points.size() : 0U) << ",\n";
     out << "    \"occupied_cells\": "
-        << (slam_toolbox_connected ? slam_snapshot->occupied_points.size() : 0U) << ",\n";
+        << (occupancy_map_available ? slam_snapshot->occupied_points.size() : 0U) << ",\n";
     out << "    \"status\": \""
-        << json_escape(slam_toolbox_connected
-                           ? slam_snapshot->status
-                           : "No SLAM Toolbox response; passive endpoint accumulation only")
+        << json_escape(
+               slam_toolbox_connected
+                   ? slam_snapshot->status
+                   : (persistent_grid_active
+                          ? "SLAM Toolbox unavailable; non-decaying local exploration grid"
+                          : "No SLAM Toolbox response; passive endpoint accumulation only"))
         << "\"\n";
     out << "  },\n";
     out << "  \"performance\": {\n";
@@ -600,7 +693,10 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
            "controller_age_s,lidar_age_s,lidar_scan_duration_s,lidar_scan_reused,mcu_clock_offset_s,mcu_clock_jitter_s,"
            "imu_age_s,encoder_age_s,slam_pose_valid,slam_pose_x,slam_pose_y,slam_pose_yaw,"
            "slam_position_innovation_m,slam_yaw_innovation_deg,slam_correction_accepted,"
-           "stall_boost_active,left_wheel_stall_cycles,right_wheel_stall_cycles,encoder_slip_guard_active\n";
+           "stall_boost_active,left_wheel_stall_cycles,right_wheel_stall_cycles,encoder_slip_guard_active,"
+           "exploration_map_source,exploration_state,control_source,selected_frontier_valid,selected_frontier_x,selected_frontier_y,"
+           "global_free_cells,global_occupied_cells,start_matching_enabled,start_matching_complete,start_matching_accepted,start_matching_confidence,"
+           "slam_toolbox_enabled,slam_toolbox_connected,slam_map_updates,slam_graph_nodes,slam_loop_edges,slam_map_age_s\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
             << sample.position_x << ','
@@ -668,7 +764,25 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.stall_boost_active << ','
             << sample.left_wheel_stall_cycles << ','
             << sample.right_wheel_stall_cycles << ','
-            << sample.encoder_slip_guard_active << '\n';
+            << sample.encoder_slip_guard_active << ','
+            << sample.exploration_map_source << ','
+            << sample.exploration_state << ','
+            << sample.control_source << ','
+            << sample.selected_frontier_valid << ','
+            << sample.selected_frontier_x << ','
+            << sample.selected_frontier_y << ','
+            << sample.global_free_cells << ','
+            << sample.global_occupied_cells << ','
+            << sample.start_matching_enabled << ','
+            << sample.start_matching_complete << ','
+            << sample.start_matching_accepted << ','
+            << sample.start_matching_confidence << ','
+            << sample.slam_toolbox_enabled << ','
+            << sample.slam_toolbox_connected << ','
+            << sample.slam_map_updates << ','
+            << sample.slam_graph_nodes << ','
+            << sample.slam_loop_edges << ','
+            << sample.slam_map_age_s << '\n';
     }
     return true;
 }
@@ -752,7 +866,8 @@ bool write_hardware_slam_reference_png(const HardwareViewerState& hardware,
                                        const std::string& report_path,
                                        const SlamToolboxSnapshot* slam_snapshot) {
     if (slam_snapshot != nullptr &&
-        slam_snapshot->connected &&
+        (slam_snapshot->connected ||
+         slam_snapshot->status == "persistent_local_grid") &&
         !slam_snapshot->occupied_points.empty()) {
         thesis_sim::mvc::model::SlamReferenceArtifact artifact;
         artifact.bounds = hardware.has_scene

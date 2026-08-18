@@ -35,6 +35,18 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         return;
     }
 
+    // An exploration waypoint is not a perceived gate. Remove its temporary
+    // planner representation before extracting physical apertures so it can
+    // never be persisted or scored as a gate candidate. The frontier itself
+    // remains stored separately and is restored by the workflow when no gate
+    // preempts it.
+    if (navigation_target_kind_ == NavigationTargetKind::ExplorationFrontier) {
+        clear_locked_gap_goal();
+        gates_.clear();
+        gate_specs_.clear();
+        chosen_gate_index_ = -1;
+    }
+
     const std::vector<gate> previous_gates = gates_;
     const std::vector<GateSpec> previous_gate_specs = gate_specs_;
     const int previous_chosen_gate_index = chosen_gate_index_;

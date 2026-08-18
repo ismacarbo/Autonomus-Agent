@@ -22,6 +22,66 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
+    thesis_sim::LiveRuntimeSettings runtime_settings;
+    runtime_settings.start_matching_enabled = false;
+    runtime_settings.slam_toolbox_enabled = true;
+    runtime_settings.revision = 20260818U;
+    const std::vector<std::uint8_t> runtime_payload =
+        thesis_sim::serialize_runtime_settings_blob(runtime_settings);
+    thesis_sim::LiveRuntimeSettings decoded_runtime_settings;
+    if (!thesis_sim::deserialize_runtime_settings_blob(
+            runtime_payload, &decoded_runtime_settings) ||
+        decoded_runtime_settings.start_matching_enabled ||
+        !decoded_runtime_settings.slam_toolbox_enabled ||
+        decoded_runtime_settings.revision != runtime_settings.revision) {
+        return fail("runtime toggle settings changed during roundtrip");
+    }
+
+    thesis_sim::LiveFrameSnapshot live_frame;
+    live_frame.step_count = 42;
+    live_frame.map_source = thesis_sim::ExplorationMapSource::SlamToolbox;
+    live_frame.exploration_state =
+        thesis_sim::UnstructuredExplorationState::TrackingGateClothoid;
+    live_frame.control_source = thesis_sim::HardwareControlSource::GateMpc;
+    live_frame.selected_frontier_valid = true;
+    live_frame.selected_frontier = {0.62, 0.44};
+    live_frame.start_matching_enabled = true;
+    live_frame.start_matching_complete = true;
+    live_frame.start_matching_accepted = true;
+    live_frame.start_matching_confidence = 0.91;
+    live_frame.start_matching_status = "accepted";
+    live_frame.slam_enabled = true;
+    live_frame.slam_connected = true;
+    live_frame.slam_map_updates = 7;
+    live_frame.slam_session_id = "test_session";
+    live_frame.slam_reset_reason = "session_changed";
+    live_frame.global_free_points = {{0.1, 0.2}, {0.2, 0.2}};
+    live_frame.global_occupied_points = {{0.5, 0.6}};
+    live_frame.has_latest_sample = true;
+    live_frame.latest_sample.control_source =
+        static_cast<double>(
+            static_cast<int>(thesis_sim::HardwareControlSource::GateMpc));
+    live_frame.latest_sample.global_occupied_cells = 17.0;
+    live_frame.latest_sample.start_matching_accepted = 1.0;
+    live_frame.latest_sample.slam_toolbox_connected = 1.0;
+    live_frame.latest_sample.slam_map_age_s = 0.04;
+    const std::vector<std::uint8_t> frame_payload =
+        thesis_sim::serialize_live_frame_blob(live_frame);
+    thesis_sim::LiveFrameSnapshot decoded_frame;
+    if (!thesis_sim::deserialize_live_frame_blob(frame_payload, &decoded_frame) ||
+        decoded_frame.step_count != live_frame.step_count ||
+        decoded_frame.map_source != live_frame.map_source ||
+        decoded_frame.exploration_state != live_frame.exploration_state ||
+        decoded_frame.control_source != live_frame.control_source ||
+        decoded_frame.slam_session_id != live_frame.slam_session_id ||
+        decoded_frame.global_free_points.size() != 2U ||
+        decoded_frame.global_occupied_points.size() != 1U ||
+        !decoded_frame.has_latest_sample ||
+        !near(decoded_frame.latest_sample.global_occupied_cells, 17.0) ||
+        !near(decoded_frame.latest_sample.slam_map_age_s, 0.04)) {
+        return fail("live exploration frame changed during roundtrip");
+    }
+
     const thesis_sim::WorldMap source = thesis_sim::WorldMap::mixed_hardware_aligned_demo();
     const std::vector<std::uint8_t> payload = thesis_sim::serialize_world_blob(source);
     if (payload.empty()) {

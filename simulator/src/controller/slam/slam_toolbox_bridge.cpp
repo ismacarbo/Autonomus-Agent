@@ -189,6 +189,8 @@ bool SlamToolboxBridgeClient::parse_response(const char* data, std::size_t size)
     }
     try {
         SlamToolboxSnapshot parsed;
+        parsed.session_id = fields[1];
+        parsed.sequence = static_cast<std::uint64_t>(std::stoull(fields[2]));
         parsed.connected = true;
         parsed.pose_valid = std::stoi(fields[3]) != 0;
         parsed.corrected_position.x = std::stod(fields[4]);
@@ -237,6 +239,9 @@ bool SlamToolboxBridgeClient::parse_response(const char* data, std::size_t size)
                     origin_y + (static_cast<double>(cell_y) + 0.5) * parsed.map_resolution_m,
                 });
             }
+        }
+        if (fields.size() >= 18U) {
+            parsed.reset_reason = fields[17];
         }
         parsed.status = "slam_toolbox: scan matching + pose graph optimization";
         snapshot_ = std::move(parsed);

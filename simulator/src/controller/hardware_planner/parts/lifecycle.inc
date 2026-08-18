@@ -350,6 +350,19 @@ void HardwarePlannerRunner::reset() {
     next_dynamic_gap_track_id_ = 1;
     lidar_hits_.clear();
     lidar_map_points_.clear();
+    exploration_cells_.clear();
+    global_free_points_.clear();
+    global_occupied_points_.clear();
+    exploration_path_.clear();
+    visited_frontiers_.clear();
+    selected_frontier_.reset();
+    last_frontier_plan_step_ = -1;
+    exploration_map_source_ = ExplorationMapSource::LocalPersistentGrid;
+    navigation_target_kind_ = NavigationTargetKind::None;
+    exploration_state_ = UnstructuredExplorationState::Disabled;
+    control_source_ = HardwareControlSource::Hold;
+    slam_toolbox_snapshot_ = {};
+    slam_snapshot_received_sim_time_s_ = -1.0;
     external_pose_reference_ = {};
     external_pose_received_sim_time_s_ = -1.0;
     lidar_occupancy_cells_.clear();
@@ -357,6 +370,7 @@ void HardwarePlannerRunner::reset() {
     gate_specs_.clear();
     diagnostics_ = {};
     diagnostics_.dynamic_gap_gates = use_dynamic_gap_gates_;
+    diagnostics_.slam_enabled = config_.slam_toolbox_enabled;
     last_command_ = {};
     last_mpc_command_.reset();
     structured_anchor_hint_index_ = 0;
@@ -367,6 +381,7 @@ void HardwarePlannerRunner::reset() {
     estimator_.set_tracked_vehicle(config_.vehicle_model == VehicleModelKind::TrackedVehicle);
     estimator_.reset(world_.start(), world_.start_heading());
     reset_pose(world_.start(), world_.start_heading());
+    reset_start_matching();
 }
 
 void HardwarePlannerRunner::set_external_pose_reference(
@@ -710,10 +725,9 @@ int HardwarePlannerRunner::planning_interval_steps() const {
 }
 
 int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
-    // A Manual Gate Editor scene has no authoritative number of physical
-    // LiDAR apertures. Keep exploring until the operator stops the run instead
-    // of turning the second locally observed opening into a false mission end.
-    // Fixed presets such as Hardware Lab retain their configured finite count.
+    // A perception-only compact hardware scene has no authoritative number of
+    // physical LiDAR apertures. Keep exploring until the operator stops the
+    // run instead of turning an arbitrary local count into a false mission end.
     if (manual_unstructured_exploration(world_)) {
         return std::numeric_limits<int>::max();
     }

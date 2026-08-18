@@ -238,6 +238,11 @@ bool process_stream_control(const AppOptions& options,
             AppOptions profile_options = options;
             profile_options.vehicle_profile = vehicle_profile_from_model(*poll_result.robot_profile);
             HardwarePlannerConfig next_config = base_config;
+            if (active_config != nullptr) {
+                next_config.start_matching = active_config->start_matching;
+                next_config.slam_toolbox_enabled = active_config->slam_toolbox_enabled;
+                next_config.slam_pose_feedback_enabled = active_config->slam_pose_feedback_enabled;
+            }
             apply_vehicle_profile(profile_options, &next_config);
             apply_robot_calibration_profile(profile_options, &next_config);
             apply_unstructured_hardware_config(runner->world(), &next_config);
@@ -267,6 +272,32 @@ bool process_stream_control(const AppOptions& options,
                 return true;
             }
         }
+    }
+
+    if (poll_result.runtime_settings_received &&
+        poll_result.runtime_settings.has_value()) {
+        const LiveRuntimeSettings& settings = *poll_result.runtime_settings;
+        HardwarePlannerConfig next_config =
+            active_config != nullptr ? *active_config : base_config;
+        // Store the operator choice independently of the current scenario.  A
+        // structured world does not consume LiDAR, but switching back to an
+        // unstructured world must restore the requested safety/mapping mode.
+        next_config.start_matching.enabled = settings.start_matching_enabled;
+        next_config.slam_toolbox_enabled = settings.slam_toolbox_enabled;
+        runner->apply_config(next_config);
+        if (active_config != nullptr) *active_config = next_config;
+        if (!streamer->send_control_ack(
+                true,
+                std::string("runtime settings applied: start_matching=") +
+                    (next_config.start_matching.enabled ? "on" : "off") +
+                    " slam_toolbox=" +
+                    (next_config.slam_toolbox_enabled ? "on" : "off") +
+                    " (planner reset)")) {
+            std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
+            streamer->disconnect();
+            return true;
+        }
+        if (world_applied != nullptr) *world_applied = true;
     }
 
     if (poll_result.world_received && poll_result.world.has_value()) {
@@ -411,7 +442,9 @@ std::vector<RPLidarA1::ScanPoint> make_lidar_scan(const WorldMap& world,
     for (size_t i = 0; i < hits.size(); ++i) {
         const double alpha =
             hits.size() > 1 ? static_cast<double>(i) / static_cast<double>(hits.size() - 1) : 0.0;
-        const double angle_deg = -180.0 + alpha * 360.0;
+        const double angle_deg = config.localization.lidar_flip_left_right
+            ? 180.0 - alpha * 360.0
+            : -180.0 + alpha * 360.0;
         const double angle_rad = deg_to_rad(angle_deg);
         const double range_m = hits[i].distance;
         scan.push_back({
