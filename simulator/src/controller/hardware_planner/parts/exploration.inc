@@ -20,6 +20,7 @@ const char* unstructured_exploration_state_name(UnstructuredExplorationState sta
         case UnstructuredExplorationState::VerifyingGateCrossing: return "VERIFYING_GATE_CROSSING";
         case UnstructuredExplorationState::Hold: return "HOLD";
         case UnstructuredExplorationState::Complete: return "COMPLETE";
+        case UnstructuredExplorationState::AdvancingStraight: return "ADVANCING_STRAIGHT";
         case UnstructuredExplorationState::Disabled:
         default: return "DISABLED";
     }
@@ -32,6 +33,7 @@ const char* hardware_control_source_name(HardwareControlSource source) {
         case HardwareControlSource::Recovery: return "RECOVERY";
         case HardwareControlSource::StructuredMpc: return "STRUCTURED_MPC";
         case HardwareControlSource::SafetyStop: return "SAFETY_STOP";
+        case HardwareControlSource::StraightExploration: return "STRAIGHT_EXPLORATION";
         case HardwareControlSource::Hold:
         default: return "HOLD";
     }

@@ -226,6 +226,104 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         return true;
     };
 
+    auto apply_straight_lidar_exploration = [&]() {
+        if (!manual_unstructured_exploration(world_) ||
+            tracked_vehicle ||
+            scanning_startup ||
+            goal_reached_ ||
+            locked_gap_goal_.has_value() ||
+            navigation_target_kind_ == NavigationTargetKind::PhysicalGate ||
+            have_reference_trajectory) {
+            return false;
+        }
+
+        // Exploration must not depend on SLAM/frontier availability. A fresh
+        // LiDAR scan and a free corridor are sufficient to move straight;
+        // gate detection continues every scan and preempts this command as
+        // soon as a physical gate produces a valid clothoid.
+        const int required_scan_points =
+            std::max(config_.localization.min_scan_points, 6);
+        if (diagnostics_.valid_lidar_points < required_scan_points) {
+            return false;
+        }
+
+        const double scan_range = clamp_value(
+            config_.gap_extraction.planning_max_range_m,
+            config_.localization.min_valid_range_m + 0.10,
+            config_.localization.max_range_m);
+        const double corridor_half_angle = clamp_value(
+            config_.localization.front_sector_half_angle_rad,
+            0.18,
+            0.34);
+        const double forward_clearance = sector_min_clearance(
+            lidar_hits_,
+            estimate_.yaw,
+            0.0,
+            corridor_half_angle,
+            scan_range);
+        const double required_clearance = std::max(
+            config_.localization.obstacle_stop_distance_m + 0.055,
+            config_.localization.min_valid_range_m + 0.16);
+        if (!(forward_clearance > required_clearance) ||
+            (estimate_.front_lidar_distance > 0.0 &&
+             estimate_.front_lidar_distance <= required_clearance)) {
+            return false;
+        }
+
+        const double probe_distance = clamp_value(
+            0.10 * forward_clearance,
+            0.06,
+            0.10);
+        const Vec2 forward_probe{
+            estimate_.position.x + probe_distance * std::cos(estimate_.yaw),
+            estimate_.position.y + probe_distance * std::sin(estimate_.yaw),
+        };
+        const auto future_footprint = make_box_corners(
+            forward_probe,
+            estimate_.yaw,
+            geometry_.body_length,
+            geometry_.body_width);
+        const bool future_footprint_outside_bounds = std::any_of(
+            future_footprint.begin(),
+            future_footprint.end(),
+            [&](const Vec2& corner) {
+                return !is_inside_bounds(world_, corner, -0.015);
+            });
+        if (future_footprint_outside_bounds) {
+            return false;
+        }
+
+        const double clearance_scale = clamp_value(
+            (forward_clearance - required_clearance) / 0.35,
+            0.0,
+            1.0);
+        const double speed_cap = std::max(
+            0.0,
+            std::min(0.060, speed_limit));
+        if (speed_cap <= 1e-4) {
+            return false;
+        }
+        const double speed_floor = std::min(0.045, speed_cap);
+        const double straight_speed = clamp_value(
+            speed_floor + (speed_cap - speed_floor) * clearance_scale,
+            speed_floor,
+            speed_cap);
+
+        allow_unlocked_recovery_motion = true;
+        gap_recovery_turn_active_ = false;
+        use_direct_yaw_rate_command = false;
+        direct_yaw_rate_command = 0.0;
+        commanded_speed_ = straight_speed;
+        commanded_steer_angle_ = 0.0;
+        last_command_.target_speed = straight_speed;
+        last_command_.target_curvature = 0.0;
+        last_command_.target_yaw_rate = 0.0;
+        last_mpc_command_.reset();
+        exploration_state_ = UnstructuredExplorationState::AdvancingStraight;
+        control_source_ = HardwareControlSource::StraightExploration;
+        return true;
+    };
+
     VehicleModelState tracking_state = build_tracking_state(
         estimate_.position,
         estimate_.yaw,
@@ -238,8 +336,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     tracking_state.target_steer_angle = commanded_steer_angle_;
 
     if (scanning_startup) {
-        if (manual_unstructured_exploration(world_) &&
-            config_.frontier_exploration.enabled) {
+        if (manual_unstructured_exploration(world_)) {
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
             last_command_.target_speed = 0.0;
@@ -549,17 +646,18 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                !scanning_startup &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
-        if (manual_unstructured_exploration(world_) &&
-            config_.frontier_exploration.enabled) {
-            gap_recovery_turn_active_ = false;
-            use_gap_recovery_turn = false;
-            use_direct_yaw_rate_command = false;
-            commanded_speed_ = 0.0;
-            commanded_steer_angle_ = 0.0;
-            last_command_.target_speed = 0.0;
-            last_command_.target_curvature = 0.0;
-            last_mpc_command_.reset();
-            exploration_state_ = UnstructuredExplorationState::Hold;
+        if (manual_unstructured_exploration(world_)) {
+            if (!apply_straight_lidar_exploration()) {
+                gap_recovery_turn_active_ = false;
+                use_gap_recovery_turn = false;
+                use_direct_yaw_rate_command = false;
+                commanded_speed_ = 0.0;
+                commanded_steer_angle_ = 0.0;
+                last_command_.target_speed = 0.0;
+                last_command_.target_curvature = 0.0;
+                last_mpc_command_.reset();
+                exploration_state_ = UnstructuredExplorationState::Hold;
+            }
         } else if (strict_locked_motion) {
             gap_recovery_turn_active_ = true;
             use_gap_recovery_turn = true;

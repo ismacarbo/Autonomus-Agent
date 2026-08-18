@@ -10,9 +10,10 @@ The runtime sequence is:
 
 1. optional initial LiDAR start matching with the motors inhibited;
 2. stationary initial scan;
-3. select a reachable information frontier from known-free/unknown cells;
-4. generate and validate a local clothoid toward that frontier;
-5. immediately preempt the frontier when a temporally confirmed physical gate
+3. continuously evaluate the current forward LiDAR corridor and update the map;
+4. use a straight known-free frontier when it is available, otherwise advance
+   directly with zero curvature from the current LiDAR scan;
+5. immediately preempt exploration when a temporally confirmed physical gate
    is detected;
 6. generate the gate clothoid and follow it with MPC;
 7. verify crossing with longitudinal and lateral gate-plane tests;
@@ -126,3 +127,34 @@ and opposite-wheel PWM are forbidden for car-like mixed/unstructured runs.
 The regression test also covers a sparse 90-beam scan, forward motion after the
 initial scan, near-zero exploration yaw, and absence of opposite-wheel commands
 in both unstructured and mixed modes.
+
+## No-clothoid forward exploration correction — 21:25
+
+The report
+`thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_212510_695`
+confirmed that gate recognition and crossing were working (`passed_gates=1`,
+about 0.64 m of encoder travel), but also exposed one remaining incorrect
+interlock: 219 of 277 samples were `HOLD` and 255 had zero PWM. At the final
+sample the LiDAR was current and usable (176 valid returns and 1.20 m front
+clearance), there was no safety stop, and the only invalidation reason was
+`no_straight_known_free_frontier`.
+
+A missing SLAM frontier or planner reference is therefore no longer a reason
+to remain stationary. After the initial scan, the compact car-like
+unstructured controller now enters:
+
+- `ADVANCING_STRAIGHT` / `STRAIGHT_EXPLORATION` when no physical gate clothoid
+  is active, the current LiDAR scan has enough valid samples, the forward
+  corridor is clear, and a forward footprint probe remains inside the arena;
+- `GATE_LOCKED` and then `TRACKING_GATE_CLOTHOID` / `GATE_MPC` as soon as the
+  temporally confirmed physical gate yields a valid reference;
+- `HOLD` only when current LiDAR data is insufficient, the front corridor is
+  blocked, the forward probe would leave the arena, or another safety/interlock
+  condition is active.
+
+The direct exploration command is deliberately limited to 0.045--0.060 m/s
+and always requests zero curvature and zero yaw rate. It does not synthesize a
+search arc and cannot override a confirmed physical-gate clothoid. The
+integration regression explicitly forces the frontier minimum beyond the
+entire test arena and verifies positive forward PWM with an empty reference
+trajectory, followed by the existing gate-over-exploration priority test.

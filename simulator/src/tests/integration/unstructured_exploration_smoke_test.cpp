@@ -269,6 +269,76 @@ int main() {
         return fail("sparse LiDAR exploration remained stuck in INITIAL_SCAN");
     }
 
+    // A map frontier/clothoid is an optimization, not a prerequisite for
+    // exploration. Force every possible frontier below the configured minimum
+    // and verify that a fresh, free LiDAR corridor still produces a purely
+    // straight command until a physical gate is found.
+    thesis_sim::HardwarePlannerConfig direct_config = config;
+    direct_config.frontier_exploration.minimum_frontier_distance_m = 2.0;
+    direct_config.frontier_exploration.maximum_frontier_distance_m = 2.0;
+    thesis_sim::HardwarePlannerRunner direct_runner(
+        exploration_world, bridge_options, direct_config);
+    bool saw_direct_straight_exploration = false;
+    for (int step = 0; step < 35; ++step) {
+        direct_runner.step_with_observation(
+            make_observation(10.0 + 0.10 * step, sparse_scan), 0.10, false);
+        if (direct_runner.diagnostics().control_source !=
+            thesis_sim::HardwareControlSource::StraightExploration) {
+            continue;
+        }
+        saw_direct_straight_exploration = true;
+        const auto& command = direct_runner.last_command();
+        if (direct_runner.diagnostics().planner_has_reference ||
+            !direct_runner.reference_trajectory().empty()) {
+            return fail("straight LiDAR fallback unexpectedly required a clothoid");
+        }
+        if (command.target_speed <= 1e-4 ||
+            command.pwm_left <= 0 ||
+            command.pwm_right <= 0) {
+            return fail("no-clothoid LiDAR exploration did not move forward");
+        }
+        if (std::abs(command.target_curvature) > 1e-9 ||
+            std::abs(command.target_yaw_rate) > 1e-9) {
+            return fail("no-clothoid LiDAR exploration issued a curved command");
+        }
+    }
+    if (!saw_direct_straight_exploration) {
+        return fail("no-clothoid LiDAR corridor remained in HOLD");
+    }
+
+    // Reproduce the final pose of hardware report 20260818_212510_695. The
+    // previous controller held here despite 1.20 m frontal clearance because
+    // it had no map frontier. The oriented future footprint still fits in the
+    // 1.20 m arena and must allow a short forward exploration command.
+    thesis_sim::WorldMap reported_pose_world = exploration_world;
+    reported_pose_world.set_start({0.840404, 0.518557});
+    reported_pose_world.set_start_heading(-0.188000);
+    thesis_sim::HardwarePlannerRunner reported_pose_runner(
+        reported_pose_world, bridge_options, direct_config);
+    const auto reported_pose_scan = make_scan(
+        reported_pose_world,
+        reported_pose_world.start(),
+        reported_pose_world.start_heading(),
+        direct_config);
+    bool reported_pose_moved_straight = false;
+    for (int step = 0; step < 20; ++step) {
+        reported_pose_runner.step_with_observation(
+            make_observation(20.0 + 0.10 * step, reported_pose_scan),
+            0.10,
+            false);
+        const auto& command = reported_pose_runner.last_command();
+        reported_pose_moved_straight = reported_pose_moved_straight ||
+            (reported_pose_runner.diagnostics().control_source ==
+                 thesis_sim::HardwareControlSource::StraightExploration &&
+             command.target_speed > 1e-4 &&
+             command.pwm_left > 0 &&
+             command.pwm_right > 0 &&
+             std::abs(command.target_yaw_rate) <= 1e-9);
+    }
+    if (!reported_pose_moved_straight) {
+        return fail("reported open-corridor pose still remained in HOLD");
+    }
+
     bootstrap_slam.connected = false;
     runner.apply_slam_toolbox_snapshot(bootstrap_slam);
     const std::size_t persistent_occupied =

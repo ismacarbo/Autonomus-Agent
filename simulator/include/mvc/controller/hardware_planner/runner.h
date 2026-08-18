@@ -160,6 +160,7 @@ enum class UnstructuredExplorationState {
     VerifyingGateCrossing,
     Hold,
     Complete,
+    AdvancingStraight,
 };
 
 enum class HardwareControlSource {
@@ -169,6 +170,7 @@ enum class HardwareControlSource {
     Recovery,
     StructuredMpc,
     SafetyStop,
+    StraightExploration,
 };
 
 enum class NavigationTargetKind {
