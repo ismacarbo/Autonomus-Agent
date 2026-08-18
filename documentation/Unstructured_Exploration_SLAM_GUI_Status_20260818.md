@@ -4,20 +4,23 @@
 
 The compact hardware `UnstructuredGates` pipeline is now perception-driven for
 both `HardwareLab` and Manual/Custom maps. It no longer uses the configured
-goal or the legacy forward search arc as an exploration route.
+goal or a SLAM frontier as a path-following route.
 
 The runtime sequence is:
 
 1. optional initial LiDAR start matching with the motors inhibited;
-2. stationary initial scan;
-3. continuously evaluate the current forward LiDAR corridor and update the map;
-4. use a straight known-free frontier when it is available, otherwise advance
-   directly with zero curvature from the current LiDAR scan;
+2. continuously evaluate the live 360-degree LiDAR and update the map;
+3. advance straight when the forward swept footprint is free;
+4. before reaching a boundary/obstacle, select a bounded forward LiDAR arc;
 5. immediately preempt exploration when a temporally confirmed physical gate
    is detected;
 6. generate the gate clothoid and follow it with MPC;
 7. verify crossing with longitudinal and lateral gate-plane tests;
 8. mark only the physical gate as passed and resume exploration.
+
+If no safe forward arc exists in a closed corner, a short LiDAR-validated
+reverse arc may reposition the car. It is an exceptional geometric escape,
+never a gate-pursuit command. Both wheel groups always retain the same sign.
 
 Frontier targets are tagged separately from physical gates. Reaching a
 frontier therefore cannot increment `passed_gates`. Compact unstructured runs
@@ -92,16 +95,17 @@ sensor before accepting scans.
 
 - `thesis_world_stream_roundtrip`: runtime checkboxes, exploration frame,
   persistent map vectors and extended telemetry survive serialization.
-- `thesis_unstructured_exploration_pipeline`: stationary start, no legacy
-  search arc, frontier selection, persistent fallback, SLAM/fallback switch,
-  fail-closed start matching, debug bypass and gate-over-frontier priority.
+- `thesis_unstructured_exploration_pipeline`: immediate live-LiDAR motion,
+  straight open-space exploration, bounded forward search near an arena edge,
+  no SLAM-frontier control, persistent fallback, SLAM/fallback switch,
+  fail-closed start matching, debug bypass and gate priority.
 - `thesis_slam_session_sequence_policy`: new session resets; duplicate and
   reordered UDP packets are stale and never reset the graph.
 - Python bytecode compilation for the SLAM bridge scripts.
 - Full C++ builds of `thesis_robot_runner` and `thesis_planner_sim`.
-- Synthetic HardwareLab runner check: the robot crossed the detected physical
-  aperture (`passed_gates=1`) without collision, then correctly remained in
-  open-ended exploration rather than declaring a scripted goal complete.
+- Synthetic HardwareLab runner check (600 steps / 60 s): two detected physical
+  apertures crossed, continued open-ended exploration, no collision, zero pure
+  pivots and zero opposite-PWM cycles.
 
 ## Hardware report correction — 21:02 / 21:04
 
@@ -123,6 +127,10 @@ converted into a search arc: absence of straight known-free space produces
 `HOLD`. Invalid references are physically cleared. A valid physical-gate
 clothoid remains authoritative for the MPC, while direct-yaw/in-place recovery
 and opposite-wheel PWM are forbidden for car-like mixed/unstructured runs.
+
+This conservative `HOLD` policy was an intermediate correction and is
+superseded by the 21:43 live-LiDAR exploration pipeline below. Mixed mode keeps
+the no-direct-yaw rule; Manual unstructured uses only swept, same-sign arcs.
 
 The regression test also covers a sparse 90-beam scan, forward motion after the
 initial scan, near-zero exploration yaw, and absence of opposite-wheel commands
@@ -158,3 +166,69 @@ search arc and cannot override a confirmed physical-gate clothoid. The
 integration regression explicitly forces the frontier minimum beyond the
 entire test arena and verifies positive forward PWM with an empty reference
 trajectory, followed by the existing gate-over-exploration priority test.
+
+The zero-curvature fallback described in this section remains the open-space
+case, but it is no longer the only exploration command. The 21:43 correction
+adds a forward LiDAR turn before straight motion would enter a dead end.
+
+## Gate steering and real exploration correction — 21:43
+
+The report
+`thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_214343_936`
+showed that the robot passed the first aperture, but did not reliably steer
+towards the next detected gate. During the failing segment the MPC requested a
+negative yaw rate while the estimated heading error grew from about 24 to 47
+degrees. The logical PWM was differential but forward (`82/70` in several
+samples); the physical left encoder repeatedly stayed at zero while the right
+side advanced. Therefore the report contains both a software-authority problem
+and evidence of residual left-wheel break-away/asymmetry. It does not justify
+another motor-channel swap; calibration profile 1.4 remains unchanged until an
+isolated left/right wheel test says otherwise.
+
+The historical comparison also excludes MVC itself as the cause. Commit
+`bdb01fb` mainly split the old monolithic runner; forward-arc search and tangent
+reacquisition were added later in `56af018` and `1e0c76a`. The old reports do
+not contain a conclusive pre-MVC physical validation: several apparent
+successes used the old virtual-goal completion or ended outside the compact
+arena. The repeatable validation was synthetic.
+
+The corrected Manual pipeline is now:
+
+1. a fresh valid LiDAR scan immediately enables exploration; there is no
+   stationary Manual startup phase;
+2. SLAM Toolbox keeps building/displaying the global map, but its frontier is
+   never converted into a motion reference;
+3. with no gate, one sector selector returns either
+   `ADVANCING_STRAIGHT/STRAIGHT_EXPLORATION` or
+   `SEARCHING_FREE_SPACE/FORWARD_SEARCH`;
+4. every candidate arc is checked at three poses over 0.18--0.26 m using the
+   oriented robot footprint, arena bounds and current LiDAR endpoints;
+5. a lateral/rear gate remains available as a search-direction hint but is
+   excluded from the clothoid planner until it enters the forward 85-degree
+   reachable sector;
+6. a reachable gate is locked, the planner generates its clothoid and the MPC
+   becomes authoritative;
+7. after crossing, the robot continues straight for one body length so its
+   rear clears both posts before free-space search resumes.
+
+For gate tracking, the actual runtime geometry now exposes `6.0 1/m` maximum
+curvature instead of the previous `1.8 1/m`: the permitted model radius changes
+from about 0.56 m to about 0.17 m, matching the tighter forward differential
+authority of the two motor groups. Ordinary errors remain under MPC control.
+If the local clothoid tangent error exceeds 0.70 rad, a hysteretic forward-only
+tangent acquisition engages and releases below 0.35 rad. Gate turns receive a
+14--38 PWM minimum left/right difference; both commands remain positive. The
+target is the clothoid tangent, not the gate-centre chord, so this does not
+reintroduce point pursuit.
+
+Verification after this correction:
+
+- complete Ninja build;
+- all 9 CTest tests passed;
+- the expanded integration test passed for open-space straight motion, the
+  exact 21:25 no-reference pose, pre-emptive boundary turning, an offset gate
+  with non-zero yaw and unequal positive PWM, SLAM persistence/toggle behavior,
+  start-matching bypass and mixed-mode no-pivot behavior;
+- the 600-step HardwareLab synthetic run timed out normally in open-ended
+  exploration after `passed_gates=2`, with `status=timeout`, no collision,
+  `pivot_command_cycles=0` and `opposite_pwm_cycles=0`.

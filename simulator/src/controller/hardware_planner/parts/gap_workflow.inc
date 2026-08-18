@@ -96,20 +96,76 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         lidar_hits_, estimate_.yaw, 0.0, sector_half_width, search_range);
     double best_heading = 0.0;
     double best_clearance = forward_clearance;
-    const double footprint_radius =
-        0.5 * std::hypot(geometry_.body_length, geometry_.body_width);
-    const double safe_bounds_margin = footprint_radius + 0.020;
+    std::optional<double> preferred_gate_heading;
+    double preferred_gate_heading_abs = std::numeric_limits<double>::infinity();
+    for (const GateSpec& spec : gate_specs_) {
+        const double heading = wrap_angle(
+            angle_to(estimate_.position, spec.position) - estimate_.yaw);
+        if (std::abs(heading) < preferred_gate_heading_abs) {
+            preferred_gate_heading_abs = std::abs(heading);
+            preferred_gate_heading = heading;
+        }
+    }
     const double probe_distance = clamp_value(
-        0.30 * world_span_m(world_),
-        0.20,
-        0.30);
+        0.20 * world_span_m(world_),
+        0.18,
+        0.26);
+    const double footprint_half_length =
+        0.5 * geometry_.body_length + 0.050;
+    const double footprint_half_width =
+        0.5 * geometry_.body_width + 0.050;
+    const auto lidar_footprint_is_clear = [&](const Vec2& centre, double yaw) {
+        const double cos_yaw = std::cos(yaw);
+        const double sin_yaw = std::sin(yaw);
+        for (const LidarHit& hit : lidar_hits_) {
+            if (!hit.hit ||
+                !(hit.distance > 0.0) ||
+                hit.distance >= config_.localization.max_range_m - 0.03) {
+                continue;
+            }
+            const double dx = hit.point.x - centre.x;
+            const double dy = hit.point.y - centre.y;
+            const double longitudinal = cos_yaw * dx + sin_yaw * dy;
+            const double lateral = -sin_yaw * dx + cos_yaw * dy;
+            if (std::abs(longitudinal) <= footprint_half_length &&
+                std::abs(lateral) <= footprint_half_width) {
+                return false;
+            }
+        }
+        return true;
+    };
     const auto heading_stays_in_arena = [&](double heading) {
-        const double world_heading = estimate_.yaw + heading;
-        const Vec2 probe{
-            estimate_.position.x + probe_distance * std::cos(world_heading),
-            estimate_.position.y + probe_distance * std::sin(world_heading),
-        };
-        return is_inside_bounds(world_, probe, -safe_bounds_margin);
+        // This is a forward arc, not an instantaneous translation along the
+        // selected ray. Validate three oriented footprints along a short arc,
+        // against both bounds and current LiDAR endpoints.
+        const double bounded_turn = clamp_value(heading, -1.25, 1.25);
+        for (double fraction : {0.35, 0.70, 1.0}) {
+            const double sample_turn = fraction * bounded_turn;
+            const double sample_heading = estimate_.yaw + 0.5 * sample_turn;
+            const Vec2 probe{
+                estimate_.position.x +
+                    fraction * probe_distance * std::cos(sample_heading),
+                estimate_.position.y +
+                    fraction * probe_distance * std::sin(sample_heading),
+            };
+            const double probe_yaw = estimate_.yaw + sample_turn;
+            const auto future_footprint = make_box_corners(
+                probe,
+                probe_yaw,
+                geometry_.body_length,
+                geometry_.body_width);
+            const bool footprint_inside_bounds = std::all_of(
+                future_footprint.begin(),
+                future_footprint.end(),
+                [&](const Vec2& corner) {
+                    return is_inside_bounds(world_, corner, -0.015);
+                });
+            if (!footprint_inside_bounds ||
+                !lidar_footprint_is_clear(probe, probe_yaw)) {
+                return false;
+            }
+        }
+        return true;
     };
     double best_score = heading_stays_in_arena(0.0)
         ? forward_clearance
@@ -129,8 +185,19 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
                   1.0) *
                   startup_scan_direction_ * heading / std::max(heading_limit, 1e-3)
             : 0.0;
+        const double candidate_alignment_bonus =
+            preferred_gate_heading.has_value()
+                ? 0.28 * std::cos(wrap_angle(heading - *preferred_gate_heading))
+                : 0.0;
+        const double post_reverse_turn_bias =
+            manual_exploration &&
+                    sim_time_ < lidar_post_reverse_search_until_s_
+                ? 0.38 * startup_scan_direction_ * heading /
+                      std::max(heading_limit, 1e-3)
+                : 0.0;
         const double score =
-            clearance - (manual_exploration ? 0.07 : 0.16) * std::abs(heading) + sweep_bias;
+            clearance - (manual_exploration ? 0.07 : 0.16) * std::abs(heading) +
+            sweep_bias + candidate_alignment_bonus + post_reverse_turn_bias;
         if (score > best_score) {
             best_score = score;
             best_clearance = clearance;
@@ -142,14 +209,24 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         config_.localization.obstacle_stop_distance_m + 0.055,
         config_.localization.min_valid_range_m + 0.10);
     if (!std::isfinite(best_score) || !(best_clearance > required_clearance)) {
-        // A 360-degree LiDAR can keep acquiring candidates while stationary.
+        // No forward arc is valid; the caller may try the separately
+        // footprint-validated reverse reposition or otherwise hold.
         return true;
     }
 
+    const bool clearing_recent_gate =
+        manual_exploration &&
+        !passed_unstructured_gap_positions_.empty() &&
+        distance(estimate_.position, passed_unstructured_gap_positions_.back()) <
+            geometry_.body_length;
     if (heading_stays_in_arena(0.0) &&
-        (!manual_exploration || unstructured_no_candidate_scan_elapsed_s_ < 0.80) &&
+        (!manual_exploration ||
+         (gate_specs_.empty() &&
+          (unstructured_no_candidate_scan_elapsed_s_ < 0.80 ||
+           clearing_recent_gate))) &&
         forward_clearance > required_clearance &&
-        forward_clearance + 0.10 >= best_clearance) {
+        (clearing_recent_gate ||
+         forward_clearance + 0.10 >= best_clearance)) {
         best_heading = 0.0;
         best_clearance = forward_clearance;
     }
@@ -1188,36 +1265,31 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         }
     }
 
-    const bool frontier_exploration_enabled =
-        manual_unstructured_exploration(world_) &&
-        config_.frontier_exploration.enabled;
-    if (frontier_exploration_enabled) {
-        const double initial_scan_duration =
-            std::max(config_.gap_extraction.startup_scan_duration_s, 0.0);
-        if (!startup_scan_complete_) {
-            startup_scan_elapsed_s_ += std::max(dt, 0.0);
-            startup_scan_complete_ = startup_scan_elapsed_s_ >= initial_scan_duration;
-            exploration_state_ = UnstructuredExplorationState::InitialScan;
-            if (!startup_scan_complete_) {
-                gates_.clear();
-                gate_specs_.clear();
-                visible_gate_indices_.clear();
-                chosen_gate_index_ = -1;
-                return;
-            }
-        }
+    const bool manual_lidar_exploration =
+        manual_unstructured_exploration(world_);
+    if (manual_lidar_exploration) {
+        // Manual Editor is an open-ended exploration mission. A stationary
+        // startup scan delays discovery and is unnecessary because every
+        // forward command is already gated by a fresh LiDAR corridor check.
+        startup_scan_complete_ = true;
+        startup_scan_elapsed_s_ = config_.gap_extraction.startup_scan_duration_s;
 
         if (gate_specs_.empty()) {
+            // SLAM remains active for mapping and visualization, but a map
+            // frontier must not become a path-following objective in this
+            // mode. Control will first advance straight and, when that is no
+            // longer safe, use the 360-degree LiDAR sector search.
+            clear_exploration_target("lidar_exploration_no_gate");
             chosen_gate_index_ = -1;
             visible_gate_indices_.clear();
             diagnostics_.candidate_gates = 0;
-            update_exploration_target();
+            unstructured_no_candidate_scan_elapsed_s_ += std::max(dt, 0.0);
             return;
         }
 
-        // A confirmed aperture always preempts frontier navigation.
-        clear_exploration_target("physical_gate_preempted_frontier");
+        clear_exploration_target("physical_gate_preempted_lidar_exploration");
         startup_scan_complete_ = true;
+        unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     }
 
     const bool strict_locked_motion = strict_locked_gate_motion_enabled();
@@ -1227,7 +1299,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         unstructured_no_candidate_scan_elapsed_s_ = 0.0;
     }
     const bool startup_scan_enabled =
-        !frontier_exploration_enabled &&
+        !manual_lidar_exploration &&
         config_.gap_extraction.startup_scan_duration_s > 1e-3;
     if (!startup_scan_enabled) {
         startup_scan_complete_ = true;
@@ -1316,10 +1388,11 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         manual_exploration &&
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
     // A differential car can observe a gate with the 360-degree LiDAR before
-        // it can reach it with a forward clothoid. Keep those rear candidates in
-        // perception, but select a reachable exploration frontier before a gate
-        // target is locked. Directly locking a 100--145 degree candidate creates
-    // a looping clothoid and can send the footprint outside the small arena.
+    // it can reach it with a forward clothoid. Keep those rear candidates in
+    // perception, but do not lock them until forward LiDAR exploration brings
+    // one into the reachable sector. Directly locking a 100--145 degree
+    // candidate creates a looping clothoid and can send the footprint outside
+    // the small arena.
     const double reachable_heading_limit =
         (manual_car ? 85.0 : (manual_exploration ? 145.0 : 85.0)) *
         kPi / 180.0;
@@ -1333,20 +1406,21 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         }
     }
     if (manual_car && !have_reachable_gate) {
-        // Preserve the 360-degree detections, but do not hand a rear target to
-        // the forward-only car planner. Use a map frontier to improve the
-        // viewpoint until an aperture enters the reachable sector.
-        if (frontier_exploration_enabled) {
-            gates_.clear();
-            gate_specs_.clear();
-            update_exploration_target();
-            return;
+        // Preserve the detections so the sector search can bias its forward
+        // arc toward the closest gate. Mark them inactive only for the
+        // clothoid planner: no map frontier and no looping rear-target path.
+        for (gate& candidate : gates_) {
+            candidate.choose = false;
+            candidate.too_far = true;
         }
-        startup_scan_complete_ = false;
-        startup_scan_elapsed_s_ = 0.0;
         visible_gate_indices_.clear();
         chosen_gate_index_ = -1;
+        diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
         diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+        reference_trajectory_.clear();
+        planned_trajectory_.clear();
+        last_mpc_command_.reset();
+        exploration_state_ = UnstructuredExplorationState::SearchingFreeSpace;
         return;
     }
     for (size_t i = 0; i < gate_specs_.size(); ++i) {

@@ -168,10 +168,9 @@ int main() {
         make_scan(exploration_world, exploration_world.start(),
                   exploration_world.start_heading(), config);
 
-    // A partial optimized map models the normal state after the initial
-    // stationary scan: the observed corridor is free and its far edge is an
-    // information frontier. Unknown cells beyond x=0.62 are deliberately not
-    // transmitted by OccupancyGrid.
+    // Keep a partial optimized map connected. In Manual unstructured mode it
+    // must remain available for visualization without becoming a navigation
+    // target: motion is driven by the live LiDAR/gate pipeline.
     thesis_sim::SlamToolboxSnapshot bootstrap_slam;
     bootstrap_slam.session_id = "bootstrap";
     bootstrap_slam.connected = true;
@@ -185,9 +184,8 @@ int main() {
     }
     runner.apply_slam_toolbox_snapshot(bootstrap_slam);
 
-    bool saw_frontier = false;
+    bool saw_frontier_control = false;
     bool saw_gate_control = false;
-    bool saw_recovery_arc = false;
     bool saw_forward_exploration_motion = false;
     bool saw_curved_exploration_command = false;
     for (int step = 0; step < 20; ++step) {
@@ -198,24 +196,14 @@ int main() {
         if (runner.last_command().pwm_left * runner.last_command().pwm_right < 0) {
             return fail("unstructured exploration issued opposing-wheel PWM");
         }
-        if (step < 2 &&
-            (runner.last_command().pwm_left != 0 ||
-             runner.last_command().pwm_right != 0 ||
-             std::abs(runner.last_command().target_yaw_rate) > 1e-9)) {
-            return fail("initial observation phase issued a motion command");
-        }
-        saw_frontier = saw_frontier ||
-            runner.diagnostics().selected_frontier_valid ||
+        saw_frontier_control = saw_frontier_control ||
             runner.diagnostics().control_source ==
                 thesis_sim::HardwareControlSource::FrontierMpc;
         saw_gate_control = saw_gate_control ||
             runner.diagnostics().control_source ==
                 thesis_sim::HardwareControlSource::GateMpc;
-        saw_recovery_arc = saw_recovery_arc ||
-            runner.diagnostics().control_source ==
-                thesis_sim::HardwareControlSource::Recovery;
         if (runner.diagnostics().control_source ==
-                thesis_sim::HardwareControlSource::FrontierMpc) {
+                thesis_sim::HardwareControlSource::StraightExploration) {
             saw_forward_exploration_motion = saw_forward_exploration_motion ||
                 (runner.last_command().target_speed > 1e-4 &&
                  runner.last_command().pwm_left > 0 &&
@@ -224,20 +212,17 @@ int main() {
                 std::abs(runner.last_command().target_yaw_rate) > 0.015;
         }
     }
-    if (!saw_frontier) {
-        return fail("HardwareLab did not transition from stationary scan to frontier exploration");
+    if (saw_frontier_control || runner.diagnostics().selected_frontier_valid) {
+        return fail("Manual exploration incorrectly used a SLAM frontier as a motion target");
     }
     if (saw_gate_control) {
         return fail("a frontier target was misclassified as a physical gate");
     }
-    if (saw_recovery_arc) {
-        return fail("empty-arena exploration fell back to the legacy search arc");
-    }
     if (!saw_forward_exploration_motion) {
-        return fail("straight frontier exploration never issued a forward command");
+        return fail("live LiDAR exploration did not move from the initial pose");
     }
     if (saw_curved_exploration_command) {
-        return fail("straight frontier exploration issued a curved command");
+        return fail("open-corridor LiDAR exploration issued a curved command");
     }
     if (runner.global_free_points().empty() ||
         runner.global_occupied_points().empty()) {
@@ -320,23 +305,89 @@ int main() {
         reported_pose_world.start(),
         reported_pose_world.start_heading(),
         direct_config);
-    bool reported_pose_moved_straight = false;
+    bool reported_pose_kept_exploring = false;
     for (int step = 0; step < 20; ++step) {
         reported_pose_runner.step_with_observation(
             make_observation(20.0 + 0.10 * step, reported_pose_scan),
             0.10,
             false);
         const auto& command = reported_pose_runner.last_command();
-        reported_pose_moved_straight = reported_pose_moved_straight ||
-            (reported_pose_runner.diagnostics().control_source ==
-                 thesis_sim::HardwareControlSource::StraightExploration &&
+        const auto source = reported_pose_runner.diagnostics().control_source;
+        reported_pose_kept_exploring = reported_pose_kept_exploring ||
+            ((source == thesis_sim::HardwareControlSource::StraightExploration ||
+              source == thesis_sim::HardwareControlSource::ForwardSearch) &&
              command.target_speed > 1e-4 &&
              command.pwm_left > 0 &&
              command.pwm_right > 0 &&
-             std::abs(command.target_yaw_rate) <= 1e-9);
+             !reported_pose_runner.diagnostics().planner_has_reference);
     }
-    if (!reported_pose_moved_straight) {
-        return fail("reported open-corridor pose still remained in HOLD");
+    if (!reported_pose_kept_exploring) {
+        std::cerr << "reported_pose_debug state="
+                  << thesis_sim::unstructured_exploration_state_name(
+                         reported_pose_runner.diagnostics().exploration_state)
+                  << " control="
+                  << thesis_sim::hardware_control_source_name(
+                         reported_pose_runner.diagnostics().control_source)
+                  << " speed=" << reported_pose_runner.last_command().target_speed
+                  << " yaw_rate=" << reported_pose_runner.last_command().target_yaw_rate
+                  << " pwm=" << reported_pose_runner.last_command().pwm_left
+                  << ',' << reported_pose_runner.last_command().pwm_right
+                  << " front=" << reported_pose_runner.estimate().front_lidar_distance
+                  << " min=" << reported_pose_runner.estimate().min_lidar_distance
+                  << '\n';
+        return fail("reported no-clothoid pose still remained in HOLD");
+    }
+
+    // Reproduce the approach to the terminal area of report
+    // 20260818_214343_936. The longer future-footprint probe must start a
+    // bounded LiDAR arc while there is still room to turn, before reaching the
+    // report's final 15.7 cm frontal clearance and mandatory safety stop.
+    thesis_sim::WorldMap search_pose_world = exploration_world;
+    search_pose_world.set_start({0.920000, 0.509180});
+    search_pose_world.set_start_heading(-0.629000);
+    thesis_sim::HardwarePlannerRunner search_pose_runner(
+        search_pose_world, bridge_options, direct_config);
+    const auto search_pose_scan = make_scan(
+        search_pose_world,
+        search_pose_world.start(),
+        search_pose_world.start_heading(),
+        direct_config);
+    bool saw_forward_search_turn = false;
+    for (int step = 0; step < 20; ++step) {
+        search_pose_runner.step_with_observation(
+            make_observation(25.0 + 0.10 * step, search_pose_scan),
+            0.10,
+            false);
+        const auto& command = search_pose_runner.last_command();
+        if (command.pwm_left * command.pwm_right < 0) {
+            return fail("boundary LiDAR search issued opposing-wheel PWM");
+        }
+        saw_forward_search_turn = saw_forward_search_turn ||
+            (search_pose_runner.diagnostics().control_source ==
+                 thesis_sim::HardwareControlSource::ForwardSearch &&
+             command.target_speed > 1e-4 &&
+             std::abs(command.target_yaw_rate) > 0.015 &&
+             command.pwm_left > 0 &&
+             command.pwm_right > 0);
+    }
+    if (!saw_forward_search_turn) {
+        std::cerr << "search_pose_debug state="
+                  << thesis_sim::unstructured_exploration_state_name(
+                         search_pose_runner.diagnostics().exploration_state)
+                  << " control="
+                  << thesis_sim::hardware_control_source_name(
+                         search_pose_runner.diagnostics().control_source)
+                  << " speed=" << search_pose_runner.last_command().target_speed
+                  << " yaw_rate=" << search_pose_runner.last_command().target_yaw_rate
+                  << " pwm=" << search_pose_runner.last_command().pwm_left
+                  << ',' << search_pose_runner.last_command().pwm_right
+                  << " front=" << search_pose_runner.estimate().front_lidar_distance
+                  << " min=" << search_pose_runner.estimate().min_lidar_distance
+                  << " valid=" << search_pose_runner.diagnostics().valid_lidar_points
+                  << " invalidation='"
+                  << search_pose_runner.diagnostics().reference_invalidation_reason
+                  << "'\n";
+        return fail("reported boundary pose did not continue with a forward LiDAR search arc");
     }
 
     bootstrap_slam.connected = false;
@@ -401,12 +452,15 @@ int main() {
     // Feed the same planner a scan from the physical two-wall gate fixture.
     // A confirmed aperture must replace any active frontier and become the
     // clothoid/MPC control source.
+    thesis_sim::WorldMap offset_gate_world = exploration_world;
+    offset_gate_world.set_start_heading(0.25);
     thesis_sim::HardwarePlannerRunner gate_runner(
-        exploration_world, bridge_options, config);
+        offset_gate_world, bridge_options, config);
     const std::vector<thesis_sim::RPLidarA1::ScanPoint> gate_scan =
-        make_scan(physical_fixture, exploration_world.start(),
-                  exploration_world.start_heading(), config);
+        make_scan(physical_fixture, offset_gate_world.start(),
+                  offset_gate_world.start_heading(), config);
     bool saw_physical_gate = false;
+    bool saw_gate_steering_authority = false;
     int maximum_gate_candidates = 0;
     int maximum_reference_points = 0;
     int maximum_chosen_gate = -1;
@@ -420,6 +474,15 @@ int main() {
         saw_physical_gate = saw_physical_gate ||
             gate_runner.diagnostics().control_source ==
                 thesis_sim::HardwareControlSource::GateMpc;
+        saw_gate_steering_authority = saw_gate_steering_authority ||
+            (gate_runner.diagnostics().control_source ==
+                 thesis_sim::HardwareControlSource::GateMpc &&
+             gate_runner.last_command().target_speed > 1e-4 &&
+             std::abs(gate_runner.last_command().target_yaw_rate) > 0.015 &&
+             gate_runner.last_command().pwm_left > 0 &&
+             gate_runner.last_command().pwm_right > 0 &&
+             gate_runner.last_command().pwm_left !=
+                 gate_runner.last_command().pwm_right);
         maximum_gate_candidates = std::max(
             maximum_gate_candidates,
             gate_runner.diagnostics().candidate_gates);
@@ -455,6 +518,9 @@ int main() {
                           : gate_runner.gate_specs().front().position.y)
                   << '\n';
         return fail("LiDAR-confirmed gate did not preempt frontier navigation");
+    }
+    if (!saw_gate_steering_authority) {
+        return fail("gate MPC did not produce a forward differential steering command");
     }
 
     // The closed mixed hardware road used in the reported run may legitimately

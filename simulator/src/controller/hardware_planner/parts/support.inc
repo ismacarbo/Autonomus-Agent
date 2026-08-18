@@ -175,8 +175,8 @@ bool manual_unstructured_exploration(const WorldMap& world) {
     // Hardware unstructured missions are perception-driven regardless of the
     // GUI preset.  Preset gates are stripped before execution, so using the
     // preset goal as a search heading would silently reintroduce a scripted
-    // arc in HardwareLab.  The only motion targets here are map frontiers and
-    // LiDAR-confirmed physical apertures.
+    // arc in HardwareLab. The only motion objectives here are live LiDAR
+    // free-space exploration and LiDAR-confirmed physical apertures.
     return compact_hardware_unstructured_world(world);
 }
 

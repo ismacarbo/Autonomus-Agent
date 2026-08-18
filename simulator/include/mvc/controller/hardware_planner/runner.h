@@ -161,6 +161,7 @@ enum class UnstructuredExplorationState {
     Hold,
     Complete,
     AdvancingStraight,
+    SearchingFreeSpace,
 };
 
 enum class HardwareControlSource {
@@ -171,6 +172,7 @@ enum class HardwareControlSource {
     StructuredMpc,
     SafetyStop,
     StraightExploration,
+    ForwardSearch,
 };
 
 enum class NavigationTargetKind {
@@ -772,6 +774,8 @@ class HardwarePlannerRunner {
     double stuck_motion_elapsed_s_ = 0.0;
     double stuck_recovery_until_s_ = -1.0;
     double stuck_recovery_direction_ = 1.0;
+    double lidar_reverse_reposition_until_s_ = -1.0;
+    double lidar_post_reverse_search_until_s_ = -1.0;
     double last_controller_rearm_time_s_ = -1.0;
     double active_lidar_scan_duration_s_ = 0.0;
     bool use_dynamic_gap_gates_ = false;

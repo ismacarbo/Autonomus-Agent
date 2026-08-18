@@ -195,7 +195,15 @@ void HardwarePlannerRunner::reset() {
     const bool compact_manual_unstructured_car =
         manual_unstructured_exploration(world_) &&
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
-    if (micro_structured_world(world_)) {
+    if (compact_manual_unstructured_car) {
+        // The physical car is actuated by independent left/right motor groups.
+        // A 1.8 1/m bicycle limit gives a 0.56 m minimum radius and cannot
+        // follow the few-decimetre gate clothoids used in the 1.20 m arena.
+        // Keep the MPC bicycle prediction, but expose the tighter forward-only
+        // differential authority that the drivetrain can actually execute.
+        geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.10);
+        geometry_.max_curvature = std::max(geometry_.max_curvature, 6.0);
+    } else if (micro_structured_world(world_)) {
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.35);
         geometry_.max_curvature = std::max(geometry_.max_curvature, 14.0);
     } else if (compact_structured_world(world_)) {
@@ -328,6 +336,8 @@ void HardwarePlannerRunner::reset() {
     stuck_motion_elapsed_s_ = 0.0;
     stuck_recovery_until_s_ = -1.0;
     stuck_recovery_direction_ = 1.0;
+    lidar_reverse_reposition_until_s_ = -1.0;
+    lidar_post_reverse_search_until_s_ = -1.0;
     last_controller_rearm_time_s_ = -1.0;
     active_lidar_scan_duration_s_ = 0.0;
     slam_pose_valid_ = false;
@@ -438,6 +448,8 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     right_wheel_stall_cycles_ = 0;
     left_wheel_breakaway_hold_cycles_ = 0;
     right_wheel_breakaway_hold_cycles_ = 0;
+    lidar_reverse_reposition_until_s_ = -1.0;
+    lidar_post_reverse_search_until_s_ = -1.0;
     stall_boost_active_ = false;
     encoder_slip_guard_active_ = false;
     tracker_cross_track_error_ = 0.0;

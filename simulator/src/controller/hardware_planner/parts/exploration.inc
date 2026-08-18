@@ -21,6 +21,7 @@ const char* unstructured_exploration_state_name(UnstructuredExplorationState sta
         case UnstructuredExplorationState::Hold: return "HOLD";
         case UnstructuredExplorationState::Complete: return "COMPLETE";
         case UnstructuredExplorationState::AdvancingStraight: return "ADVANCING_STRAIGHT";
+        case UnstructuredExplorationState::SearchingFreeSpace: return "SEARCHING_FREE_SPACE";
         case UnstructuredExplorationState::Disabled:
         default: return "DISABLED";
     }
@@ -34,6 +35,7 @@ const char* hardware_control_source_name(HardwareControlSource source) {
         case HardwareControlSource::StructuredMpc: return "STRUCTURED_MPC";
         case HardwareControlSource::SafetyStop: return "SAFETY_STOP";
         case HardwareControlSource::StraightExploration: return "STRAIGHT_EXPLORATION";
+        case HardwareControlSource::ForwardSearch: return "FORWARD_SEARCH";
         case HardwareControlSource::Hold:
         default: return "HOLD";
     }

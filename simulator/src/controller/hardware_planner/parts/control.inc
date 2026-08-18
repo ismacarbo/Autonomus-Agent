@@ -131,6 +131,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 &search_yaw_rate)) {
             return false;
         }
+        if (search_speed <= 1e-4) {
+            return false;
+        }
 
         use_direct_yaw_rate_command = true;
         commanded_steer_angle_ = 0.0;
@@ -141,6 +144,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         commanded_speed_ = search_speed;
         last_command_.target_speed = search_speed;
         allow_unlocked_recovery_motion = search_speed > 1e-4;
+        const bool straight_search_command =
+            manual_unstructured_exploration(world_) &&
+            std::abs(search_yaw_rate) <= 0.015;
+        gap_recovery_turn_active_ = !straight_search_command;
+        exploration_state_ = straight_search_command
+            ? UnstructuredExplorationState::AdvancingStraight
+            : UnstructuredExplorationState::SearchingFreeSpace;
+        control_source_ = straight_search_command
+            ? HardwareControlSource::StraightExploration
+            : HardwareControlSource::ForwardSearch;
         return true;
     };
 
@@ -226,101 +239,129 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         return true;
     };
 
-    auto apply_straight_lidar_exploration = [&]() {
+    auto apply_reverse_lidar_reposition = [&]() {
         if (!manual_unstructured_exploration(world_) ||
             tracked_vehicle ||
             scanning_startup ||
             goal_reached_ ||
+            !gate_specs_.empty() ||
             locked_gap_goal_.has_value() ||
-            navigation_target_kind_ == NavigationTargetKind::PhysicalGate ||
             have_reference_trajectory) {
             return false;
         }
 
-        // Exploration must not depend on SLAM/frontier availability. A fresh
-        // LiDAR scan and a free corridor are sufficient to move straight;
-        // gate detection continues every scan and preempts this command as
-        // soon as a physical gate produces a valid clothoid.
-        const int required_scan_points =
-            std::max(config_.localization.min_scan_points, 6);
-        if (diagnostics_.valid_lidar_points < required_scan_points) {
-            return false;
-        }
-
-        const double scan_range = clamp_value(
-            config_.gap_extraction.planning_max_range_m,
-            config_.localization.min_valid_range_m + 0.10,
-            config_.localization.max_range_m);
-        const double corridor_half_angle = clamp_value(
-            config_.localization.front_sector_half_angle_rad,
-            0.18,
-            0.34);
-        const double forward_clearance = sector_min_clearance(
+        // A bounded forward-only car can reach a corner from which every
+        // forward arc intersects the footprint margin. Do not hold forever:
+        // after live LiDAR has rejected both straight motion and all forward
+        // sectors, back up a short distance only if the complete rear swept
+        // footprint is clear. This is a geometric escape, never gate pursuit.
+        const double rear_clearance = sector_min_clearance(
             lidar_hits_,
             estimate_.yaw,
-            0.0,
-            corridor_half_angle,
-            scan_range);
-        const double required_clearance = std::max(
+            kPi,
+            0.30,
+            config_.localization.max_range_m);
+        const double required_rear_clearance = std::max(
             config_.localization.obstacle_stop_distance_m + 0.055,
             config_.localization.min_valid_range_m + 0.16);
-        if (!(forward_clearance > required_clearance) ||
-            (estimate_.front_lidar_distance > 0.0 &&
-             estimate_.front_lidar_distance <= required_clearance)) {
+        if (!(rear_clearance > required_rear_clearance)) {
             return false;
         }
 
-        const double probe_distance = clamp_value(
-            0.10 * forward_clearance,
-            0.06,
-            0.10);
-        const Vec2 forward_probe{
-            estimate_.position.x + probe_distance * std::cos(estimate_.yaw),
-            estimate_.position.y + probe_distance * std::sin(estimate_.yaw),
+        if (sim_time_ >= lidar_reverse_reposition_until_s_) {
+            const double left_clearance = sector_min_clearance(
+                lidar_hits_, estimate_.yaw, 0.78, 0.36,
+                config_.localization.max_range_m);
+            const double right_clearance = sector_min_clearance(
+                lidar_hits_, estimate_.yaw, -0.78, 0.36,
+                config_.localization.max_range_m);
+            // This sign is the desired subsequent forward turn. Reverse
+            // steering uses the opposite yaw sign so the body translates away
+            // from the crowded side before that turn.
+            startup_scan_direction_ =
+                left_clearance >= right_clearance ? 1.0 : -1.0;
+            lidar_reverse_reposition_until_s_ = sim_time_ + 1.80;
+            lidar_post_reverse_search_until_s_ = sim_time_ + 4.00;
+        }
+
+        constexpr double kReverseProbeDistanceM = 0.080;
+        constexpr double kReverseSpeedMps = -0.030;
+        const double footprint_half_length =
+            0.5 * geometry_.body_length + 0.030;
+        const double footprint_half_width =
+            0.5 * geometry_.body_width + 0.030;
+        const auto reverse_arc_is_clear = [&](double yaw_rate) {
+            const double reverse_probe_time_s =
+                kReverseProbeDistanceM / std::abs(kReverseSpeedMps);
+            const double reverse_yaw_delta =
+                yaw_rate * reverse_probe_time_s;
+            const double reverse_probe_heading =
+                estimate_.yaw + 0.5 * reverse_yaw_delta;
+            const Vec2 reverse_probe{
+                estimate_.position.x -
+                    kReverseProbeDistanceM * std::cos(reverse_probe_heading),
+                estimate_.position.y -
+                    kReverseProbeDistanceM * std::sin(reverse_probe_heading),
+            };
+            const double reverse_probe_yaw =
+                estimate_.yaw + reverse_yaw_delta;
+            const auto reverse_footprint = make_box_corners(
+                reverse_probe,
+                reverse_probe_yaw,
+                geometry_.body_length,
+                geometry_.body_width);
+            if (std::any_of(
+                    reverse_footprint.begin(),
+                    reverse_footprint.end(),
+                    [&](const Vec2& corner) {
+                        return !is_inside_bounds(world_, corner, -0.015);
+                    })) {
+                return false;
+            }
+
+            const double cos_yaw = std::cos(reverse_probe_yaw);
+            const double sin_yaw = std::sin(reverse_probe_yaw);
+            return std::none_of(
+                lidar_hits_.begin(),
+                lidar_hits_.end(),
+                [&](const LidarHit& hit) {
+                    if (!hit.hit ||
+                        !(hit.distance > 0.0) ||
+                        hit.distance >= config_.localization.max_range_m - 0.03) {
+                        return false;
+                    }
+                    const double dx = hit.point.x - reverse_probe.x;
+                    const double dy = hit.point.y - reverse_probe.y;
+                    const double longitudinal = cos_yaw * dx + sin_yaw * dy;
+                    const double lateral = -sin_yaw * dx + cos_yaw * dy;
+                    return std::abs(longitudinal) <= footprint_half_length &&
+                           std::abs(lateral) <= footprint_half_width;
+                });
         };
-        const auto future_footprint = make_box_corners(
-            forward_probe,
-            estimate_.yaw,
-            geometry_.body_length,
-            geometry_.body_width);
-        const bool future_footprint_outside_bounds = std::any_of(
-            future_footprint.begin(),
-            future_footprint.end(),
-            [&](const Vec2& corner) {
-                return !is_inside_bounds(world_, corner, -0.015);
-            });
-        if (future_footprint_outside_bounds) {
+        double reverse_yaw_rate = -startup_scan_direction_ * 0.15;
+        if (!reverse_arc_is_clear(reverse_yaw_rate)) {
+            reverse_yaw_rate = startup_scan_direction_ * 0.15;
+        }
+        if (!reverse_arc_is_clear(reverse_yaw_rate)) {
+            reverse_yaw_rate = 0.0;
+        }
+        if (!reverse_arc_is_clear(reverse_yaw_rate)) {
             return false;
         }
-
-        const double clearance_scale = clamp_value(
-            (forward_clearance - required_clearance) / 0.35,
-            0.0,
-            1.0);
-        const double speed_cap = std::max(
-            0.0,
-            std::min(0.060, speed_limit));
-        if (speed_cap <= 1e-4) {
-            return false;
-        }
-        const double speed_floor = std::min(0.045, speed_cap);
-        const double straight_speed = clamp_value(
-            speed_floor + (speed_cap - speed_floor) * clearance_scale,
-            speed_floor,
-            speed_cap);
 
         allow_unlocked_recovery_motion = true;
-        gap_recovery_turn_active_ = false;
-        use_direct_yaw_rate_command = false;
-        direct_yaw_rate_command = 0.0;
-        commanded_speed_ = straight_speed;
+        allow_reverse_recovery_motion = true;
+        gap_recovery_turn_active_ = true;
+        use_direct_yaw_rate_command = true;
+        direct_yaw_rate_command = reverse_yaw_rate;
+        commanded_speed_ = kReverseSpeedMps;
         commanded_steer_angle_ = 0.0;
-        last_command_.target_speed = straight_speed;
+        last_command_.target_speed = commanded_speed_;
         last_command_.target_curvature = 0.0;
-        last_command_.target_yaw_rate = 0.0;
+        last_command_.target_yaw_rate = reverse_yaw_rate;
         last_mpc_command_.reset();
-        exploration_state_ = UnstructuredExplorationState::AdvancingStraight;
-        control_source_ = HardwareControlSource::StraightExploration;
+        exploration_state_ = UnstructuredExplorationState::SearchingFreeSpace;
+        control_source_ = HardwareControlSource::Recovery;
         return true;
     };
 
@@ -529,25 +570,34 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const double gap_acquire_clearance = std::max(
         config_.localization.min_valid_range_m + 0.04,
         config_.localization.obstacle_stop_distance_m - 0.01);
-    const double gap_acquire_forward_clearance = compact_hardware_car
+    const double gap_acquire_forward_clearance = forward_creep_gate_car
         ? std::max(config_.localization.obstacle_stop_distance_m - 0.010,
                    config_.localization.min_valid_range_m + 0.035)
         : std::max(config_.localization.obstacle_stop_distance_m + 0.07,
                    config_.localization.min_valid_range_m + 0.14);
-    if (!authoritative_clothoid_mpc_active &&
+    const bool manual_clothoid_tangent_acquisition =
+        authoritative_clothoid_mpc_active &&
+        compact_unstructured_car &&
+        navigation_target_kind_ == NavigationTargetKind::PhysicalGate &&
+        have_motion_heading &&
+        std::abs(motion_heading_local) >
+            (gap_recovery_turn_active_ ? 0.35 : 0.70);
+    if ((!authoritative_clothoid_mpc_active || manual_clothoid_tangent_acquisition) &&
         !scanning_startup &&
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
         (!strict_locked_motion || locked_gap_goal_.has_value()) &&
         have_motion_heading) {
-        // Point-acquisition is a fallback for modes that do not make the local
-        // clothoid authoritative. Manual Editor is excluded above while its
-        // MPC solution is valid.
+        // Normally this is a fallback for modes without an authoritative
+        // clothoid. In compact Manual Editor it is also a hysteretic tangent
+        // acquisition stage for large errors: it aims at the clothoid tangent,
+        // never at the gate-centre chord, and remains a forward-only arc.
         const double heading_error = motion_heading_local;
-        const double heading_threshold =
-            gap_recovery_turn_active_
-                ? config_.gap_extraction.gap_acquire_hold_heading_rad
-                : config_.gap_extraction.gap_acquire_enter_heading_rad;
+        const double heading_threshold = manual_clothoid_tangent_acquisition
+            ? (gap_recovery_turn_active_ ? 0.35 : 0.70)
+            : (gap_recovery_turn_active_
+                   ? config_.gap_extraction.gap_acquire_hold_heading_rad
+                   : config_.gap_extraction.gap_acquire_enter_heading_rad);
         const bool motion_heading_supported =
             motion_sector_clearance <= 0.0 || motion_sector_clearance > gap_acquire_clearance;
         if (std::abs(heading_error) > heading_threshold && motion_heading_supported) {
@@ -569,9 +619,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                     ? std::max(config_.gap_extraction.gap_acquire_turn_in_place_heading_rad, 1.55)
                     : config_.gap_extraction.gap_acquire_turn_in_place_heading_rad,
                 heading_threshold + 0.02);
-            const double drive_heading_limit = strict_locked_motion
+            double drive_heading_limit = strict_locked_motion
                 ? std::max(config_.gap_extraction.strict_locked_gate_drive_heading_rad, turn_in_place_heading)
                 : turn_in_place_heading;
+            if (compact_unstructured_car) {
+                drive_heading_limit = std::max(drive_heading_limit, 1.50);
+            }
             const bool locked_gate_drive_allowed =
                 !strict_locked_motion || locked_gap_goal_.has_value();
             if (locked_gate_drive_allowed &&
@@ -647,7 +700,21 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
         if (manual_unstructured_exploration(world_)) {
-            if (!apply_straight_lidar_exploration()) {
+            // One LiDAR-sector selector owns both cases: it returns zero yaw in
+            // an open corridor and a bounded forward arc near obstacles or
+            // bounds. This prevents a barely-valid straight fallback from
+            // undoing a boundary-avoidance turn on the following cycle.
+            bool exploration_motion = false;
+            if (sim_time_ < lidar_reverse_reposition_until_s_) {
+                exploration_motion = apply_reverse_lidar_reposition();
+            }
+            if (!exploration_motion) {
+                exploration_motion = apply_forward_gate_search();
+            }
+            if (!exploration_motion) {
+                exploration_motion = apply_reverse_lidar_reposition();
+            }
+            if (!exploration_motion) {
                 gap_recovery_turn_active_ = false;
                 use_gap_recovery_turn = false;
                 use_direct_yaw_rate_command = false;
@@ -877,12 +944,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.localization.min_valid_range_m + 0.16);
     const bool effective_lidar_front_blocked =
         lidar_front_blocked && !mixed_gate_side_motion_clear && !static_map_front_block_only;
+    const bool validated_reverse_reposition =
+        allow_reverse_recovery_motion &&
+        last_command_.target_speed < -1e-4;
     if ((config_.planner_safety_stop_enabled ||
          dynamic_gap_safety_stop_enabled ||
          compact_unstructured_search_safety_enabled) &&
         (!scanning_startup || compact_unstructured_car) &&
         (!use_gap_recovery_turn || compact_unstructured_car) &&
-        (effective_lidar_front_blocked || lidar_side_clearance_blocked)) {
+        ((!validated_reverse_reposition && effective_lidar_front_blocked) ||
+         lidar_side_clearance_blocked)) {
         safety_stop_active_ = true;
         last_command_.safety_stop = true;
         commanded_speed_ = 0.0;
@@ -1150,14 +1221,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
 
     if (!tracked_vehicle &&
-        (world_is_mixed(world_) || compact_unstructured_car) &&
+        world_is_mixed(world_) &&
         use_direct_yaw_rate_command) {
-        // A car-like hardware profile must never translate a point-acquisition
-        // or recovery request into an in-place differential turn.  With the
-        // measured drivetrain this is exactly the -PWM/+PWM arc seen in the
-        // hardware report.  Valid gate curvature remains controlled by the MPC
-        // above; without a valid clothoid the only safe fallback is straight
-        // motion (when already requested) or hold.
+        // Mixed road mode owns an explicit structured/clothoid reference and
+        // must never replace it with point-acquisition differential control.
         use_direct_yaw_rate_command = false;
         direct_yaw_rate_command = 0.0;
         commanded_steer_angle_ = 0.0;
@@ -1692,11 +1759,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, config_.pwm.min_effective_pwm);
         last_command_.pwm_right = std::max(last_command_.pwm_right, config_.pwm.min_effective_pwm);
         if (std::abs(last_command_.target_yaw_rate) > 0.015) {
-            const int minimum_turn_delta = std::clamp(
-                static_cast<int>(std::lround(
-                    6.0 + 55.0 * std::abs(last_command_.target_yaw_rate))),
-                8,
-                18);
+            const bool gate_tracking_turn =
+                control_source_ == HardwareControlSource::GateMpc;
+            const int minimum_turn_delta = gate_tracking_turn
+                ? std::clamp(
+                      static_cast<int>(std::lround(
+                          12.0 + 100.0 * std::abs(last_command_.target_yaw_rate))),
+                      14,
+                      38)
+                : std::clamp(
+                      static_cast<int>(std::lround(
+                          6.0 + 55.0 * std::abs(last_command_.target_yaw_rate))),
+                      8,
+                      18);
             enforce_forward_differential_pwm(
                 last_command_.target_yaw_rate,
                 minimum_turn_delta,
