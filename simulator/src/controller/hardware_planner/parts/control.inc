@@ -66,24 +66,29 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         !tracked_vehicle &&
         world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
         world_span_m(world_) <= 1.25;
-    const bool forward_arc_gate_car = compact_hardware_car || compact_unstructured_car;
+    const bool forward_creep_gate_car = compact_hardware_car || compact_unstructured_car;
 
-    const auto unstructured_footprint = make_box_corners(
+    const bool bounded_hardware_car =
+        !tracked_vehicle &&
+        (compact_unstructured_car ||
+         (world_is_mixed(world_) && world_span_m(world_) <= 2.50));
+    const auto hardware_car_footprint = make_box_corners(
         estimate_.position,
         estimate_.yaw,
         geometry_.body_length,
         geometry_.body_width);
-    const bool unstructured_footprint_outside_bounds =
-        compact_unstructured_car &&
+    const bool hardware_car_footprint_outside_bounds =
+        bounded_hardware_car &&
         std::any_of(
-            unstructured_footprint.begin(),
-            unstructured_footprint.end(),
+            hardware_car_footprint.begin(),
+            hardware_car_footprint.end(),
             [&](const Vec2& corner) {
                 return !is_inside_bounds(world_, corner);
             });
-    if (unstructured_footprint_outside_bounds) {
-        // Encoder slip must never let an open-ended Manual Editor run keep
-        // driving after its estimated footprint has left the physical arena.
+    if (hardware_car_footprint_outside_bounds) {
+        // Encoder slip or an invalid recovery target must never let a compact
+        // hardware run keep driving after its estimated footprint leaves the
+        // configured physical arena.
         safety_stop_active_ = true;
         commanded_speed_ = 0.0;
         commanded_steer_angle_ = 0.0;
@@ -371,18 +376,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const double lateral_stop_distance = std::max(
         config_.localization.min_valid_range_m + 0.02,
         config_.localization.obstacle_stop_distance_m - 0.07);
-    const bool manual_clothoid_mpc_active =
-        manual_unstructured_exploration(world_) &&
+    const bool authoritative_clothoid_mpc_active =
         !tracked_vehicle &&
         have_reference_trajectory &&
-        last_mpc_command_.has_value();
+        last_mpc_command_.has_value() &&
+        (manual_unstructured_exploration(world_) ||
+         navigation_target_kind_ == NavigationTargetKind::PhysicalGate);
     double motion_heading_local = 0.0;
     bool have_motion_heading = false;
-    if (manual_clothoid_mpc_active) {
-        // In Manual Gate Editor the gate centre is only the terminal condition.
-        // Once a clothoid exists, obstacle-sector checks and steering decisions
-        // must use its local tangent; using the robot-to-gate chord here made a
-        // curved reference look blocked and handed control back to point pursuit.
+    if (authoritative_clothoid_mpc_active) {
+        // The gate/frontier centre is only the terminal condition. Once a valid
+        // clothoid exists, obstacle-sector checks and steering decisions must
+        // use its local tangent; using the robot-to-target chord made a curved
+        // reference look blocked and handed control back to point pursuit.
         const int tangent_index = std::clamp(
             last_mpc_command_->anchor_index + 1,
             0,
@@ -431,7 +437,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                    config_.localization.min_valid_range_m + 0.035)
         : std::max(config_.localization.obstacle_stop_distance_m + 0.07,
                    config_.localization.min_valid_range_m + 0.14);
-    if (!manual_clothoid_mpc_active &&
+    if (!authoritative_clothoid_mpc_active &&
         !scanning_startup &&
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
@@ -506,7 +512,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_mpc_command_.reset();
         }
     }
-    if (!manual_clothoid_mpc_active &&
+    if (!authoritative_clothoid_mpc_active &&
         !handled_gap_priority_tracking &&
         !scanning_startup &&
         lidar_front_blocked_for_recovery &&
@@ -851,23 +857,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 std::abs(estimate_.speed) < 0.020 &&
                 tracker_cross_track_error_ < 0.030 &&
                 heading_error_abs > deg_to_rad(72.0);
-            const bool car_like_mixed_heading_recovery =
-                suppress_car_like_mixed_direct_yaw &&
-                !mixed_gate_active &&
-                heading_error_abs > deg_to_rad(68.0) &&
-                tracker_cross_track_error_ < 0.16 &&
-                (static_map_front_block_only ||
-                 estimate_.front_lidar_distance >= config_.localization.obstacle_stop_distance_m);
             if ((allow_direct_yaw_acquire &&
                  (heading_error_abs > enter_heading_rad ||
                   (early_progress &&
                    heading_error_abs > deg_to_rad(tiny_indoor_loop ? 32.0 : 40.0)))) ||
                 severe_indoor_heading ||
-                stalled_indoor_heading ||
-                car_like_mixed_heading_recovery) {
+                stalled_indoor_heading) {
                 use_direct_yaw_rate_command = true;
                 const double yaw_rate_limit =
-                    (car_like_mixed_heading_recovery ? 0.42 : (compact_mixed_road ? 0.55 : 0.85)) *
+                    (compact_mixed_road ? 0.55 : 0.85) *
                     config_.drive.max_yaw_rate;
                 direct_yaw_rate_command = clamp_value(
                     -yaw_gain * heading_error,
@@ -887,13 +885,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                               0.0,
                               tiny_indoor_loop ? 0.018 : 0.035)
                         : 0.0;
-                const double car_mixed_acquire_speed =
-                    car_like_mixed_heading_recovery
-                        ? clamp_value(structured_tracking_speed_floor(world_, speed_limit),
-                                      0.012,
-                                      0.024)
-                        : 0.0;
-                commanded_speed_ = tracked_vehicle ? tracked_acquire_speed : car_mixed_acquire_speed;
+                commanded_speed_ = tracked_vehicle ? tracked_acquire_speed : 0.0;
                 commanded_steer_angle_ = 0.0;
                 last_command_.target_speed = commanded_speed_;
                 last_command_.target_curvature = 0.0;
@@ -1027,7 +1019,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_mpc_command_.reset();
     }
 
-    if (forward_arc_gate_car &&
+    if (forward_creep_gate_car &&
         !goal_reached_ &&
         !safety_stop_active_ &&
         !scanning_startup &&
@@ -1057,6 +1049,21 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 creep_ceiling);
             commanded_speed_ = last_command_.target_speed;
         }
+    }
+
+    if (!tracked_vehicle &&
+        (world_is_mixed(world_) || compact_unstructured_car) &&
+        use_direct_yaw_rate_command) {
+        // A car-like hardware profile must never translate a point-acquisition
+        // or recovery request into an in-place differential turn.  With the
+        // measured drivetrain this is exactly the -PWM/+PWM arc seen in the
+        // hardware report.  Valid gate curvature remains controlled by the MPC
+        // above; without a valid clothoid the only safe fallback is straight
+        // motion (when already requested) or hold.
+        use_direct_yaw_rate_command = false;
+        direct_yaw_rate_command = 0.0;
+        commanded_steer_angle_ = 0.0;
+        last_command_.target_curvature = 0.0;
     }
 
     const double min_target_speed =
@@ -1560,6 +1567,28 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (forward_only_tracked_tracks && last_command_.target_speed > 1e-4) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, 0);
         last_command_.pwm_right = std::max(last_command_.pwm_right, 0);
+    }
+    const bool directional_pwm_car =
+        !tracked_vehicle &&
+        (world_is_mixed(world_) || compact_unstructured_car);
+    if (directional_pwm_car) {
+        if (last_command_.target_speed > 1e-4) {
+            last_command_.pwm_left = std::max(
+                last_command_.pwm_left, config_.pwm.min_effective_pwm);
+            last_command_.pwm_right = std::max(
+                last_command_.pwm_right, config_.pwm.min_effective_pwm);
+        } else if (last_command_.target_speed < -1e-4) {
+            last_command_.pwm_left = std::min(
+                last_command_.pwm_left, -config_.pwm.min_effective_pwm);
+            last_command_.pwm_right = std::min(
+                last_command_.pwm_right, -config_.pwm.min_effective_pwm);
+        } else {
+            // A stop/hold must be immediate.  Slewing two unequal previous PWM
+            // values toward zero can otherwise leave one positive and one
+            // negative for a cycle, which is still a physical pivot command.
+            last_command_.pwm_left = 0;
+            last_command_.pwm_right = 0;
+        }
     }
     if (forward_arc_command) {
         last_command_.pwm_left = std::max(last_command_.pwm_left, config_.pwm.min_effective_pwm);

@@ -347,6 +347,76 @@ bool HardwarePlannerRunner::select_exploration_frontier() {
         if (!found) return false;
     }
 
+    const double safe_center_margin =
+        0.5 * std::hypot(geometry_.body_length, geometry_.body_width) + 0.015;
+    const bool straight_ahead_car =
+        config_.vehicle_model == VehicleModelKind::CarLikeBicycle &&
+        manual_unstructured_exploration(world_);
+    if (straight_ahead_car) {
+        // Exploration is deliberately different from gate tracking.  While no
+        // physical aperture is locked, the car may only extend its current
+        // LiDAR-visible corridor straight ahead.  Selecting a lateral frontier
+        // here made the gate planner manufacture a clothoid/search arc even
+        // though no gate had been detected.
+        const double minimum_distance = std::max(
+            config_.frontier_exploration.minimum_frontier_distance_m,
+            0.10);
+        const double maximum_distance = std::max(
+            minimum_distance,
+            config_.frontier_exploration.maximum_frontier_distance_m);
+        const double sample_step = std::max(0.5 * resolution, 0.015);
+        const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
+        std::vector<Vec2> straight_path;
+        straight_path.push_back(estimate_.position);
+        double farthest_distance = 0.0;
+        for (double d = sample_step;
+             d <= maximum_distance + 1e-9;
+             d += sample_step) {
+            const Vec2 point{
+                estimate_.position.x + d * forward.x,
+                estimate_.position.y + d * forward.y,
+            };
+            if (!is_inside_bounds(world_, point, -safe_center_margin)) {
+                break;
+            }
+            if (!grid.is_free(point) || grid.is_inflated(point)) {
+                // A few centimetres around the LiDAR origin can remain unknown
+                // because of self-hit rejection.  Beyond that local blind spot,
+                // free-space support must be continuous.
+                if (d <= std::min(0.06, 0.5 * minimum_distance)) {
+                    continue;
+                }
+                break;
+            }
+            straight_path.push_back(point);
+            farthest_distance = d;
+        }
+        if (farthest_distance < minimum_distance || straight_path.size() < 2U) {
+            exploration_state_ = UnstructuredExplorationState::Hold;
+            diagnostics_.reference_invalidation_reason =
+                "no_straight_known_free_frontier";
+            return false;
+        }
+
+        exploration_path_ = straight_path;
+        selected_frontier_ = straight_path.back();
+        const double local_target_distance = std::min(
+            farthest_distance,
+            std::max(config_.frontier_exploration.path_lookahead_m,
+                     minimum_distance));
+        Vec2 local_target = straight_path.back();
+        for (const Vec2& point : straight_path) {
+            if (distance(estimate_.position, point) >= local_target_distance) {
+                local_target = point;
+                break;
+            }
+        }
+        set_exploration_target(local_target, estimate_.yaw);
+        last_frontier_plan_step_ = step_count_;
+        diagnostics_.reference_invalidation_reason.clear();
+        return true;
+    }
+
     const int start_index = grid.index(start_x, start_y);
     std::vector<int> distance_steps(cell_count, -1);
     std::vector<int> parent(cell_count, -1);
@@ -359,8 +429,6 @@ bool HardwarePlannerRunner::select_exploration_frontier() {
     };
     int best_index = -1;
     double best_score = -std::numeric_limits<double>::infinity();
-    const double safe_center_margin =
-        0.5 * std::hypot(geometry_.body_length, geometry_.body_width) + 0.015;
     while (!queue.empty()) {
         const int current = queue.front();
         queue.pop();

@@ -400,6 +400,13 @@ void HardwarePlannerRunner::update_selected_trajectory() {
             } else {
                 restart_unstructured_scan();
             }
+            // The vectors themselves are queried by compute_control_command().
+            // Clearing only the diagnostic flag left an unsafe, now-unlocked
+            // reference alive for one cycle; the MPC solved it and the strict
+            // gate interlock subsequently forced speed back to zero forever.
+            reference_trajectory_.clear();
+            planned_trajectory_.clear();
+            last_mpc_command_.reset();
             diagnostics_.planner_has_reference = false;
             return;
         }

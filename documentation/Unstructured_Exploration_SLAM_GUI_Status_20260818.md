@@ -101,3 +101,28 @@ sensor before accepting scans.
 - Synthetic HardwareLab runner check: the robot crossed the detected physical
   aperture (`passed_gates=1`) without collision, then correctly remained in
   open-ended exploration rather than declaring a scripted goal complete.
+
+## Hardware report correction — 21:02 / 21:04
+
+The reports `thesis_hardware_mixed_mixed_hardware_road_gate_gui_manual_20260818_210234_584`
+and `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260818_210448_649`
+exposed two additional control defects:
+
+- Manual Editor repeatedly selected and invalidated a lateral frontier. The
+  unsafe reference vectors survived after their diagnostic flag was cleared,
+  while the strict lock interlock forced speed/PWM back to zero. This produced
+  27.27 s in `INITIAL_SCAN` with zero encoder distance.
+- Mixed mode allowed point-acquisition recovery to override a valid gate
+  clothoid. At large heading error it emitted direct yaw with opposite wheel
+  PWM (`-45`, `+63` in the final sample), creating the observed arc/pivot.
+
+For a car-like hardware profile, exploration frontiers are now accepted only
+along the current straight LiDAR-supported corridor. No lateral frontier is
+converted into a search arc: absence of straight known-free space produces
+`HOLD`. Invalid references are physically cleared. A valid physical-gate
+clothoid remains authoritative for the MPC, while direct-yaw/in-place recovery
+and opposite-wheel PWM are forbidden for car-like mixed/unstructured runs.
+
+The regression test also covers a sparse 90-beam scan, forward motion after the
+initial scan, near-zero exploration yaw, and absence of opposite-wheel commands
+in both unstructured and mixed modes.

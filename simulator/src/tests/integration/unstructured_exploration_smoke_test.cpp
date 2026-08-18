@@ -188,11 +188,16 @@ int main() {
     bool saw_frontier = false;
     bool saw_gate_control = false;
     bool saw_recovery_arc = false;
+    bool saw_forward_exploration_motion = false;
+    bool saw_curved_exploration_command = false;
     for (int step = 0; step < 20; ++step) {
         runner.step_with_observation(
             make_observation(1.0 + 0.10 * step, empty_arena_scan),
             0.10,
             false);
+        if (runner.last_command().pwm_left * runner.last_command().pwm_right < 0) {
+            return fail("unstructured exploration issued opposing-wheel PWM");
+        }
         if (step < 2 &&
             (runner.last_command().pwm_left != 0 ||
              runner.last_command().pwm_right != 0 ||
@@ -209,6 +214,15 @@ int main() {
         saw_recovery_arc = saw_recovery_arc ||
             runner.diagnostics().control_source ==
                 thesis_sim::HardwareControlSource::Recovery;
+        if (runner.diagnostics().control_source ==
+                thesis_sim::HardwareControlSource::FrontierMpc) {
+            saw_forward_exploration_motion = saw_forward_exploration_motion ||
+                (runner.last_command().target_speed > 1e-4 &&
+                 runner.last_command().pwm_left > 0 &&
+                 runner.last_command().pwm_right > 0);
+            saw_curved_exploration_command = saw_curved_exploration_command ||
+                std::abs(runner.last_command().target_yaw_rate) > 0.015;
+        }
     }
     if (!saw_frontier) {
         return fail("HardwareLab did not transition from stationary scan to frontier exploration");
@@ -219,9 +233,40 @@ int main() {
     if (saw_recovery_arc) {
         return fail("empty-arena exploration fell back to the legacy search arc");
     }
+    if (!saw_forward_exploration_motion) {
+        return fail("straight frontier exploration never issued a forward command");
+    }
+    if (saw_curved_exploration_command) {
+        return fail("straight frontier exploration issued a curved command");
+    }
     if (runner.global_free_points().empty() ||
         runner.global_occupied_points().empty()) {
         return fail("persistent exploration map was not populated");
+    }
+
+    // Real A1 reports often contain only 70--100 usable beams after filtering.
+    // Reproduce that condition without a preloaded SLAM map: the persistent
+    // local grid must still release INITIAL_SCAN and command straight motion.
+    std::vector<thesis_sim::RPLidarA1::ScanPoint> sparse_scan;
+    for (std::size_t i = 0; i < empty_arena_scan.size(); i += 4U) {
+        sparse_scan.push_back(empty_arena_scan[i]);
+    }
+    thesis_sim::HardwarePlannerRunner sparse_runner(
+        exploration_world, bridge_options, config);
+    bool sparse_runner_moved = false;
+    for (int step = 0; step < 35; ++step) {
+        sparse_runner.step_with_observation(
+            make_observation(6.0 + 0.10 * step, sparse_scan), 0.10, false);
+        const auto& command = sparse_runner.last_command();
+        if (command.pwm_left * command.pwm_right < 0) {
+            return fail("sparse LiDAR exploration issued opposing-wheel PWM");
+        }
+        sparse_runner_moved = sparse_runner_moved ||
+            (command.target_speed > 1e-4 &&
+             command.pwm_left > 0 && command.pwm_right > 0);
+    }
+    if (!sparse_runner_moved) {
+        return fail("sparse LiDAR exploration remained stuck in INITIAL_SCAN");
     }
 
     bootstrap_slam.connected = false;
@@ -298,6 +343,10 @@ int main() {
     for (int step = 0; step < 35; ++step) {
         gate_runner.step_with_observation(
             make_observation(1.0 + 0.10 * step, gate_scan), 0.10, false);
+        if (gate_runner.last_command().pwm_left *
+                gate_runner.last_command().pwm_right < 0) {
+            return fail("unstructured gate tracking issued opposing-wheel PWM");
+        }
         saw_physical_gate = saw_physical_gate ||
             gate_runner.diagnostics().control_source ==
                 thesis_sim::HardwareControlSource::GateMpc;
@@ -336,6 +385,34 @@ int main() {
                           : gate_runner.gate_specs().front().position.y)
                   << '\n';
         return fail("LiDAR-confirmed gate did not preempt frontier navigation");
+    }
+
+    // The closed mixed hardware road used in the reported run may legitimately
+    // contain curved road/clothoid references, but a car-like controller must
+    // never replace them with an in-place differential recovery command.
+    thesis_sim::HardwarePlannerRunner mixed_runner(
+        thesis_sim::WorldMap::mixed_closed_obstacle_hardware_demo(),
+        bridge_options,
+        config);
+    const thesis_sim::WorldMap mixed_fixture =
+        thesis_sim::WorldMap::mixed_closed_obstacle_hardware_demo();
+    const auto mixed_scan = make_scan(
+        mixed_fixture,
+        mixed_fixture.start(),
+        mixed_fixture.start_heading(),
+        config);
+    for (int step = 0; step < 40; ++step) {
+        mixed_runner.step_with_observation(
+            make_observation(10.0 + 0.10 * step, mixed_scan), 0.10, false);
+        const auto& command = mixed_runner.last_command();
+        if ((command.pwm_left < 0 && command.pwm_right > 0) ||
+            (command.pwm_left > 0 && command.pwm_right < 0)) {
+            return fail("car-like mixed mode issued opposing-wheel recovery PWM");
+        }
+        if (std::abs(command.target_speed) <= 1e-4 &&
+            std::abs(command.target_yaw_rate) > 1e-4) {
+            return fail("car-like mixed mode issued an in-place yaw command");
+        }
     }
 
     std::cout << "unstructured_exploration_smoke: ok"
