@@ -309,7 +309,24 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         // endpoints before the MPC is allowed to follow it. This catches the
         // outward loop produced by lateral/rear gates and curved approaches
         // that graze one of the two aperture posts.
-        const double footprint_margin_m = 0.010;
+        const bool committed_physical_gate =
+            navigation_target_kind_ == NavigationTargetKind::PhysicalGate &&
+            locked_gap_goal_.has_value();
+        const bool gate_tracking_committed =
+            committed_physical_gate &&
+            (exploration_state_ ==
+                 UnstructuredExplorationState::TrackingGateClothoid ||
+             exploration_state_ ==
+                 UnstructuredExplorationState::VerifyingGateCrossing);
+        // A physical aperture was already checked against the live scan, the
+        // local occupancy grid and the persistent map before it was locked.
+        // Rechecking its narrow passage with an additional 1 cm footprint
+        // inflation made the two gate posts look like a new collision while
+        // the robot was already committed to crossing. Keep exact body
+        // dimensions for that final approach; unknown cells remain forbidden
+        // for exploratory/frontier paths, but are not obstacles by themselves
+        // on a LiDAR-confirmed gate reference.
+        const double footprint_margin_m = committed_physical_gate ? 0.0 : 0.010;
         const double half_length = 0.5 * geometry_.body_length + footprint_margin_m;
         const double half_width = 0.5 * geometry_.body_width + footprint_margin_m;
         const double global_map_resolution =
@@ -335,7 +352,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 break;
             }
 
-            if (!global_free_points_.empty()) {
+            if (!committed_physical_gate && !global_free_points_.empty()) {
                 const bool waypoint_is_known_free = std::any_of(
                     global_free_points_.begin(),
                     global_free_points_.end(),
@@ -397,6 +414,15 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 }
                 clear_exploration_target("frontier_clothoid_failed_footprint_validation");
                 last_frontier_plan_step_ = -1;
+            } else if (gate_tracking_committed) {
+                // Do not destroy the geometric crossing plane merely because
+                // a refreshed safety check rejects one clothoid. Retaining the
+                // lock lets the next fresh LiDAR cycle revalidate/replan it and
+                // lets crossing certification run before candidate rebuild.
+                ++locked_gap_invalid_streak_;
+                publish_locked_gap_goal();
+                diagnostics_.reference_invalidation_reason =
+                    "physical_gate_clothoid_failed_footprint_validation";
             } else {
                 restart_unstructured_scan();
             }

@@ -105,7 +105,10 @@ std::vector<thesis_sim::RPLidarA1::ScanPoint> make_scan(
 
 thesis_sim::RealRobotObservation make_observation(
     double timestamp,
-    const std::vector<thesis_sim::RPLidarA1::ScanPoint>& scan) {
+    const std::vector<thesis_sim::RPLidarA1::ScanPoint>& scan,
+    std::int32_t left_encoder_ticks = 0,
+    std::int32_t right_encoder_ticks = 0,
+    double imu_yaw = 0.0) {
     thesis_sim::RealRobotObservation observation;
     observation.host_timestamp_s = timestamp;
     observation.have_controller_telemetry = true;
@@ -123,6 +126,12 @@ thesis_sim::RealRobotObservation make_observation(
     observation.controller.motor_host_timestamp_s = timestamp;
     observation.controller.heartbeat_host_timestamp_s = timestamp;
     observation.controller.enc_dt_ms = 100;
+    observation.controller.imu_ms =
+        static_cast<std::uint32_t>(std::lround(timestamp * 1000.0));
+    observation.controller.yaw_mrad =
+        static_cast<std::int32_t>(std::lround(imu_yaw * 1000.0));
+    observation.controller.ticks_left = left_encoder_ticks;
+    observation.controller.ticks_right = right_encoder_ticks;
     observation.controller.motor_flags =
         static_cast<std::uint16_t>(thesis_sim::MotorFlag::Enabled) |
         static_cast<std::uint16_t>(thesis_sim::MotorFlag::StbyHigh);
@@ -521,6 +530,100 @@ int main() {
     }
     if (!saw_gate_steering_authority) {
         return fail("gate MPC did not produce a forward differential steering command");
+    }
+
+    // Regression for hardware report 20260819_012532_889.  The robot had a
+    // valid GateMpc reference, reached VERIFYING_GATE_CROSSING, then the next
+    // LiDAR/planning cycle erased the lock before the crossing could be
+    // counted.  Drive encoder odometry through a narrow, slightly offset
+    // aperture while regenerating the scan from the moving estimate.  A
+    // detected physical gate must remain authoritative until its plane is
+    // crossed, even when its two posts become close-range footprint returns.
+    thesis_sim::WorldMap narrow_gate_fixture = physical_fixture;
+    narrow_gate_fixture.editable_obstacles() = {
+        {0.49, 0.00, 0.53, 0.460},
+        {0.49, 0.740, 0.53, 1.20},
+    };
+    narrow_gate_fixture.finalize_editor_changes();
+    thesis_sim::WorldMap crossing_world = exploration_world;
+    crossing_world.set_start({0.28, 0.57});
+    crossing_world.set_start_heading(0.0);
+    thesis_sim::HardwarePlannerRunner crossing_runner(
+        crossing_world, bridge_options, config);
+    std::int32_t crossing_ticks = 0;
+    bool crossing_saw_gate_mpc = false;
+    bool crossing_saw_verification = false;
+    bool crossing_lock_dropped = false;
+    for (int step = 0; step < 80 && crossing_runner.passed_gate_count() == 0;
+         ++step) {
+        const auto moving_scan = make_scan(
+            narrow_gate_fixture,
+            crossing_runner.estimate().position,
+            crossing_runner.estimate().yaw,
+            config);
+        crossing_runner.step_with_observation(
+            make_observation(
+                40.0 + 0.10 * step,
+                moving_scan,
+                crossing_ticks,
+                crossing_ticks,
+                0.0),
+            0.10,
+            false);
+        crossing_saw_gate_mpc = crossing_saw_gate_mpc ||
+            crossing_runner.diagnostics().control_source ==
+                thesis_sim::HardwareControlSource::GateMpc;
+        crossing_saw_verification = crossing_saw_verification ||
+            crossing_runner.diagnostics().exploration_state ==
+                thesis_sim::UnstructuredExplorationState::VerifyingGateCrossing;
+        if (crossing_saw_gate_mpc &&
+            crossing_runner.passed_gate_count() == 0 &&
+            crossing_runner.diagnostics().candidate_gates == 0 &&
+            !crossing_runner.diagnostics().planner_has_reference) {
+            crossing_lock_dropped = true;
+        }
+        if (crossing_runner.last_command().target_speed > 1e-4) {
+            crossing_ticks += 2;
+        }
+    }
+    if (!crossing_saw_gate_mpc) {
+        return fail("moving narrow-gate regression never acquired GateMpc");
+    }
+    if (!crossing_saw_verification) {
+        return fail("moving narrow-gate regression never reached crossing verification");
+    }
+    if (crossing_lock_dropped) {
+        std::cerr << "crossing_drop_debug position="
+                  << crossing_runner.estimate().position.x << ','
+                  << crossing_runner.estimate().position.y
+                  << " state="
+                  << thesis_sim::unstructured_exploration_state_name(
+                         crossing_runner.diagnostics().exploration_state)
+                  << " safety="
+                  << crossing_runner.safety_stop_active()
+                  << " invalidation='"
+                  << crossing_runner.diagnostics().reference_invalidation_reason
+                  << "'\n";
+        return fail("physical gate lock was erased during the committed approach");
+    }
+    if (crossing_runner.passed_gate_count() < 1) {
+        std::cerr << "crossing_debug position="
+                  << crossing_runner.estimate().position.x << ','
+                  << crossing_runner.estimate().position.y
+                  << " state="
+                  << thesis_sim::unstructured_exploration_state_name(
+                         crossing_runner.diagnostics().exploration_state)
+                  << " control="
+                  << thesis_sim::hardware_control_source_name(
+                         crossing_runner.diagnostics().control_source)
+                  << " candidates="
+                  << crossing_runner.diagnostics().candidate_gates
+                  << " reference="
+                  << crossing_runner.diagnostics().planner_has_reference
+                  << " invalidation='"
+                  << crossing_runner.diagnostics().reference_invalidation_reason
+                  << "'\n";
+        return fail("moving narrow-gate regression did not count the crossing");
     }
 
     // The closed mixed hardware road used in the reported run may legitimately

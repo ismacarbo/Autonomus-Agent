@@ -669,6 +669,117 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
     startup_scan_elapsed_s_ = config_.gap_extraction.startup_scan_duration_s;
 }
 
+void HardwarePlannerRunner::count_unstructured_gate_crossing_if_needed() {
+    if (world_.environment_mode() != EnvironmentMode::UnstructuredGates ||
+        !locked_gap_goal_.has_value() ||
+        navigation_target_kind_ != NavigationTargetKind::PhysicalGate) {
+        return;
+    }
+
+    const bool require_center_crossing =
+        compact_hardware_unstructured_world(world_);
+    const double longitudinal_progress =
+        locked_gap_longitudinal_progress(estimate_.position);
+    const double crossing_progress =
+        longitudinal_progress +
+        (require_center_crossing ? 0.0 : std::max(geometry_.cg_to_front, 0.0));
+    const double lateral_offset =
+        std::abs(locked_gap_lateral_offset(estimate_.position));
+    const double crossing_margin =
+        std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
+    const double pass_lateral_limit =
+        locked_gap_corridor_half_width_m_ +
+        std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
+    const double crossing_distance =
+        std::max(crossing_margin - crossing_progress, 0.0);
+    const double lateral_distance =
+        std::max(lateral_offset - pass_lateral_limit, 0.0);
+    distance_to_goal_ = std::max(crossing_distance, lateral_distance);
+
+    const double near_pass_longitudinal_slack = require_center_crossing
+        ? clamp_value(
+              0.65 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+              0.035,
+              0.055)
+        : clamp_value(
+              0.46 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+              0.045,
+              0.085);
+    const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
+    const double near_pass_gate_radius = require_center_crossing
+        ? clamp_value(
+              std::max(
+                  config_.gap_extraction.gap_goal_acceptance_radius_m,
+                  config_.gap_extraction.gap_aperture_target_margin_m +
+                      near_pass_longitudinal_slack),
+              0.090,
+              0.135)
+        : (micro_hardware_lab
+               ? clamp_value(
+                     1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+                     0.045,
+                     std::max(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.055))
+               : clamp_value(
+                     1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
+                     0.18,
+                     std::max(
+                         std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24),
+                         0.18)));
+    const double gate_distance =
+        distance(estimate_.position, *locked_gap_goal_);
+    const bool gate_nearly_crossed =
+        lateral_offset <= pass_lateral_limit &&
+        crossing_distance <= near_pass_longitudinal_slack &&
+        (!require_center_crossing ||
+         crossing_progress >= -near_pass_longitudinal_slack) &&
+        gate_distance <= near_pass_gate_radius;
+    const bool gate_crossed =
+        lateral_offset <= pass_lateral_limit &&
+        (crossing_progress >= crossing_margin || gate_nearly_crossed);
+
+    if (!gate_crossed) {
+        goal_reached_ = false;
+        if (crossing_distance <= std::max(2.0 * crossing_margin, 0.08)) {
+            exploration_state_ =
+                UnstructuredExplorationState::VerifyingGateCrossing;
+        }
+        return;
+    }
+
+    const Vec2 completed_gap = *locked_gap_goal_;
+    locked_gap_crossed_ = true;
+    passed_unstructured_gap_positions_.push_back(completed_gap);
+    ++passed_unstructured_gap_count_;
+    goal_reached_ =
+        passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count();
+    if (goal_reached_) {
+        clear_locked_gap_goal();
+        gates_.clear();
+        gate_specs_.clear();
+        visible_gate_indices_.clear();
+        chosen_gate_index_ = -1;
+        reference_trajectory_.clear();
+        planned_trajectory_.clear();
+        diagnostics_.candidate_gates = 0;
+        diagnostics_.chosen_gate_distance =
+            std::numeric_limits<double>::infinity();
+        diagnostics_.planner_has_reference = false;
+    } else {
+        restart_unstructured_scan();
+        if (manual_unstructured_exploration(world_) &&
+            config_.frontier_exploration.enabled) {
+            startup_scan_complete_ = true;
+            startup_scan_elapsed_s_ =
+                config_.gap_extraction.startup_scan_duration_s;
+        }
+        commanded_speed_ = 0.0;
+        commanded_steer_angle_ = 0.0;
+        last_command_ = {};
+        last_mpc_command_.reset();
+    }
+    distance_to_goal_ = goal_reached_ ? 0.0 : -1.0;
+}
+
 void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     if (!use_dynamic_gap_gates_) {
         clear_locked_gap_goal();

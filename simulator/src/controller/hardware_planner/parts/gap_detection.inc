@@ -345,7 +345,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
 
         const double gate_distance = distance(previous_spec.position, estimate_.position);
-        if (gate_distance < 0.18 ||
+        if (gate_distance < 0.035 ||
             gate_distance > std::max(config_.gap_extraction.max_target_distance_m * 1.8, 2.0)) {
             return false;
         }
@@ -358,7 +358,14 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return false;
         }
 
-        if (!perception_map_supports_target(lidar_origin, previous_spec.position)) {
+        const bool committed_close_approach =
+            manual_exploration &&
+            index == previous_chosen_gate_index &&
+            gate_distance <=
+                std::max(2.0 * config_.gap_extraction.gap_goal_acceptance_radius_m,
+                         0.24);
+        if (!perception_map_supports_target(lidar_origin, previous_spec.position) &&
+            !committed_close_approach) {
             return false;
         }
 
