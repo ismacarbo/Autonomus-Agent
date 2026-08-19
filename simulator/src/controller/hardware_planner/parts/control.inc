@@ -250,6 +250,24 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             return false;
         }
 
+        constexpr double kReverseCompletionDistanceM = 0.075;
+        constexpr double kReverseMaximumDurationS = 0.60;
+        constexpr double kReverseRetryCooldownS = 1.20;
+        const bool reverse_reposition_active =
+            sim_time_ < lidar_reverse_reposition_until_s_;
+        if (reverse_reposition_active &&
+            distance(estimate_.position, lidar_reverse_reposition_start_position_) >=
+                kReverseCompletionDistanceM) {
+            // The legacy direct-PWM firmware cannot realise -3 cm/s: its
+            // minimum effective PWM produced 20--60 cm/s in the reports. End
+            // the recovery from measured displacement, not only elapsed time.
+            lidar_reverse_reposition_until_s_ = sim_time_;
+            lidar_reverse_reposition_cooldown_until_s_ = std::max(
+                lidar_reverse_reposition_cooldown_until_s_,
+                sim_time_ + kReverseRetryCooldownS);
+            return false;
+        }
+
         // A bounded forward-only car can reach a corner from which every
         // forward arc intersects the footprint margin. Do not hold forever:
         // after live LiDAR has rejected both straight motion and all forward
@@ -269,6 +287,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         }
 
         if (sim_time_ >= lidar_reverse_reposition_until_s_) {
+            if (sim_time_ < lidar_reverse_reposition_cooldown_until_s_) {
+                return false;
+            }
             const double left_clearance = sector_min_clearance(
                 lidar_hits_, estimate_.yaw, 0.78, 0.36,
                 config_.localization.max_range_m);
@@ -280,8 +301,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             // from the crowded side before that turn.
             startup_scan_direction_ =
                 left_clearance >= right_clearance ? 1.0 : -1.0;
-            lidar_reverse_reposition_until_s_ = sim_time_ + 1.80;
-            lidar_post_reverse_search_until_s_ = sim_time_ + 4.00;
+            lidar_reverse_reposition_start_position_ = estimate_.position;
+            lidar_reverse_reposition_until_s_ =
+                sim_time_ + kReverseMaximumDurationS;
+            lidar_reverse_reposition_cooldown_until_s_ =
+                lidar_reverse_reposition_until_s_ + kReverseRetryCooldownS;
+            lidar_post_reverse_search_until_s_ = sim_time_ + 3.00;
         }
 
         constexpr double kReverseProbeDistanceM = 0.080;
@@ -913,9 +938,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const double gate_distance = distance(estimate_.position, *locked_gap_goal_);
         const double crossing_margin =
             std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
-        const double pass_lateral_limit =
-            locked_gap_corridor_half_width_m_ +
-            std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
+        const double pass_lateral_limit = locked_gap_pass_lateral_limit();
         const double near_crossing_margin = clamp_value(
             0.46 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
             0.045,

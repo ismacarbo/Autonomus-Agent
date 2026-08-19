@@ -337,6 +337,8 @@ void HardwarePlannerRunner::reset() {
     stuck_recovery_until_s_ = -1.0;
     stuck_recovery_direction_ = 1.0;
     lidar_reverse_reposition_until_s_ = -1.0;
+    lidar_reverse_reposition_cooldown_until_s_ = -1.0;
+    lidar_reverse_reposition_start_position_ = {};
     lidar_post_reverse_search_until_s_ = -1.0;
     last_controller_rearm_time_s_ = -1.0;
     active_lidar_scan_duration_s_ = 0.0;
@@ -449,6 +451,8 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     left_wheel_breakaway_hold_cycles_ = 0;
     right_wheel_breakaway_hold_cycles_ = 0;
     lidar_reverse_reposition_until_s_ = -1.0;
+    lidar_reverse_reposition_cooldown_until_s_ = -1.0;
+    lidar_reverse_reposition_start_position_ = {};
     lidar_post_reverse_search_until_s_ = -1.0;
     stall_boost_active_ = false;
     encoder_slip_guard_active_ = false;

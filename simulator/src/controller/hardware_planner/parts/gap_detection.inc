@@ -858,6 +858,37 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                   free_threshold,
                   std::max(free_threshold, planning_range - 0.05));
 
+    const auto aperture_geometry_is_plausible =
+        [&](double angular_span,
+            const ScanBeam& left_boundary,
+            const ScanBeam& right_boundary,
+            const Vec2& aperture_center) {
+            if (!compact_unstructured_hardware) {
+                return true;
+            }
+
+            // A very wide free sector can have obstacle endpoints on opposite
+            // sides of the LiDAR. Their Euclidean midpoint then collapses onto
+            // the sensor and looks like a gate plane underneath the robot. In
+            // run 211728 this produced a 158 degree "gate" whose midpoint was
+            // only 2.6 cm from the LiDAR and was subsequently counted as
+            // crossed. Real apertures observed before commitment retain a
+            // meaningful midpoint distance relative to both boundary ranges.
+            const double aperture_distance = distance(lidar_origin, aperture_center);
+            const double boundary_reference_distance = std::max(
+                std::min(left_boundary.distance, right_boundary.distance),
+                config_.localization.min_valid_range_m);
+            const double midpoint_range_ratio =
+                aperture_distance / boundary_reference_distance;
+            const double minimum_aperture_distance = std::max(
+                config_.localization.min_valid_range_m,
+                0.12);
+            const double maximum_aperture_span = 120.0 * kPi / 180.0;
+            return aperture_distance >= minimum_aperture_distance &&
+                   midpoint_range_ratio >= 0.35 &&
+                   angular_span <= maximum_aperture_span;
+        };
+
     auto add_gap_sector_candidate = [&](int start_index,
                                         int end_index,
                                         int left_boundary_index,
@@ -930,7 +961,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             0.5 * (left_boundary.hit.y + right_boundary.hit.y),
         };
         const double aperture_distance = distance(lidar_origin, aperture_center);
-        if (!(aperture_distance > 1e-6)) {
+        if (!(aperture_distance > 1e-6) ||
+            !aperture_geometry_is_plausible(
+                angular_span,
+                left_boundary,
+                right_boundary,
+                aperture_center)) {
             return;
         }
         const double center_world_angle = angle_to(lidar_origin, aperture_center);
@@ -1068,7 +1104,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             0.5 * (left_boundary.hit.y + right_boundary.hit.y),
         };
         const double aperture_distance = distance(lidar_origin, aperture_center);
-        if (!(aperture_distance > 1e-6)) {
+        if (!(aperture_distance > 1e-6) ||
+            !aperture_geometry_is_plausible(
+                angular_span,
+                left_boundary,
+                right_boundary,
+                aperture_center)) {
             return;
         }
         const double center_world_angle = angle_to(lidar_origin, aperture_center);

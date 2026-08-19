@@ -550,6 +550,11 @@ class HardwarePlannerRunner {
     double planner_speed_reference() const { return planner_speed_ref_; }
     double tracker_cross_track_error() const { return tracker_cross_track_error_; }
     double tracker_heading_error_deg() const { return tracker_heading_error_deg_; }
+    double gate_crossing_lateral_tolerance() const {
+        return locked_gap_goal_.has_value()
+            ? locked_gap_pass_lateral_limit()
+            : 0.0;
+    }
 
   private:
     void initialize_planner_state();
@@ -610,6 +615,7 @@ class HardwarePlannerRunner {
         const std::optional<Vec2>& crossing_point = std::nullopt);
     double locked_gap_longitudinal_progress(const Vec2& position) const;
     double locked_gap_lateral_offset(const Vec2& position) const;
+    double locked_gap_pass_lateral_limit() const;
     void publish_locked_gap_goal();
     bool startup_scan_active() const;
     void reset_start_matching();
@@ -752,6 +758,7 @@ class HardwarePlannerRunner {
     std::vector<Vec2> passed_unstructured_gap_positions_;
     Vec2 locked_gap_start_position_{};
     Vec2 locked_gap_approach_direction_{1.0, 0.0};
+    double locked_gap_width_m_ = 0.0;
     double locked_gap_corridor_half_width_m_ = 0.0;
     double locked_gap_set_time_s_ = 0.0;
     double startup_scan_elapsed_s_ = 0.0;
@@ -776,12 +783,16 @@ class HardwarePlannerRunner {
     double stuck_recovery_until_s_ = -1.0;
     double stuck_recovery_direction_ = 1.0;
     double lidar_reverse_reposition_until_s_ = -1.0;
+    double lidar_reverse_reposition_cooldown_until_s_ = -1.0;
+    Vec2 lidar_reverse_reposition_start_position_{};
     double lidar_post_reverse_search_until_s_ = -1.0;
     double last_controller_rearm_time_s_ = -1.0;
     double active_lidar_scan_duration_s_ = 0.0;
     bool use_dynamic_gap_gates_ = false;
     bool gap_recovery_turn_active_ = false;
     int locked_gap_invalid_streak_ = 0;
+    int locked_gap_reference_failure_streak_ = 0;
+    bool locked_gap_tracking_started_ = false;
     bool stall_boost_active_ = false;
     bool encoder_slip_guard_active_ = false;
     bool connected_ = false;

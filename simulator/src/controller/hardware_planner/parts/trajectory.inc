@@ -312,12 +312,6 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         const bool committed_physical_gate =
             navigation_target_kind_ == NavigationTargetKind::PhysicalGate &&
             locked_gap_goal_.has_value();
-        const bool gate_tracking_committed =
-            committed_physical_gate &&
-            (exploration_state_ ==
-                 UnstructuredExplorationState::TrackingGateClothoid ||
-             exploration_state_ ==
-                 UnstructuredExplorationState::VerifyingGateCrossing);
         // A physical aperture was already checked against the live scan, the
         // local occupancy grid and the persistent map before it was locked.
         // Rechecking its narrow passage with an additional 1 cm footprint
@@ -414,12 +408,18 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 }
                 clear_exploration_target("frontier_clothoid_failed_footprint_validation");
                 last_frontier_plan_step_ = -1;
-            } else if (gate_tracking_committed) {
+            } else if (committed_physical_gate &&
+                       locked_gap_tracking_started_ &&
+                       locked_gap_reference_failure_streak_ < 12) {
                 // Do not destroy the geometric crossing plane merely because
                 // a refreshed safety check rejects one clothoid. Retaining the
-                // lock lets the next fresh LiDAR cycle revalidate/replan it and
-                // lets crossing certification run before candidate rebuild.
+                // lock lets the next fresh LiDAR cycle revalidate/replan it.
+                // This uses an explicit bounded streak because compute_control
+                // changes the exploration state to Search as soon as the
+                // reference vector is empty; tying persistence to that state
+                // dropped the lock on the following cycle in the hardware runs.
                 ++locked_gap_invalid_streak_;
+                ++locked_gap_reference_failure_streak_;
                 publish_locked_gap_goal();
                 diagnostics_.reference_invalidation_reason =
                     "physical_gate_clothoid_failed_footprint_validation";
@@ -437,6 +437,10 @@ void HardwarePlannerRunner::update_selected_trajectory() {
             return;
         }
 
+        if (committed_physical_gate) {
+            locked_gap_tracking_started_ = true;
+            locked_gap_reference_failure_streak_ = 0;
+        }
         // This local reference is rebuilt from the robot's current projection
         // every cycle. An anchor index inherited from the previous reference
         // points near the old endpoint and makes the MPC skip the new clothoid.

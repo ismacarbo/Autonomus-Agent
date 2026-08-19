@@ -103,6 +103,37 @@ std::vector<thesis_sim::RPLidarA1::ScanPoint> make_scan(
     return scan;
 }
 
+std::vector<thesis_sim::RPLidarA1::ScanPoint> make_false_wide_sector_scan(
+    const thesis_sim::HardwarePlannerConfig& config) {
+    constexpr int kBeams = 360;
+    std::vector<thesis_sim::RPLidarA1::ScanPoint> scan;
+    scan.reserve(kBeams);
+    for (int i = 0; i < kBeams; ++i) {
+        const double local_angle_deg =
+            -180.0 + static_cast<double>(i) * 360.0 /
+                         static_cast<double>(kBeams - 1);
+        // Endpoints at +/-80 degrees and 33 cm are about 65 cm apart, but
+        // their midpoint is only 5.7 cm in front of the sensor. This is the
+        // same degeneracy that generated the false crossing in report 211728.
+        const double range_m = std::abs(local_angle_deg) < 80.0 ? 1.0 : 0.33;
+        const double sensor_angle_deg = config.localization.lidar_flip_left_right
+            ? -(local_angle_deg -
+                config.localization.lidar_yaw_offset * 180.0 / kPi)
+            : local_angle_deg -
+                  config.localization.lidar_yaw_offset * 180.0 / kPi;
+        const double sensor_angle_rad = sensor_angle_deg * kPi / 180.0;
+        scan.push_back({
+            15,
+            sensor_angle_deg,
+            range_m * 1000.0,
+            range_m,
+            std::cos(sensor_angle_rad) * range_m,
+            std::sin(sensor_angle_rad) * range_m,
+        });
+    }
+    return scan;
+}
+
 thesis_sim::RealRobotObservation make_observation(
     double timestamp,
     const std::vector<thesis_sim::RPLidarA1::ScanPoint>& scan,
@@ -399,6 +430,58 @@ int main() {
         return fail("reported boundary pose did not continue with a forward LiDAR search arc");
     }
 
+    // Direct PWM turns the nominal -3 cm/s recovery into a much faster real
+    // motion. Emulate one 8.6 cm encoder jump at the arena boundary: recovery
+    // must end from measured displacement instead of continuing for the old
+    // fixed 1.8 seconds and starting the observed forward/reverse shuttle.
+    thesis_sim::WorldMap reverse_pose_world = exploration_world;
+    reverse_pose_world.set_start({1.02, 0.58});
+    reverse_pose_world.set_start_heading(0.0);
+    thesis_sim::HardwarePlannerRunner reverse_pose_runner(
+        reverse_pose_world, bridge_options, direct_config);
+    std::int32_t reverse_ticks = 0;
+    bool saw_reverse_recovery = false;
+    bool reverse_recovery_completed = false;
+    int consecutive_reverse_commands = 0;
+    int maximum_consecutive_reverse_commands = 0;
+    for (int step = 0; step < 35; ++step) {
+        const auto live_scan = make_scan(
+            reverse_pose_world,
+            reverse_pose_runner.estimate().position,
+            reverse_pose_runner.estimate().yaw,
+            direct_config);
+        reverse_pose_runner.step_with_observation(
+            make_observation(
+                28.0 + 0.10 * step,
+                live_scan,
+                reverse_ticks,
+                reverse_ticks,
+                0.0),
+            0.10,
+            false);
+        const bool reversing =
+            reverse_pose_runner.last_command().target_speed < -1e-4;
+        if (reversing) {
+            saw_reverse_recovery = true;
+            ++consecutive_reverse_commands;
+            maximum_consecutive_reverse_commands = std::max(
+                maximum_consecutive_reverse_commands,
+                consecutive_reverse_commands);
+            reverse_ticks -= 16;
+        } else {
+            if (saw_reverse_recovery) {
+                reverse_recovery_completed = true;
+            }
+            consecutive_reverse_commands = 0;
+        }
+    }
+    if (!saw_reverse_recovery) {
+        return fail("boundary regression never entered LiDAR reverse recovery");
+    }
+    if (!reverse_recovery_completed || maximum_consecutive_reverse_commands > 2) {
+        return fail("LiDAR reverse recovery ignored measured displacement");
+    }
+
     bootstrap_slam.connected = false;
     runner.apply_slam_toolbox_snapshot(bootstrap_slam);
     const std::size_t persistent_occupied =
@@ -530,6 +613,30 @@ int main() {
     }
     if (!saw_gate_steering_authority) {
         return fail("gate MPC did not produce a forward differential steering command");
+    }
+    if (gate_runner.gate_crossing_lateral_tolerance() > 0.080001) {
+        return fail("compact gate crossing retained an excessively wide lateral acceptance band");
+    }
+
+    // A large free sector bounded by returns on opposite sides of the LiDAR
+    // is free space, not a gate. Its midpoint must not become a crossing plane
+    // underneath the car and must therefore never increment passed_gates.
+    thesis_sim::HardwarePlannerRunner false_sector_runner(
+        exploration_world, bridge_options, config);
+    const auto false_sector_scan = make_false_wide_sector_scan(config);
+    bool false_sector_became_gate = false;
+    for (int step = 0; step < 35; ++step) {
+        false_sector_runner.step_with_observation(
+            make_observation(30.0 + 0.10 * step, false_sector_scan),
+            0.10,
+            false);
+        false_sector_became_gate = false_sector_became_gate ||
+            false_sector_runner.diagnostics().candidate_gates > 0 ||
+            false_sector_runner.diagnostics().control_source ==
+                thesis_sim::HardwareControlSource::GateMpc;
+    }
+    if (false_sector_became_gate || false_sector_runner.passed_gate_count() != 0) {
+        return fail("opposite-side free sector was accepted as a physical gate");
     }
 
     // Regression for hardware report 20260819_012532_889.  The robot had a

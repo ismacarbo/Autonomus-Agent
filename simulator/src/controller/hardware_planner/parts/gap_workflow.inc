@@ -17,10 +17,13 @@ void HardwarePlannerRunner::clear_locked_gap_goal() {
     locked_gap_crossing_point_ = {};
     locked_gap_start_position_ = {};
     locked_gap_approach_direction_ = {1.0, 0.0};
+    locked_gap_width_m_ = 0.0;
     locked_gap_corridor_half_width_m_ = 0.0;
     locked_gap_set_time_s_ = 0.0;
     locked_gap_crossed_ = false;
     locked_gap_invalid_streak_ = 0;
+    locked_gap_reference_failure_streak_ = 0;
+    locked_gap_tracking_started_ = false;
     navigation_target_kind_ = NavigationTargetKind::None;
 }
 
@@ -309,15 +312,28 @@ void HardwarePlannerRunner::set_locked_gap_goal(
             : direction_from_robot;
     locked_gap_approach_direction_ = normalize_with_fallback(raw_direction, fallback_direction);
 
+    locked_gap_width_m_ = config_.gap_extraction.min_gap_width_m;
+    double best_track_distance = std::numeric_limits<double>::infinity();
+    for (const DynamicGapTrack& track : dynamic_gap_tracks_) {
+        const double track_distance = distance(track.position, target);
+        if (track.gap_width > 0.0 &&
+            track_distance < best_track_distance &&
+            track_distance <= 0.16) {
+            best_track_distance = track_distance;
+            locked_gap_width_m_ = track.gap_width;
+        }
+    }
     const double usable_gap_width = std::max(
-        config_.gap_extraction.min_gap_width_m - geometry_.body_width,
+        locked_gap_width_m_ - geometry_.body_width,
         config_.gap_extraction.target_clearance_radius_m);
     locked_gap_corridor_half_width_m_ = clamp_value(
         0.5 * usable_gap_width,
         0.05,
-        std::max(0.5 * config_.gap_extraction.min_gap_width_m, 0.05));
+        std::max(0.5 * locked_gap_width_m_, 0.05));
     locked_gap_crossed_ = false;
     locked_gap_invalid_streak_ = 0;
+    locked_gap_reference_failure_streak_ = 0;
+    locked_gap_tracking_started_ = false;
     structured_anchor_hint_index_ = 0;
 }
 
@@ -347,6 +363,35 @@ double HardwarePlannerRunner::locked_gap_lateral_offset(const Vec2& position) co
         locked_gap_approach_direction_.x,
     };
     return dot_product(relative, lateral_axis);
+}
+
+double HardwarePlannerRunner::locked_gap_pass_lateral_limit() const {
+    if (!compact_hardware_unstructured_world(world_)) {
+        return locked_gap_corridor_half_width_m_ +
+               std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
+    }
+
+    // Passing a gate means that the robot centre crossed the aperture plane
+    // while the complete body still fits between the two measured posts.  The
+    // former fixed 6 cm slack made the acceptance corridor about 11 cm wide
+    // on the 15 cm car, so driving beside a narrow opening could count as a
+    // crossing.  Derive the corridor from the measured aperture and retain
+    // only a small allowance for LiDAR/odometry quantisation.
+    const double measured_width = locked_gap_width_m_ > 0.0
+        ? locked_gap_width_m_
+        : config_.gap_extraction.min_gap_width_m;
+    const double physical_center_clearance = std::max(
+        0.5 * (measured_width - geometry_.body_width) -
+            std::max(config_.gap_extraction.path_clearance_radius_m, 0.0),
+        0.0);
+    const double localization_allowance = clamp_value(
+        0.5 * config_.frontier_exploration.grid_resolution_m,
+        0.010,
+        0.018);
+    return clamp_value(
+        physical_center_clearance + localization_allowance,
+        0.030,
+        0.080);
 }
 
 void HardwarePlannerRunner::publish_locked_gap_goal() {
@@ -412,9 +457,7 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
     const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
     const double crossing_margin =
         std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
-    const double pass_lateral_limit =
-        locked_gap_corridor_half_width_m_ +
-        std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
+    const double pass_lateral_limit = locked_gap_pass_lateral_limit();
     const double crossing_distance = std::max(crossing_margin - crossing_progress, 0.0);
     const double near_pass_longitudinal_slack = clamp_value(
         0.46 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
@@ -687,9 +730,7 @@ void HardwarePlannerRunner::count_unstructured_gate_crossing_if_needed() {
         std::abs(locked_gap_lateral_offset(estimate_.position));
     const double crossing_margin =
         std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
-    const double pass_lateral_limit =
-        locked_gap_corridor_half_width_m_ +
-        std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
+    const double pass_lateral_limit = locked_gap_pass_lateral_limit();
     const double crossing_distance =
         std::max(crossing_margin - crossing_progress, 0.0);
     const double lateral_distance =
