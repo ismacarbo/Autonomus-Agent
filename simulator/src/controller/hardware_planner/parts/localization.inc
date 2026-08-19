@@ -11,8 +11,7 @@ void HardwarePlannerRunner::mitigate_compact_unstructured_encoder_slip(
     encoder_slip_guard_active_ = false;
     if (odom_speed == nullptr || odom_yaw_rate == nullptr ||
         config_.vehicle_model != VehicleModelKind::CarLikeBicycle ||
-        world_.environment_mode() != EnvironmentMode::UnstructuredGates ||
-        world_span_m(world_) > 1.25) {
+        !open_ended_unstructured_exploration(world_)) {
         return;
     }
 

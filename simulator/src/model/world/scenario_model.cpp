@@ -285,17 +285,37 @@ WorldMap fit_hardware_unstructured_world(WorldMap world) {
     if (world.environment_mode() != EnvironmentMode::UnstructuredGates) {
         return world;
     }
-    const Rect bounds = world.bounds();
-    if (std::abs(bounds.min_x) <= 1e-9 &&
-        std::abs(bounds.min_y) <= 1e-9 &&
-        std::abs(bounds.max_x - kCommonArenaSpanM) <= 1e-9 &&
-        std::abs(bounds.max_y - kCommonArenaSpanM) <= 1e-9) {
-        return world;
+
+    const Rect source_bounds = world.bounds();
+    const double source_width = source_bounds.max_x - source_bounds.min_x;
+    const double source_height = source_bounds.max_y - source_bounds.min_y;
+    const bool already_hardware_metric =
+        std::abs(source_width - kCommonArenaSpanM) <= 1e-9 &&
+        std::abs(source_height - kCommonArenaSpanM) <= 1e-9;
+    const bool already_open_workspace =
+        std::abs(source_width - kUnstructuredOpenWorkspaceSpanM) <= 1e-9 &&
+        std::abs(source_height - kUnstructuredOpenWorkspaceSpanM) <= 1e-9;
+
+    // Preserve the existing metre-scale hardware fixture. Larger editor/demo
+    // presets are first converted with the legacy 1.20 m metric transform so
+    // that LiDAR and gate tuning keep the same physical scale. The compact
+    // square is only a staging transform now, never the navigation boundary.
+    if (!already_hardware_metric && !already_open_workspace) {
+        world = normalize_unstructured_world(
+            std::move(world),
+            kCommonArenaSpanM,
+            kUnstructuredHardwareContentSpanM);
     }
-    return normalize_unstructured_world(
-        std::move(world),
-        kCommonArenaSpanM,
-        kUnstructuredHardwareContentSpanM);
+
+    const Vec2 anchor = world.start();
+    const double half_workspace = 0.5 * kUnstructuredOpenWorkspaceSpanM;
+    world.set_bounds({
+        anchor.x - half_workspace,
+        anchor.y - half_workspace,
+        anchor.x + half_workspace,
+        anchor.y + half_workspace,
+    });
+    return world;
 }
 
 WorldMap fit_simulation_structured_world(WorldMap world,

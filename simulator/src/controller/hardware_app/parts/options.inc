@@ -198,14 +198,13 @@ bool compact_hardware_mixed_lab_world(const WorldMap& world) {
 void apply_unstructured_hardware_config(const WorldMap& world,
                                         HardwarePlannerConfig* config) {
     if (config == nullptr ||
-        world.environment_mode() != EnvironmentMode::UnstructuredGates ||
-        world_span_m(world) > 1.25) {
+        world.environment_mode() != EnvironmentMode::UnstructuredGates) {
         return;
     }
 
-    // LiDAR-only gate extraction in the common 1.20 m arena. These limits
-    // replace the legacy 2.70 x 2.40 m defaults; actuator and firmware paths
-    // are deliberately left untouched.
+    // LiDAR-only gate extraction uses metre-scale local sensing independently
+    // of the visualization/map canvas. These limits replace the legacy
+    // 2.70 x 2.40 m defaults; actuator and firmware paths are untouched.
     apply_measured_hardware_geometry(config->vehicle_model, &config->drive);
     config->cruise_speed_limit =
         config->vehicle_model == VehicleModelKind::TrackedVehicle ? 0.055 : 0.060;

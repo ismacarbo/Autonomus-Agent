@@ -92,7 +92,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
 
     const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
     const bool compact_unstructured_hardware =
-        compact_hardware_unstructured_world(world_);
+        hardware_unstructured_exploration_world(world_);
     const bool manual_exploration =
         open_ended_unstructured_exploration(world_);
     const double current_world_span = world_span_m(world_);
@@ -323,12 +323,10 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return true;
         }
 
-        // A LiDAR ray may legitimately end outside the editor rectangle, but
-        // the selected target is a robot-centre target. Keep the complete
-        // 25 x 15 cm footprint inside the 1.20 m arena for every orientation.
-        const double safe_center_margin =
-            0.5 * std::hypot(geometry_.body_length, geometry_.body_width) + 0.015;
-        return is_inside_bounds(world_, target, -safe_center_margin);
+        // Open-ended hardware exploration has no authored wall/geofence. Gate
+        // safety comes from live LiDAR, occupancy and swept-footprint checks,
+        // not from the finite GUI/map canvas.
+        return true;
     };
 
     auto try_persist_previous_gate = [&](int index) {

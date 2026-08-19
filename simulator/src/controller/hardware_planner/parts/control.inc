@@ -64,14 +64,13 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         compact_hardware_mixed_lab_world(world_) && !tracked_vehicle;
     const bool compact_unstructured_car =
         !tracked_vehicle &&
-        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
-        world_span_m(world_) <= 1.25;
+        open_ended_unstructured_exploration(world_);
     const bool forward_creep_gate_car = compact_hardware_car || compact_unstructured_car;
 
     const bool bounded_hardware_car =
         !tracked_vehicle &&
-        (compact_unstructured_car ||
-         (world_is_mixed(world_) && world_span_m(world_) <= 2.50));
+        world_is_mixed(world_) &&
+        world_span_m(world_) <= 2.50;
     const auto hardware_car_footprint = make_box_corners(
         estimate_.position,
         estimate_.yaw,
@@ -204,7 +203,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
         const Vec2 goal = world_.goal();
         double escape_yaw_rate = 0.0;
-        if (is_inside_bounds(world_, goal) && distance(estimate_.position, goal) > 0.05) {
+        if (!open_ended_unstructured_exploration(world_) &&
+            is_inside_bounds(world_, goal) &&
+            distance(estimate_.position, goal) > 0.05) {
             const double heading_error = wrap_angle(angle_to(estimate_.position, goal) - estimate_.yaw);
             escape_yaw_rate = clamp_value(
                 0.48 * heading_error,
@@ -337,7 +338,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 reverse_probe_yaw,
                 geometry_.body_length,
                 geometry_.body_width);
-            if (std::any_of(
+            if (navigation_world_bounds_enabled(world_) &&
+                std::any_of(
                     reverse_footprint.begin(),
                     reverse_footprint.end(),
                     [&](const Vec2& corner) {

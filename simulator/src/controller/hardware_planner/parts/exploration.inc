@@ -247,7 +247,10 @@ void HardwarePlannerRunner::update_global_exploration_map(
         };
         sample_segment_points(origin, free_end, 0.70 * resolution, true,
             [&](const Vec2& sample) {
-                if (!is_inside_bounds(world_, sample)) return;
+                if (navigation_world_bounds_enabled(world_) &&
+                    !is_inside_bounds(world_, sample)) {
+                    return;
+                }
                 const std::uint64_t key = quantized_point_key(sample, resolution);
                 ExplorationOccupancyCell& cell = exploration_cells_[key];
                 cell.center = quantized_point_center(sample, resolution);
@@ -261,7 +264,8 @@ void HardwarePlannerRunner::update_global_exploration_map(
                 origin.x + std::cos(angle) * point.distance_m,
                 origin.y + std::sin(angle) * point.distance_m,
             };
-            if (is_inside_bounds(world_, hit)) {
+            if (!navigation_world_bounds_enabled(world_) ||
+                is_inside_bounds(world_, hit)) {
                 const std::uint64_t key = quantized_point_key(hit, resolution);
                 ExplorationOccupancyCell& cell = exploration_cells_[key];
                 cell.center = quantized_point_center(hit, resolution);
@@ -380,7 +384,8 @@ bool HardwarePlannerRunner::select_exploration_frontier() {
                 estimate_.position.x + d * forward.x,
                 estimate_.position.y + d * forward.y,
             };
-            if (!is_inside_bounds(world_, point, -safe_center_margin)) {
+            if (navigation_world_bounds_enabled(world_) &&
+                !is_inside_bounds(world_, point, -safe_center_margin)) {
                 break;
             }
             if (!grid.is_free(point) || grid.is_inflated(point)) {
@@ -459,7 +464,8 @@ bool HardwarePlannerRunner::select_exploration_frontier() {
         if (unknown_neighbors > 0 && !visited &&
             path_distance >= config_.frontier_exploration.minimum_frontier_distance_m &&
             path_distance <= config_.frontier_exploration.maximum_frontier_distance_m &&
-            is_inside_bounds(world_, point, -safe_center_margin)) {
+            (!navigation_world_bounds_enabled(world_) ||
+             is_inside_bounds(world_, point, -safe_center_margin))) {
             const double heading_error = std::abs(wrap_angle(angle_to(estimate_.position, point) - estimate_.yaw));
             const double score =
                 2.4 * static_cast<double>(unknown_neighbors) -

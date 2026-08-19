@@ -305,10 +305,10 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     if (open_ended_unstructured_exploration(world_)) {
         // A clear straight chord to the detected aperture does not guarantee
         // that the car-like clothoid is safe. Validate the complete oriented
-        // footprint against both the editor bounds and the current LiDAR
-        // endpoints before the MPC is allowed to follow it. This catches the
-        // outward loop produced by lateral/rear gates and curved approaches
-        // that graze one of the two aperture posts.
+        // footprint against current LiDAR/occupancy endpoints before the MPC
+        // is allowed to follow it. This catches the outward loop produced by
+        // lateral/rear gates and curved approaches that graze one of the two
+        // aperture posts.
         const bool committed_physical_gate =
             navigation_target_kind_ == NavigationTargetKind::PhysicalGate &&
             locked_gap_goal_.has_value();
@@ -336,7 +336,8 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 waypoint.yaw,
                 geometry_.body_length + 2.0 * footprint_margin_m,
                 geometry_.body_width + 2.0 * footprint_margin_m);
-            if (std::any_of(
+            if (navigation_world_bounds_enabled(world_) &&
+                std::any_of(
                     corners.begin(),
                     corners.end(),
                     [&](const Vec2& corner) {

@@ -148,36 +148,44 @@ int main() {
         thesis_sim::UnstructuredMapPreset::IdealValidation,
     };
     for (const thesis_sim::UnstructuredMapPreset preset : hardware_presets) {
-        const thesis_sim::WorldMap compact =
+        const thesis_sim::WorldMap open_world =
             thesis_sim::mvc::model::fit_hardware_unstructured_world(
                 thesis_sim::WorldMap::unstructured_demo(preset));
-        const thesis_sim::Rect& compact_bounds = compact.bounds();
-        if (!near(compact_bounds.min_x, 0.0) ||
-            !near(compact_bounds.min_y, 0.0) ||
-            !near(compact_bounds.max_x, 1.20) ||
-            !near(compact_bounds.max_y, 1.20)) {
-            return fail("hardware unstructured preset is not in the common 1.20 m arena");
+        const thesis_sim::Rect& open_bounds = open_world.bounds();
+        if (!near(open_bounds.max_x - open_bounds.min_x,
+                  thesis_sim::mvc::model::kUnstructuredOpenWorkspaceSpanM) ||
+            !near(open_bounds.max_y - open_bounds.min_y,
+                  thesis_sim::mvc::model::kUnstructuredOpenWorkspaceSpanM) ||
+            !near(0.5 * (open_bounds.min_x + open_bounds.max_x),
+                  open_world.start().x) ||
+            !near(0.5 * (open_bounds.min_y + open_bounds.max_y),
+                  open_world.start().y)) {
+            return fail("hardware unstructured preset does not use the start-centred open workspace");
         }
         constexpr double kRobotCircumscribedRadiusM = 0.146;
-        if (compact.start().x < kRobotCircumscribedRadiusM ||
-            compact.start().x > 1.20 - kRobotCircumscribedRadiusM ||
-            compact.start().y < kRobotCircumscribedRadiusM ||
-            compact.start().y > 1.20 - kRobotCircumscribedRadiusM ||
-            compact.goal().x < kRobotCircumscribedRadiusM ||
-            compact.goal().x > 1.20 - kRobotCircumscribedRadiusM ||
-            compact.goal().y < kRobotCircumscribedRadiusM ||
-            compact.goal().y > 1.20 - kRobotCircumscribedRadiusM) {
-            return fail("hardware unstructured start or goal does not clear the physical robot radius");
+        const auto clears_workspace_edge = [&](const thesis_sim::Vec2& point) {
+            return point.x >= open_bounds.min_x + kRobotCircumscribedRadiusM &&
+                   point.x <= open_bounds.max_x - kRobotCircumscribedRadiusM &&
+                   point.y >= open_bounds.min_y + kRobotCircumscribedRadiusM &&
+                   point.y <= open_bounds.max_y - kRobotCircumscribedRadiusM;
+        };
+        if (!clears_workspace_edge(open_world.start()) ||
+            !clears_workspace_edge(open_world.goal())) {
+            return fail("hardware unstructured start or goal does not fit the open workspace canvas");
         }
-        if (compact.unstructured_preset() != preset) {
+        if (open_world.unstructured_preset() != preset) {
             return fail("hardware unstructured normalization changed the preset identity");
         }
-        const thesis_sim::WorldMap compact_again =
-            thesis_sim::mvc::model::fit_hardware_unstructured_world(compact);
-        if (!near(compact_again.start().x, compact.start().x) ||
-            !near(compact_again.start().y, compact.start().y) ||
-            !near(compact_again.goal().x, compact.goal().x) ||
-            !near(compact_again.goal().y, compact.goal().y)) {
+        const thesis_sim::WorldMap open_world_again =
+            thesis_sim::mvc::model::fit_hardware_unstructured_world(open_world);
+        if (!near(open_world_again.start().x, open_world.start().x) ||
+            !near(open_world_again.start().y, open_world.start().y) ||
+            !near(open_world_again.goal().x, open_world.goal().x) ||
+            !near(open_world_again.goal().y, open_world.goal().y) ||
+            !near(open_world_again.bounds().min_x, open_bounds.min_x) ||
+            !near(open_world_again.bounds().min_y, open_bounds.min_y) ||
+            !near(open_world_again.bounds().max_x, open_bounds.max_x) ||
+            !near(open_world_again.bounds().max_y, open_bounds.max_y)) {
             return fail("hardware unstructured normalization is not idempotent");
         }
     }

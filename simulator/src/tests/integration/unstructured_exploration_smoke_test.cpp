@@ -269,6 +269,49 @@ int main() {
         return fail("persistent exploration map was not populated");
     }
 
+    // Regression for the former 1.20 m virtual geofence. Even if an old GUI
+    // payload still carries compact bounds, unstructured hardware exploration
+    // must keep moving and accumulating free space beyond that rectangle. The
+    // bounds are a canvas, while safety comes from the live scan.
+    thesis_sim::WorldMap legacy_canvas_world = physical_fixture;
+    legacy_canvas_world.editable_obstacles().clear();
+    legacy_canvas_world.editable_perception_obstacles().clear();
+    legacy_canvas_world.editable_gates().clear();
+    legacy_canvas_world.set_bounds({0.0, 0.0, 1.20, 1.20});
+    legacy_canvas_world.set_start({1.16, 0.60});
+    legacy_canvas_world.set_goal({0.20, 0.60});
+    legacy_canvas_world.set_start_heading(0.0);
+    legacy_canvas_world.finalize_editor_changes();
+    thesis_sim::WorldMap open_sensing_world = legacy_canvas_world;
+    open_sensing_world.set_bounds({-2.0, -2.0, 4.0, 3.0});
+    thesis_sim::HardwarePlannerRunner legacy_canvas_runner(
+        legacy_canvas_world, bridge_options, config);
+    const auto open_field_scan = make_scan(
+        open_sensing_world,
+        legacy_canvas_world.start(),
+        legacy_canvas_world.start_heading(),
+        config);
+    bool moved_beyond_legacy_canvas = false;
+    for (int step = 0; step < 12; ++step) {
+        legacy_canvas_runner.step_with_observation(
+            make_observation(3.0 + 0.10 * step, open_field_scan),
+            0.10,
+            false);
+        moved_beyond_legacy_canvas = moved_beyond_legacy_canvas ||
+            (legacy_canvas_runner.last_command().target_speed > 1e-4 &&
+             !legacy_canvas_runner.safety_stop_active());
+    }
+    if (!moved_beyond_legacy_canvas) {
+        return fail("legacy 1.20 m canvas still stopped open-ended exploration");
+    }
+    const bool mapped_beyond_legacy_canvas = std::any_of(
+        legacy_canvas_runner.global_free_points().begin(),
+        legacy_canvas_runner.global_free_points().end(),
+        [](const thesis_sim::Vec2& point) { return point.x > 1.20; });
+    if (!mapped_beyond_legacy_canvas) {
+        return fail("persistent LiDAR map was still clipped at the legacy 1.20 m canvas");
+    }
+
     // Real A1 reports often contain only 70--100 usable beams after filtering.
     // Reproduce that condition without a preloaded SLAM map: the persistent
     // local grid must still release INITIAL_SCAN and command straight motion.
@@ -431,10 +474,9 @@ int main() {
         return fail("report 215354 no-gate pose still re-entered stationary scanning");
     }
 
-    // Reproduce the approach to the terminal area of report
-    // 20260818_214343_936. The longer future-footprint probe must start a
-    // bounded LiDAR arc while there is still room to turn, before reaching the
-    // report's final 15.7 cm frontal clearance and mandatory safety stop.
+    // The terminal pose from report 20260818_214343_936 used to trigger an arc
+    // solely because it was close to the authored 1.20 m rectangle. With an
+    // open workspace and no sensed obstacle it must continue straight.
     thesis_sim::WorldMap search_pose_world = exploration_world;
     search_pose_world.set_start({0.920000, 0.509180});
     search_pose_world.set_start_heading(-0.629000);
@@ -445,7 +487,7 @@ int main() {
         search_pose_world.start(),
         search_pose_world.start_heading(),
         direct_config);
-    bool saw_forward_search_turn = false;
+    bool saw_open_field_progress = false;
     for (int step = 0; step < 20; ++step) {
         search_pose_runner.step_with_observation(
             make_observation(25.0 + 0.10 * step, search_pose_scan),
@@ -455,15 +497,15 @@ int main() {
         if (command.pwm_left * command.pwm_right < 0) {
             return fail("boundary LiDAR search issued opposing-wheel PWM");
         }
-        saw_forward_search_turn = saw_forward_search_turn ||
+        saw_open_field_progress = saw_open_field_progress ||
             (search_pose_runner.diagnostics().control_source ==
-                 thesis_sim::HardwareControlSource::ForwardSearch &&
+                 thesis_sim::HardwareControlSource::StraightExploration &&
              command.target_speed > 1e-4 &&
-             std::abs(command.target_yaw_rate) > 0.015 &&
+             std::abs(command.target_yaw_rate) <= 0.015 &&
              command.pwm_left > 0 &&
              command.pwm_right > 0);
     }
-    if (!saw_forward_search_turn) {
+    if (!saw_open_field_progress) {
         std::cerr << "search_pose_debug state="
                   << thesis_sim::unstructured_exploration_state_name(
                          search_pose_runner.diagnostics().exploration_state)
@@ -480,23 +522,17 @@ int main() {
                   << " invalidation='"
                   << search_pose_runner.diagnostics().reference_invalidation_reason
                   << "'\n";
-        return fail("reported boundary pose did not continue with a forward LiDAR search arc");
+        return fail("former boundary pose did not continue straight in the open field");
     }
 
-    // Direct PWM turns the nominal -3 cm/s recovery into a much faster real
-    // motion. Emulate one 8.6 cm encoder jump at the arena boundary: recovery
-    // must end from measured displacement instead of continuing for the old
-    // fixed 1.8 seconds and starting the observed forward/reverse shuttle.
+    // Likewise, the former right-hand arena edge must not manufacture a
+    // reverse recovery when the LiDAR reports free space.
     thesis_sim::WorldMap reverse_pose_world = exploration_world;
     reverse_pose_world.set_start({1.02, 0.58});
     reverse_pose_world.set_start_heading(0.0);
     thesis_sim::HardwarePlannerRunner reverse_pose_runner(
         reverse_pose_world, bridge_options, direct_config);
-    std::int32_t reverse_ticks = 0;
-    bool saw_reverse_recovery = false;
-    bool reverse_recovery_completed = false;
-    int consecutive_reverse_commands = 0;
-    int maximum_consecutive_reverse_commands = 0;
+    bool saw_forward_after_former_edge = false;
     for (int step = 0; step < 35; ++step) {
         const auto live_scan = make_scan(
             reverse_pose_world,
@@ -507,46 +543,33 @@ int main() {
             make_observation(
                 28.0 + 0.10 * step,
                 live_scan,
-                reverse_ticks,
-                reverse_ticks,
+                0,
+                0,
                 0.0),
             0.10,
             false);
-        const bool reversing =
-            reverse_pose_runner.last_command().target_speed < -1e-4;
-        if (reversing) {
-            saw_reverse_recovery = true;
-            ++consecutive_reverse_commands;
-            maximum_consecutive_reverse_commands = std::max(
-                maximum_consecutive_reverse_commands,
-                consecutive_reverse_commands);
-            reverse_ticks -= 16;
-        } else {
-            if (saw_reverse_recovery) {
-                reverse_recovery_completed = true;
-            }
-            consecutive_reverse_commands = 0;
+        if (reverse_pose_runner.last_command().target_speed < -1e-4) {
+            return fail("former arena edge still manufactured reverse recovery");
         }
+        saw_forward_after_former_edge = saw_forward_after_former_edge ||
+            reverse_pose_runner.last_command().target_speed > 1e-4;
     }
-    if (!saw_reverse_recovery) {
-        return fail("boundary regression never entered LiDAR reverse recovery");
-    }
-    if (!reverse_recovery_completed || maximum_consecutive_reverse_commands > 2) {
-        return fail("LiDAR reverse recovery ignored measured displacement");
+    if (!saw_forward_after_former_edge) {
+        return fail("former arena edge did not permit open-field progress");
     }
 
     bootstrap_slam.connected = false;
     runner.apply_slam_toolbox_snapshot(bootstrap_slam);
-    const std::size_t persistent_occupied =
-        runner.global_occupied_points().size();
-    if (persistent_occupied == 0U) {
+    const std::size_t persistent_free =
+        runner.global_free_points().size();
+    if (persistent_free == 0U) {
         return fail("local persistent map was not available after SLAM fallback");
     }
     for (int step = 0; step < 5; ++step) {
         runner.step_with_observation(
             make_observation(4.0 + 0.10 * step, {}), 0.10, false);
     }
-    if (runner.global_occupied_points().size() != persistent_occupied) {
+    if (runner.global_free_points().size() != persistent_free) {
         return fail("global fallback map decayed when scans stopped");
     }
 
@@ -567,7 +590,7 @@ int main() {
     runner.apply_slam_toolbox_snapshot(slam_snapshot);
     if (runner.diagnostics().map_source !=
             thesis_sim::ExplorationMapSource::LocalPersistentGrid ||
-        runner.global_occupied_points().size() != persistent_occupied) {
+        runner.global_free_points().size() != persistent_free) {
         return fail("SLAM disconnect did not restore the persistent fallback grid");
     }
 
@@ -715,16 +738,16 @@ int main() {
     // Regression for reports 215120/215227: an aperture can remain visible
     // behind the car after a failed approach. It is a useful candidate for a
     // later pass, but it must neither be locked as a forward target nor block
-    // the independently footprint-validated reverse escape at the arena edge.
+    // continued free-space exploration ahead.
     thesis_sim::WorldMap rear_gate_fixture = physical_fixture;
     rear_gate_fixture.editable_obstacles() = {
         {0.55, -0.50, 0.59, 0.450},
         {0.55, 0.750, 0.59, 1.70},
     };
     // The physical scan need not contain a wall at the virtual navigation
-    // bound. Keep sensing bounds wider so this test reaches geometric escape
-    // selection instead of the emergency close-return interlock.
-    rear_gate_fixture.set_bounds({-0.50, -0.50, 1.70, 1.70});
+    // canvas. Keep the synthetic raycast boundary beyond LiDAR range: it is
+    // not a physical wall in an open-ended hardware mission.
+    rear_gate_fixture.set_bounds({-2.0, -2.0, 3.0, 3.0});
     rear_gate_fixture.finalize_editor_changes();
     thesis_sim::WorldMap rear_gate_world = exploration_world;
     rear_gate_world.set_start({1.02, 0.60});
@@ -732,7 +755,8 @@ int main() {
     thesis_sim::HardwarePlannerRunner rear_gate_runner(
         rear_gate_world, bridge_options, direct_config);
     bool saw_rear_candidate = false;
-    bool rear_candidate_allowed_reverse = false;
+    bool rear_candidate_allowed_forward = false;
+    bool rear_candidate_started_gate_mpc = false;
     for (int step = 0; step < 30; ++step) {
         const auto rear_gate_scan = make_scan(
             rear_gate_fixture,
@@ -745,11 +769,16 @@ int main() {
             false);
         saw_rear_candidate = saw_rear_candidate ||
             rear_gate_runner.diagnostics().candidate_gates > 0;
-        rear_candidate_allowed_reverse = rear_candidate_allowed_reverse ||
+        rear_candidate_allowed_forward = rear_candidate_allowed_forward ||
             (rear_gate_runner.diagnostics().candidate_gates > 0 &&
-             rear_gate_runner.last_command().target_speed < -1e-4 &&
-             rear_gate_runner.diagnostics().control_source ==
-                 thesis_sim::HardwareControlSource::Recovery);
+             rear_gate_runner.last_command().target_speed > 1e-4 &&
+             (rear_gate_runner.diagnostics().control_source ==
+                  thesis_sim::HardwareControlSource::StraightExploration ||
+              rear_gate_runner.diagnostics().control_source ==
+                  thesis_sim::HardwareControlSource::ForwardSearch));
+        rear_candidate_started_gate_mpc = rear_candidate_started_gate_mpc ||
+            rear_gate_runner.diagnostics().control_source ==
+                thesis_sim::HardwareControlSource::GateMpc;
     }
     if (!saw_rear_candidate) {
         std::cerr << "rear_gate_debug state="
@@ -766,7 +795,7 @@ int main() {
                   << '\n';
         return fail("rear-gate regression did not reproduce the LiDAR candidate");
     }
-    if (!rear_candidate_allowed_reverse) {
+    if (!rear_candidate_allowed_forward || rear_candidate_started_gate_mpc) {
         std::cerr << "rear_gate_motion_debug candidates="
                   << rear_gate_runner.diagnostics().candidate_gates
                   << " state="
@@ -781,7 +810,7 @@ int main() {
                   << " min=" << rear_gate_runner.estimate().min_lidar_distance
                   << " ref=" << rear_gate_runner.diagnostics().planner_has_reference
                   << '\n';
-        return fail("an unreachable rear gate candidate still blocked continuous exploration");
+        return fail("an unreachable rear gate candidate still blocked forward exploration");
     }
 
     thesis_sim::WorldMap crossing_world = exploration_world;
@@ -894,7 +923,7 @@ int main() {
     }
 
     std::cout << "unstructured_exploration_smoke: ok"
-              << " fallback_occupied=" << persistent_occupied
+              << " fallback_free=" << persistent_free
               << " state="
               << thesis_sim::unstructured_exploration_state_name(
                      runner.diagnostics().exploration_state)

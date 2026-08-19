@@ -14,6 +14,10 @@ namespace thesis_sim::mvc::model {
 constexpr double kCommonArenaSpanM = 1.20;
 constexpr double kStructuredRoadSpanM = 0.90;
 constexpr double kUnstructuredHardwareContentSpanM = 0.80;
+// Visualization/mapping canvas for hardware LiDAR exploration. This is not a
+// navigation geofence: the unstructured planner deliberately accepts poses,
+// map cells, gates and trajectories beyond these display bounds.
+constexpr double kUnstructuredOpenWorkspaceSpanM = 10.0;
 
 WorldMap make_world_from_mode(EnvironmentMode mode,
                               UnstructuredMapPreset unstructured_preset,

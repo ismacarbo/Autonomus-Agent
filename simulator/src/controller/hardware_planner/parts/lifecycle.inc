@@ -192,13 +192,13 @@ void HardwarePlannerRunner::apply_config(HardwarePlannerConfig config) {
 void HardwarePlannerRunner::reset() {
     geometry_ = make_vehicle_geometry(config_);
     const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
-    const bool compact_manual_unstructured_car =
+    const bool open_ended_unstructured_car =
         open_ended_unstructured_exploration(world_) &&
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
-    if (compact_manual_unstructured_car) {
+    if (open_ended_unstructured_car) {
         // The physical car is actuated by independent left/right motor groups.
         // A 1.8 1/m bicycle limit gives a 0.56 m minimum radius and cannot
-        // follow the few-decimetre gate clothoids used in the 1.20 m arena.
+        // follow the few-decimetre gate clothoids produced from local LiDAR.
         // Keep the MPC bicycle prediction, but expose the tighter forward-only
         // differential authority that the drivetrain can actually execute.
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.10);
@@ -213,10 +213,10 @@ void HardwarePlannerRunner::reset() {
     estimator_.set_geometry(geometry_);
     estimator_.set_tracked_vehicle(config_.vehicle_model == VehicleModelKind::TrackedVehicle);
     MpcFollowerConfig mpc_config{};
-    if (compact_manual_unstructured_car) {
+    if (open_ended_unstructured_car) {
         // Dynamic gate clothoids are only a few decimetres long. The generic
         // 0.6/1.4 m MPC lookahead jumps directly to their endpoint and turns
-        // path following back into point pursuit in the 1.20 m editor arena.
+        // path following back into point pursuit.
         mpc_config.horizon_steps = 8;
         mpc_config.horizon_dt = 0.08;
         mpc_config.preview_distance = 0.10;
@@ -741,7 +741,7 @@ int HardwarePlannerRunner::planning_interval_steps() const {
 }
 
 int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
-    // A perception-only compact hardware scene has no authoritative number of
+    // A perception-only open-ended hardware scene has no authoritative number of
     // physical LiDAR apertures. Keep exploring until the operator stops the
     // run instead of turning an arbitrary local count into a false mission end.
     if (open_ended_unstructured_exploration(world_)) {
@@ -913,6 +913,9 @@ bool HardwarePlannerRunner::unstructured_perception_only_mode() const {
 }
 
 bool HardwarePlannerRunner::dynamic_gap_point_allowed(const Vec2& position) const {
+    if (open_ended_unstructured_exploration(world_)) {
+        return true;
+    }
     if (!dynamic_gap_mode_enabled()) {
         return is_inside_bounds(world_, position);
     }
@@ -945,6 +948,9 @@ bool HardwarePlannerRunner::dynamic_gap_point_allowed(const Vec2& position) cons
 }
 
 Vec2 HardwarePlannerRunner::clamp_dynamic_gap_point(const Vec2& position) const {
+    if (open_ended_unstructured_exploration(world_)) {
+        return position;
+    }
     if (!dynamic_gap_mode_enabled()) {
         return clamp_point_to_bounds(world_, position);
     }

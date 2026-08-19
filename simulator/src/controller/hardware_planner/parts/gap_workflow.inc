@@ -72,7 +72,6 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         target_yaw_rate == nullptr ||
         config_.vehicle_model == VehicleModelKind::TrackedVehicle ||
         world_.environment_mode() != EnvironmentMode::UnstructuredGates ||
-        world_span_m(world_) > 1.25 ||
         goal_reached_) {
         return false;
     }
@@ -110,7 +109,7 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         }
     }
     double probe_distance = clamp_value(
-        0.20 * world_span_m(world_),
+        0.20 * config_.gap_extraction.planning_max_range_m,
         0.18,
         0.26);
     const double footprint_half_length =
@@ -137,10 +136,10 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         }
         return true;
     };
-    const auto heading_stays_in_arena = [&](double heading) {
+    const auto heading_arc_is_clear = [&](double heading) {
         // This is a forward arc, not an instantaneous translation along the
-        // selected ray. Validate three oriented footprints along a short arc,
-        // against both bounds and current LiDAR endpoints.
+        // selected ray. Validate three oriented footprints along a short arc
+        // against current LiDAR endpoints and an optional authored geofence.
         const double bounded_turn = clamp_value(heading, -1.25, 1.25);
         for (double fraction : {0.35, 0.70, 1.0}) {
             const double sample_turn = fraction * bounded_turn;
@@ -157,12 +156,14 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
                 probe_yaw,
                 geometry_.body_length,
                 geometry_.body_width);
-            const bool footprint_inside_bounds = std::all_of(
-                future_footprint.begin(),
-                future_footprint.end(),
-                [&](const Vec2& corner) {
-                    return is_inside_bounds(world_, corner, -0.015);
-                });
+            const bool footprint_inside_bounds =
+                !navigation_world_bounds_enabled(world_) ||
+                std::all_of(
+                    future_footprint.begin(),
+                    future_footprint.end(),
+                    [&](const Vec2& corner) {
+                        return is_inside_bounds(world_, corner, -0.015);
+                    });
             if (!footprint_inside_bounds ||
                 !lidar_footprint_is_clear(probe, probe_yaw)) {
                 return false;
@@ -174,13 +175,13 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
     const auto select_forward_arc = [&]() {
         best_heading = 0.0;
         best_clearance = forward_clearance;
-        best_score = heading_stays_in_arena(0.0)
+        best_score = heading_arc_is_clear(0.0)
             ? forward_clearance
             : -std::numeric_limits<double>::infinity();
         for (double heading = -heading_limit;
              heading <= heading_limit + 1e-6;
              heading += heading_step) {
-            if (!heading_stays_in_arena(heading)) {
+            if (!heading_arc_is_clear(heading)) {
                 continue;
             }
             const double clearance = sector_min_clearance(
@@ -214,14 +215,14 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
     };
     select_forward_arc();
 
-    // Near an arena edge a safe receding-horizon move can exist even though
-    // the normal 18--26 cm preview no longer fits. Retry with one hardware
+    // Near a sensed obstacle a safe receding-horizon move can exist even when
+    // the normal 18--26 cm preview does not fit. Retry with one hardware
     // control interval (about 6--7 cm at the observed minimum PWM) before
     // declaring forward exploration impossible and asking for reverse.
     bool short_horizon_search = false;
     if (!std::isfinite(best_score) && manual_exploration) {
         probe_distance = clamp_value(
-            0.055 * world_span_m(world_),
+            0.055 * config_.gap_extraction.planning_max_range_m,
             0.055,
             0.075);
         short_horizon_search = true;
@@ -242,7 +243,7 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         !passed_unstructured_gap_positions_.empty() &&
         distance(estimate_.position, passed_unstructured_gap_positions_.back()) <
             geometry_.body_length;
-    if (heading_stays_in_arena(0.0) &&
+    if (heading_arc_is_clear(0.0) &&
         (!manual_exploration ||
          (gate_specs_.empty() &&
           (unstructured_no_candidate_scan_elapsed_s_ < 0.80 ||
@@ -388,7 +389,7 @@ double HardwarePlannerRunner::locked_gap_lateral_offset(const Vec2& position) co
 }
 
 double HardwarePlannerRunner::locked_gap_pass_lateral_limit() const {
-    if (!compact_hardware_unstructured_world(world_)) {
+    if (!hardware_unstructured_exploration_world(world_)) {
         return locked_gap_corridor_half_width_m_ +
                std::max(config_.gap_extraction.gap_goal_acceptance_lateral_slack_m, 0.0);
     }
@@ -742,7 +743,7 @@ void HardwarePlannerRunner::count_unstructured_gate_crossing_if_needed() {
     }
 
     const bool require_center_crossing =
-        compact_hardware_unstructured_world(world_);
+        hardware_unstructured_exploration_world(world_);
     const double longitudinal_progress =
         locked_gap_longitudinal_progress(estimate_.position);
     const double crossing_progress =
@@ -1565,8 +1566,8 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     // it can reach it with a forward clothoid. Keep those rear candidates in
     // perception, but do not lock them until forward LiDAR exploration brings
     // one into the reachable sector. Directly locking a 100--145 degree
-    // candidate creates a looping clothoid and can send the footprint outside
-    // the small arena.
+    // candidate creates a looping clothoid instead of a useful forward
+    // approach.
     const double reachable_heading_limit =
         (manual_car ? 85.0 : (manual_exploration ? 145.0 : 85.0)) *
         kPi / 180.0;

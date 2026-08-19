@@ -166,9 +166,8 @@ double world_span_m(const WorldMap& world) {
     return std::max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
 }
 
-bool compact_hardware_unstructured_world(const WorldMap& world) {
-    return world.environment_mode() == EnvironmentMode::UnstructuredGates &&
-           world_span_m(world) <= 1.25;
+bool hardware_unstructured_exploration_world(const WorldMap& world) {
+    return world.environment_mode() == EnvironmentMode::UnstructuredGates;
 }
 
 bool open_ended_unstructured_exploration(const WorldMap& world) {
@@ -177,7 +176,14 @@ bool open_ended_unstructured_exploration(const WorldMap& world) {
     // preset goal as a search heading would silently reintroduce a scripted
     // arc in HardwareLab. The only motion objectives here are live LiDAR
     // free-space exploration and LiDAR-confirmed physical apertures.
-    return compact_hardware_unstructured_world(world);
+    return hardware_unstructured_exploration_world(world);
+}
+
+bool navigation_world_bounds_enabled(const WorldMap& world) {
+    // In LiDAR-only exploration WorldMap::bounds is a finite canvas used by
+    // the GUI and dense debug grids, not a sensed wall or a physical geofence.
+    // Structured and mixed missions still use their authored bounds.
+    return !open_ended_unstructured_exploration(world);
 }
 
 double structured_course_span_m(const WorldMap& world) {
