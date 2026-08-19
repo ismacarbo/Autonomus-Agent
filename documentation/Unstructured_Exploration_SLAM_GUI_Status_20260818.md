@@ -232,3 +232,60 @@ Verification after this correction:
 - the 600-step HardwareLab synthetic run timed out normally in open-ended
   exploration after `passed_gates=2`, with `status=timeout`, no collision,
   `pivot_command_cycles=0` and `opposite_pwm_cycles=0`.
+
+## Continuous exploration and motor-side correction — 2026-08-19 21:51--21:53
+
+Analysed hardware reports:
+
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260819_215120_394`;
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260819_215227_142`;
+- `thesis_hardware_unstructured_manual_gate_editor_gui_manual_20260819_215354_454`.
+
+The first run travelled about `0.892 m` but ended with `passed_gates=0` and
+spent 525 of 557 recorded samples in `HOLD`. A rear/lateral aperture remained
+in perception (`candidate_gates=1`) without a valid reference. The controller
+incorrectly treated the mere existence of that candidate as a reason to reject
+the safe reverse reposition.
+
+The second run did count one crossing, but 223 of 332 samples were `HOLD`. Its
+83 `GATE_MPC` samples also resolve the motor-side ambiguity left by the previous
+report: for most of the first approach the MPC requested negative yaw with the
+logical left side faster (`90--110/70`), while profile 1.4 swapped this into
+controller targets near `70/90--110`. The physical left encoder then remained
+at zero while the right encoder alone advanced. The swap was therefore applied
+to a controller/firmware path that already has direct left/right semantics and
+reversed the steering authority requested by the clothoid.
+
+The third run had 79 `GATE_MPC` samples but no counted crossing, then ended at
+`(0.902, 0.444) m` with no candidate/reference and 224 of 314 samples in
+`HOLD`. The open-ended workflow marked its startup scan complete at the top of
+the cycle, but the generic strict-lock branch could reset the flag after a
+transient candidate/perception-map readiness failure. Control interpreted that
+reset as a request for another stationary initial scan, so the same states
+repeated indefinitely.
+
+Corrections:
+
+1. calibration profile `1.5.0` uses direct controller motor-channel order
+   (`controller_motor_channels_swapped=false`);
+2. an open-ended LiDAR run never re-enters a stationary startup scan merely
+   because no gate candidate is currently visible;
+3. with no clothoid, control tries a swept forward arc, retries with a
+   `5.5--7.5 cm` receding horizon near a bound, then uses a separately validated
+   short reverse when no forward arc exists;
+4. a visible but unreachable rear candidate no longer inhibits that reverse;
+5. an authorised reverse cannot be converted back to positive speed by the
+   later gate forward-creep rule, and no stationary cooldown is inserted while
+   all forward arcs remain invalid;
+6. whenever `planner_has_reference=true`, `GATE_MPC` remains the control source
+   unless a real safety stop intervenes;
+7. the GUI label is now `Autonomous LiDAR Exploration`. Future snapshots use
+   the suffix `gui_snapshot`, so new filenames no longer contain
+   `manual_gate_editor` or `gui_manual`. The map editor remains only an optional
+   test-fixture/debug UI and does not supply runtime gate targets.
+
+Verification: complete build of `thesis_robot_runner`, `thesis_planner_sim`,
+`thesis_unstructured_exploration_smoke` and `thesis_actuation_model_smoke`;
+all 9 CTest tests pass. The expanded unstructured regression verifies
+continuous no-gate motion, gate-clothoid control authority and safe reverse
+while an unreachable rear LiDAR candidate remains visible.

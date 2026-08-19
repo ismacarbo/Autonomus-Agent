@@ -94,7 +94,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     const bool compact_unstructured_hardware =
         compact_hardware_unstructured_world(world_);
     const bool manual_exploration =
-        manual_unstructured_exploration(world_);
+        open_ended_unstructured_exploration(world_);
     const double current_world_span = world_span_m(world_);
     const bool compact_mixed_reference =
         world_is_mixed(world_) &&

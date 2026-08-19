@@ -152,7 +152,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
 
         if (sim.environment_mode() == EnvironmentMode::UnstructuredGates) {
             if (sim.world().unstructured_preset() == UnstructuredMapPreset::Custom) {
-                ImGui::TextWrapped("Manual gate editor active: place gates and obstacles yourself, then let the planner reach each gate with the motion primitives on top of the mapped free space.");
+                ImGui::TextWrapped("Autonomous LiDAR exploration active: no gate is predeclared and no driving input is manual. The optional map editor is only a debug tool for changing the test fixture.");
             } else {
                 ImGui::TextWrapped("Named gates are the planner's passage hypotheses through the free openings of the map. Keeping this section visible is useful when you debug wrong gate selection.");
             }
@@ -185,8 +185,8 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             }
 
             if (sim.world().unstructured_preset() == UnstructuredMapPreset::Custom) {
-                ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.42f, 1.0f), "User-defined gates stay static in manual editor mode.");
-                ImGui::TextWrapped("Use the Map Editor section to add gates, move them directly in the viewport, and place obstacles the robot must sense and avoid.");
+                ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.42f, 1.0f), "Autonomous LiDAR gates are runtime detections, not editor targets.");
+                ImGui::TextWrapped("The Map Editor is optional test-fixture tooling. Runtime gates are always discovered autonomously from LiDAR and are never taken from editor annotations.");
             } else {
                 int gate_behavior = static_cast<int>(sim.gate_behavior());
                 bool gate_changed = false;
@@ -707,4 +707,3 @@ void render_workspace_top_bar(PlannerDrivenVehicleSim& sim,
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(2);
 }
-

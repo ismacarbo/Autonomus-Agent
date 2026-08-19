@@ -355,7 +355,7 @@ bool HardwarePlannerRunner::select_exploration_frontier() {
         0.5 * std::hypot(geometry_.body_length, geometry_.body_width) + 0.015;
     const bool straight_ahead_car =
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle &&
-        manual_unstructured_exploration(world_);
+        open_ended_unstructured_exploration(world_);
     if (straight_ahead_car) {
         // Exploration is deliberately different from gate tracking.  While no
         // physical aperture is locked, the car may only extend its current
@@ -516,7 +516,7 @@ bool HardwarePlannerRunner::select_exploration_frontier() {
 }
 
 bool HardwarePlannerRunner::update_exploration_target() {
-    if (!manual_unstructured_exploration(world_) ||
+    if (!open_ended_unstructured_exploration(world_) ||
         !config_.frontier_exploration.enabled ||
         !motion_permitted_by_start_match()) {
         return false;

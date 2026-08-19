@@ -35,7 +35,7 @@ const char* unstructured_map_preset_name(UnstructuredMapPreset preset) {
         case UnstructuredMapPreset::LowerBypass:
             return "Lower Bypass";
         case UnstructuredMapPreset::Custom:
-            return "Manual Gate Editor";
+            return "Autonomous LiDAR Exploration";
         case UnstructuredMapPreset::HardwareLab:
             return "Hardware Lab";
         case UnstructuredMapPreset::IdealValidation:

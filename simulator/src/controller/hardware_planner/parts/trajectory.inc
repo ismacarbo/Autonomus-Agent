@@ -302,7 +302,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         planner_speed_ref_,
         closed_structured_loop);
     planned_trajectory_ = extract_reference_positions(reference_trajectory_);
-    if (manual_unstructured_exploration(world_)) {
+    if (open_ended_unstructured_exploration(world_)) {
         // A clear straight chord to the detected aperture does not guarantee
         // that the car-like clothoid is safe. Validate the complete oriented
         // footprint against both the editor bounds and the current LiDAR

@@ -208,7 +208,7 @@ int main() {
         make_scan(exploration_world, exploration_world.start(),
                   exploration_world.start_heading(), config);
 
-    // Keep a partial optimized map connected. In Manual unstructured mode it
+    // Keep a partial optimized map connected. In open-ended exploration it
     // must remain available for visualization without becoming a navigation
     // target: motion is driven by the live LiDAR/gate pipeline.
     thesis_sim::SlamToolboxSnapshot bootstrap_slam;
@@ -253,7 +253,7 @@ int main() {
         }
     }
     if (saw_frontier_control || runner.diagnostics().selected_frontier_valid) {
-        return fail("Manual exploration incorrectly used a SLAM frontier as a motion target");
+        return fail("open-ended exploration incorrectly used a SLAM frontier as a motion target");
     }
     if (saw_gate_control) {
         return fail("a frontier target was misclassified as a physical gate");
@@ -304,9 +304,20 @@ int main() {
     thesis_sim::HardwarePlannerRunner direct_runner(
         exploration_world, bridge_options, direct_config);
     bool saw_direct_straight_exploration = false;
+    int consecutive_stationary_exploration_steps = 0;
+    int maximum_stationary_exploration_steps = 0;
     for (int step = 0; step < 35; ++step) {
         direct_runner.step_with_observation(
             make_observation(10.0 + 0.10 * step, sparse_scan), 0.10, false);
+        if (!direct_runner.safety_stop_active() &&
+            std::abs(direct_runner.last_command().target_speed) <= 1e-4) {
+            ++consecutive_stationary_exploration_steps;
+            maximum_stationary_exploration_steps = std::max(
+                maximum_stationary_exploration_steps,
+                consecutive_stationary_exploration_steps);
+        } else {
+            consecutive_stationary_exploration_steps = 0;
+        }
         if (direct_runner.diagnostics().control_source !=
             thesis_sim::HardwareControlSource::StraightExploration) {
             continue;
@@ -329,6 +340,9 @@ int main() {
     }
     if (!saw_direct_straight_exploration) {
         return fail("no-clothoid LiDAR corridor remained in HOLD");
+    }
+    if (maximum_stationary_exploration_steps > 1) {
+        return fail("open-ended no-gate exploration stopped without a safety condition");
     }
 
     // Reproduce the final pose of hardware report 20260818_212510_695. The
@@ -376,6 +390,45 @@ int main() {
                   << " min=" << reported_pose_runner.estimate().min_lidar_distance
                   << '\n';
         return fail("reported no-clothoid pose still remained in HOLD");
+    }
+
+    // Exact terminal pose of report 20260819_215354_454. A temporary loss of
+    // candidates/map readiness must not reset open-ended mode to a stationary
+    // INITIAL_SCAN loop; current LiDAR must continue to select forward search
+    // (or a safe reverse at a true geometric dead end).
+    thesis_sim::WorldMap no_gate_hold_world = exploration_world;
+    no_gate_hold_world.set_start({0.901537, 0.444385});
+    no_gate_hold_world.set_start_heading(-0.377000);
+    thesis_sim::HardwarePlannerRunner no_gate_hold_runner(
+        no_gate_hold_world, bridge_options, direct_config);
+    const auto no_gate_hold_scan = make_scan(
+        no_gate_hold_world,
+        no_gate_hold_world.start(),
+        no_gate_hold_world.start_heading(),
+        direct_config);
+    int consecutive_no_gate_holds = 0;
+    int maximum_no_gate_holds = 0;
+    bool no_gate_hold_pose_moved = false;
+    for (int step = 0; step < 35; ++step) {
+        no_gate_hold_runner.step_with_observation(
+            make_observation(23.0 + 0.10 * step, no_gate_hold_scan),
+            0.10,
+            false);
+        const auto& command = no_gate_hold_runner.last_command();
+        no_gate_hold_pose_moved = no_gate_hold_pose_moved ||
+            std::abs(command.target_speed) > 1e-4;
+        if (!no_gate_hold_runner.safety_stop_active() &&
+            std::abs(command.target_speed) <= 1e-4) {
+            ++consecutive_no_gate_holds;
+            maximum_no_gate_holds = std::max(
+                maximum_no_gate_holds,
+                consecutive_no_gate_holds);
+        } else {
+            consecutive_no_gate_holds = 0;
+        }
+    }
+    if (!no_gate_hold_pose_moved || maximum_no_gate_holds > 1) {
+        return fail("report 215354 no-gate pose still re-entered stationary scanning");
     }
 
     // Reproduce the approach to the terminal area of report
@@ -566,6 +619,12 @@ int main() {
         saw_physical_gate = saw_physical_gate ||
             gate_runner.diagnostics().control_source ==
                 thesis_sim::HardwareControlSource::GateMpc;
+        if (gate_runner.diagnostics().planner_has_reference &&
+            !gate_runner.safety_stop_active() &&
+            gate_runner.diagnostics().control_source !=
+                thesis_sim::HardwareControlSource::GateMpc) {
+            return fail("valid gate clothoid lost control authority to an exploration fallback");
+        }
         saw_gate_steering_authority = saw_gate_steering_authority ||
             (gate_runner.diagnostics().control_source ==
                  thesis_sim::HardwareControlSource::GateMpc &&
@@ -652,6 +711,79 @@ int main() {
         {0.49, 0.740, 0.53, 1.20},
     };
     narrow_gate_fixture.finalize_editor_changes();
+
+    // Regression for reports 215120/215227: an aperture can remain visible
+    // behind the car after a failed approach. It is a useful candidate for a
+    // later pass, but it must neither be locked as a forward target nor block
+    // the independently footprint-validated reverse escape at the arena edge.
+    thesis_sim::WorldMap rear_gate_fixture = physical_fixture;
+    rear_gate_fixture.editable_obstacles() = {
+        {0.55, -0.50, 0.59, 0.450},
+        {0.55, 0.750, 0.59, 1.70},
+    };
+    // The physical scan need not contain a wall at the virtual navigation
+    // bound. Keep sensing bounds wider so this test reaches geometric escape
+    // selection instead of the emergency close-return interlock.
+    rear_gate_fixture.set_bounds({-0.50, -0.50, 1.70, 1.70});
+    rear_gate_fixture.finalize_editor_changes();
+    thesis_sim::WorldMap rear_gate_world = exploration_world;
+    rear_gate_world.set_start({1.02, 0.60});
+    rear_gate_world.set_start_heading(0.0);
+    thesis_sim::HardwarePlannerRunner rear_gate_runner(
+        rear_gate_world, bridge_options, direct_config);
+    bool saw_rear_candidate = false;
+    bool rear_candidate_allowed_reverse = false;
+    for (int step = 0; step < 30; ++step) {
+        const auto rear_gate_scan = make_scan(
+            rear_gate_fixture,
+            rear_gate_runner.estimate().position,
+            rear_gate_runner.estimate().yaw,
+            direct_config);
+        rear_gate_runner.step_with_observation(
+            make_observation(36.0 + 0.10 * step, rear_gate_scan),
+            0.10,
+            false);
+        saw_rear_candidate = saw_rear_candidate ||
+            rear_gate_runner.diagnostics().candidate_gates > 0;
+        rear_candidate_allowed_reverse = rear_candidate_allowed_reverse ||
+            (rear_gate_runner.diagnostics().candidate_gates > 0 &&
+             rear_gate_runner.last_command().target_speed < -1e-4 &&
+             rear_gate_runner.diagnostics().control_source ==
+                 thesis_sim::HardwareControlSource::Recovery);
+    }
+    if (!saw_rear_candidate) {
+        std::cerr << "rear_gate_debug state="
+                  << thesis_sim::unstructured_exploration_state_name(
+                         rear_gate_runner.diagnostics().exploration_state)
+                  << " control="
+                  << thesis_sim::hardware_control_source_name(
+                         rear_gate_runner.diagnostics().control_source)
+                  << " speed=" << rear_gate_runner.last_command().target_speed
+                  << " yaw_rate=" << rear_gate_runner.last_command().target_yaw_rate
+                  << " front=" << rear_gate_runner.estimate().front_lidar_distance
+                  << " min=" << rear_gate_runner.estimate().min_lidar_distance
+                  << " map=" << rear_gate_runner.global_occupied_points().size()
+                  << '\n';
+        return fail("rear-gate regression did not reproduce the LiDAR candidate");
+    }
+    if (!rear_candidate_allowed_reverse) {
+        std::cerr << "rear_gate_motion_debug candidates="
+                  << rear_gate_runner.diagnostics().candidate_gates
+                  << " state="
+                  << thesis_sim::unstructured_exploration_state_name(
+                         rear_gate_runner.diagnostics().exploration_state)
+                  << " control="
+                  << thesis_sim::hardware_control_source_name(
+                         rear_gate_runner.diagnostics().control_source)
+                  << " speed=" << rear_gate_runner.last_command().target_speed
+                  << " yaw_rate=" << rear_gate_runner.last_command().target_yaw_rate
+                  << " front=" << rear_gate_runner.estimate().front_lidar_distance
+                  << " min=" << rear_gate_runner.estimate().min_lidar_distance
+                  << " ref=" << rear_gate_runner.diagnostics().planner_has_reference
+                  << '\n';
+        return fail("an unreachable rear gate candidate still blocked continuous exploration");
+    }
+
     thesis_sim::WorldMap crossing_world = exploration_world;
     crossing_world.set_start({0.28, 0.57});
     crossing_world.set_start_heading(0.0);

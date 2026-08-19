@@ -171,7 +171,7 @@ bool compact_hardware_unstructured_world(const WorldMap& world) {
            world_span_m(world) <= 1.25;
 }
 
-bool manual_unstructured_exploration(const WorldMap& world) {
+bool open_ended_unstructured_exploration(const WorldMap& world) {
     // Hardware unstructured missions are perception-driven regardless of the
     // GUI preset.  Preset gates are stripped before execution, so using the
     // preset goal as a search heading would silently reintroduce a scripted

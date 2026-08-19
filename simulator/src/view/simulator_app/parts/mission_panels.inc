@@ -1000,7 +1000,7 @@ void render_hardware_control_panel(const HardwareViewerState& hardware,
             ImGui::BeginDisabled();
         }
         if (ImGui::Button("Save Hardware Telemetry", ImVec2(-1.0f, 0.0f))) {
-            const std::string report_path = default_hardware_report_path(hardware, *ui_state, "gui_manual");
+            const std::string report_path = default_hardware_report_path(hardware, *ui_state, "gui_snapshot");
             HardwareLidarReconstructionExport lidar_export;
             const bool json_ok = write_hardware_json_report(
                 hardware, *ui_state, *hardware_server, report_path, slam_snapshot);

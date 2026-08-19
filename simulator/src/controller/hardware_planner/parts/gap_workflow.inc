@@ -48,7 +48,7 @@ void HardwarePlannerRunner::restart_unstructured_scan() {
 
 void HardwarePlannerRunner::update_unstructured_scan_direction(bool flip_when_aligned) {
     const Vec2 goal = world_.goal();
-    if (!manual_unstructured_exploration(world_) &&
+    if (!open_ended_unstructured_exploration(world_) &&
         distance(estimate_.position, goal) > 0.05) {
         const double heading_error = wrap_angle(angle_to(estimate_.position, goal) - estimate_.yaw);
         if (std::abs(heading_error) > 0.12) {
@@ -87,7 +87,7 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         config_.gap_extraction.recovery_sector_half_angle_rad,
         0.16,
         0.34);
-    const bool manual_exploration = manual_unstructured_exploration(world_);
+    const bool manual_exploration = open_ended_unstructured_exploration(world_);
     const double heading_limit = manual_exploration
         ? 140.0 * kPi / 180.0
         : clamp_value(
@@ -109,7 +109,7 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
             preferred_gate_heading = heading;
         }
     }
-    const double probe_distance = clamp_value(
+    double probe_distance = clamp_value(
         0.20 * world_span_m(world_),
         0.18,
         0.26);
@@ -170,42 +170,62 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         }
         return true;
     };
-    double best_score = heading_stays_in_arena(0.0)
-        ? forward_clearance
-        : -std::numeric_limits<double>::infinity();
-    for (double heading = -heading_limit;
-         heading <= heading_limit + 1e-6;
-         heading += heading_step) {
-        if (!heading_stays_in_arena(heading)) {
-            continue;
-        }
-        const double clearance = sector_min_clearance(
-            lidar_hits_, estimate_.yaw, heading, sector_half_width, search_range);
-        const double sweep_bias = manual_exploration
-            ? 0.10 * clamp_value(
-                  unstructured_no_candidate_scan_elapsed_s_ / 1.5,
-                  0.0,
-                  1.0) *
-                  startup_scan_direction_ * heading / std::max(heading_limit, 1e-3)
-            : 0.0;
-        const double candidate_alignment_bonus =
-            preferred_gate_heading.has_value()
-                ? 0.28 * std::cos(wrap_angle(heading - *preferred_gate_heading))
+    double best_score = -std::numeric_limits<double>::infinity();
+    const auto select_forward_arc = [&]() {
+        best_heading = 0.0;
+        best_clearance = forward_clearance;
+        best_score = heading_stays_in_arena(0.0)
+            ? forward_clearance
+            : -std::numeric_limits<double>::infinity();
+        for (double heading = -heading_limit;
+             heading <= heading_limit + 1e-6;
+             heading += heading_step) {
+            if (!heading_stays_in_arena(heading)) {
+                continue;
+            }
+            const double clearance = sector_min_clearance(
+                lidar_hits_, estimate_.yaw, heading, sector_half_width, search_range);
+            const double sweep_bias = manual_exploration
+                ? 0.10 * clamp_value(
+                      unstructured_no_candidate_scan_elapsed_s_ / 1.5,
+                      0.0,
+                      1.0) *
+                      startup_scan_direction_ * heading / std::max(heading_limit, 1e-3)
                 : 0.0;
-        const double post_reverse_turn_bias =
-            manual_exploration &&
-                    sim_time_ < lidar_post_reverse_search_until_s_
-                ? 0.38 * startup_scan_direction_ * heading /
-                      std::max(heading_limit, 1e-3)
-                : 0.0;
-        const double score =
-            clearance - (manual_exploration ? 0.07 : 0.16) * std::abs(heading) +
-            sweep_bias + candidate_alignment_bonus + post_reverse_turn_bias;
-        if (score > best_score) {
-            best_score = score;
-            best_clearance = clearance;
-            best_heading = heading;
+            const double candidate_alignment_bonus =
+                preferred_gate_heading.has_value()
+                    ? 0.28 * std::cos(wrap_angle(heading - *preferred_gate_heading))
+                    : 0.0;
+            const double post_reverse_turn_bias =
+                manual_exploration &&
+                        sim_time_ < lidar_post_reverse_search_until_s_
+                    ? 0.38 * startup_scan_direction_ * heading /
+                          std::max(heading_limit, 1e-3)
+                    : 0.0;
+            const double score =
+                clearance - (manual_exploration ? 0.07 : 0.16) * std::abs(heading) +
+                sweep_bias + candidate_alignment_bonus + post_reverse_turn_bias;
+            if (score > best_score) {
+                best_score = score;
+                best_clearance = clearance;
+                best_heading = heading;
+            }
         }
+    };
+    select_forward_arc();
+
+    // Near an arena edge a safe receding-horizon move can exist even though
+    // the normal 18--26 cm preview no longer fits. Retry with one hardware
+    // control interval (about 6--7 cm at the observed minimum PWM) before
+    // declaring forward exploration impossible and asking for reverse.
+    bool short_horizon_search = false;
+    if (!std::isfinite(best_score) && manual_exploration) {
+        probe_distance = clamp_value(
+            0.055 * world_span_m(world_),
+            0.055,
+            0.075);
+        short_horizon_search = true;
+        select_forward_arc();
     }
 
     const double required_clearance = std::max(
@@ -237,7 +257,9 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         (best_clearance - required_clearance) / 0.35,
         0.0,
         1.0);
-    const double search_speed_cap = std::max(0.0, std::min(0.060, speed_limit));
+    const double search_speed_cap = std::max(
+        0.0,
+        std::min(short_horizon_search ? 0.040 : 0.060, speed_limit));
     *target_speed = search_speed_cap < 0.040
         ? search_speed_cap
         : clamp_value(
@@ -807,7 +829,7 @@ void HardwarePlannerRunner::count_unstructured_gate_crossing_if_needed() {
         diagnostics_.planner_has_reference = false;
     } else {
         restart_unstructured_scan();
-        if (manual_unstructured_exploration(world_) &&
+        if (open_ended_unstructured_exploration(world_) &&
             config_.frontier_exploration.enabled) {
             startup_scan_complete_ = true;
             startup_scan_elapsed_s_ =
@@ -1418,9 +1440,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     }
 
     const bool manual_lidar_exploration =
-        manual_unstructured_exploration(world_);
+        open_ended_unstructured_exploration(world_);
     if (manual_lidar_exploration) {
-        // Manual Editor is an open-ended exploration mission. A stationary
+        // This is an open-ended autonomous exploration mission. A stationary
         // startup scan delays discovery and is unnecessary because every
         // forward command is already gated by a fresh LiDAR corridor check.
         startup_scan_complete_ = true;
@@ -1469,12 +1491,12 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
                 const double heading_error = std::abs(
                     wrap_angle(angle_to(estimate_.position, spec.position) - estimate_.yaw));
                 const bool manual_car =
-                    manual_unstructured_exploration(world_) &&
+                    open_ended_unstructured_exploration(world_) &&
                     config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
                 const double forward_lock_angle = strict_locked_motion
                     ? (manual_car
                            ? 85.0 * kPi / 180.0
-                           : (manual_unstructured_exploration(world_)
+                           : (open_ended_unstructured_exploration(world_)
                                   ? 145.0 * kPi / 180.0
                                   : 72.0 * kPi / 180.0))
                     : 28.0 * kPi / 180.0;
@@ -1527,7 +1549,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     if (!startup_scan_complete_ || !perception_map_ready() || gate_specs_.empty()) {
         chosen_gate_index_ = -1;
         diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
-        if (strict_locked_motion) {
+        if (strict_locked_motion && !manual_lidar_exploration) {
             startup_scan_complete_ = false;
         }
         return;
@@ -1535,7 +1557,7 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
 
     size_t preferred_gate_index = 0;
     double best_gate_score = -std::numeric_limits<double>::infinity();
-    const bool manual_exploration = manual_unstructured_exploration(world_);
+    const bool manual_exploration = open_ended_unstructured_exploration(world_);
     const bool manual_car =
         manual_exploration &&
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle;

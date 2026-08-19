@@ -193,7 +193,7 @@ void HardwarePlannerRunner::reset() {
     geometry_ = make_vehicle_geometry(config_);
     const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
     const bool compact_manual_unstructured_car =
-        manual_unstructured_exploration(world_) &&
+        open_ended_unstructured_exploration(world_) &&
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
     if (compact_manual_unstructured_car) {
         // The physical car is actuated by independent left/right motor groups.
@@ -744,7 +744,7 @@ int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
     // A perception-only compact hardware scene has no authoritative number of
     // physical LiDAR apertures. Keep exploring until the operator stops the
     // run instead of turning an arbitrary local count into a false mission end.
-    if (manual_unstructured_exploration(world_)) {
+    if (open_ended_unstructured_exploration(world_)) {
         return std::numeric_limits<int>::max();
     }
     return std::max(config_.gap_extraction.min_passed_gates_to_complete, 1);

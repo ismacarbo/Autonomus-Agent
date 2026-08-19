@@ -145,7 +145,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_speed = search_speed;
         allow_unlocked_recovery_motion = search_speed > 1e-4;
         const bool straight_search_command =
-            manual_unstructured_exploration(world_) &&
+            open_ended_unstructured_exploration(world_) &&
             std::abs(search_yaw_rate) <= 0.015;
         gap_recovery_turn_active_ = !straight_search_command;
         exploration_state_ = straight_search_command
@@ -240,11 +240,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     };
 
     auto apply_reverse_lidar_reposition = [&]() {
-        if (!manual_unstructured_exploration(world_) ||
+        if (!open_ended_unstructured_exploration(world_) ||
             tracked_vehicle ||
-            scanning_startup ||
             goal_reached_ ||
-            !gate_specs_.empty() ||
             locked_gap_goal_.has_value() ||
             have_reference_trajectory) {
             return false;
@@ -252,7 +250,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
         constexpr double kReverseCompletionDistanceM = 0.075;
         constexpr double kReverseMaximumDurationS = 0.60;
-        constexpr double kReverseRetryCooldownS = 1.20;
+        // Do not insert a stationary cooldown while every forward arc remains
+        // invalid. Measured displacement still terminates each short segment;
+        // the next cycle tries forward first and only extends the reverse when
+        // the rear swept footprint is still clear.
+        constexpr double kReverseRetryCooldownS = 0.0;
         const bool reverse_reposition_active =
             sim_time_ < lidar_reverse_reposition_until_s_;
         if (reverse_reposition_active &&
@@ -402,14 +404,21 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     tracking_state.target_steer_angle = commanded_steer_angle_;
 
     if (scanning_startup) {
-        if (manual_unstructured_exploration(world_)) {
-            commanded_speed_ = 0.0;
-            commanded_steer_angle_ = 0.0;
-            last_command_.target_speed = 0.0;
-            last_command_.target_curvature = 0.0;
-            use_direct_yaw_rate_command = false;
-            last_mpc_command_.reset();
-            exploration_state_ = UnstructuredExplorationState::InitialScan;
+        if (open_ended_unstructured_exploration(world_)) {
+            // A reference invalidation may reset startup_scan_complete_ after
+            // the workflow has already run.  Never turn that bookkeeping
+            // cycle into a stationary scan: continue with live-LiDAR forward
+            // search or the independently validated short reverse escape.
+            if (!apply_forward_gate_search() &&
+                !apply_reverse_lidar_reposition()) {
+                commanded_speed_ = 0.0;
+                commanded_steer_angle_ = 0.0;
+                last_command_.target_speed = 0.0;
+                last_command_.target_curvature = 0.0;
+                use_direct_yaw_rate_command = false;
+                last_mpc_command_.reset();
+                exploration_state_ = UnstructuredExplorationState::Hold;
+            }
         } else if (!apply_forward_gate_search()) {
             commanded_speed_ = 0.0;
             commanded_steer_angle_ = 0.0;
@@ -543,7 +552,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         !tracked_vehicle &&
         have_reference_trajectory &&
         last_mpc_command_.has_value() &&
-        (manual_unstructured_exploration(world_) ||
+        (open_ended_unstructured_exploration(world_) ||
          navigation_target_kind_ == NavigationTargetKind::PhysicalGate);
     double motion_heading_local = 0.0;
     bool have_motion_heading = false;
@@ -614,7 +623,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         (!strict_locked_motion || locked_gap_goal_.has_value()) &&
         have_motion_heading) {
         // Normally this is a fallback for modes without an authoritative
-        // clothoid. In compact Manual Editor it is also a hysteretic tangent
+        // clothoid. In compact open-ended exploration it is also a hysteretic tangent
         // acquisition stage for large errors: it aims at the clothoid tangent,
         // never at the gate-centre chord, and remains a forward-only arc.
         const double heading_error = motion_heading_local;
@@ -724,7 +733,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                !scanning_startup &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
-        if (manual_unstructured_exploration(world_)) {
+        if (open_ended_unstructured_exploration(world_)) {
             // One LiDAR-sector selector owns both cases: it returns zero yaw in
             // an open corridor and a bounded forward arc near obstacles or
             // bounds. This prevents a barely-valid straight fallback from
@@ -1214,6 +1223,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (forward_creep_gate_car &&
         !goal_reached_ &&
         !safety_stop_active_ &&
+        !allow_reverse_recovery_motion &&
         !scanning_startup &&
         !(sim_time_ < stuck_recovery_until_s_) &&
         use_direct_yaw_rate_command &&
