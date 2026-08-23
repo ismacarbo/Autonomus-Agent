@@ -294,6 +294,7 @@ target_link_libraries(thesis_robot_runner PRIVATE
 )
 
 add_library(thesis_hardware_calibration STATIC
+  src/controller/hardware_calibration/drivetrain_diagnostics.cpp
   src/controller/hardware_calibration/straight_line_calibration.cpp
   src/controller/hardware_calibration/straight_line_report_writer.cpp
 )
@@ -311,6 +312,14 @@ add_executable(thesis_straight_line_calibration
 )
 
 target_link_libraries(thesis_straight_line_calibration PRIVATE
+  thesis_hardware_calibration
+)
+
+add_executable(thesis_drivetrain_diagnostics
+  src/controller/hardware_calibration/drivetrain_diagnostics_main.cpp
+)
+
+target_link_libraries(thesis_drivetrain_diagnostics PRIVATE
   thesis_hardware_calibration
 )
 
@@ -404,6 +413,20 @@ if(BUILD_TESTING)
   )
 
   add_test(NAME thesis_straight_line_calibration_math COMMAND thesis_straight_line_calibration_smoke)
+
+  add_executable(thesis_drivetrain_diagnostics_smoke
+    src/tests/unit/drivetrain_diagnostics_test.cpp
+  )
+
+  target_include_directories(thesis_drivetrain_diagnostics_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
+  target_link_libraries(thesis_drivetrain_diagnostics_smoke PRIVATE
+    thesis_hardware_calibration
+  )
+
+  add_test(NAME thesis_drivetrain_diagnostics_logic COMMAND thesis_drivetrain_diagnostics_smoke)
 
   add_executable(thesis_initial_lidar_matcher_smoke
     src/tests/unit/initial_lidar_matcher_test.cpp
