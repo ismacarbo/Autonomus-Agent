@@ -258,6 +258,15 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     if (config->vehicle_model == VehicleModelKind::CarLikeBicycle) {
         config->pwm.min_effective_pwm = std::max(config->pwm.min_effective_pwm, 70);
         config->pwm.start_motion_pwm = 110;
+        // The BNO080-confirmed 2026-08-24 drivetrain sweep showed that a
+        // positive yaw request needs much more authority than a negative one.
+        // Close the body-yaw loop outside the per-wheel encoder loop and keep
+        // the measured direction-specific PWM limits explicit.
+        config->pwm.yaw_rate_tracking_kp = 1.0;
+        config->pwm.yaw_rate_tracking_ki = 0.40;
+        config->pwm.yaw_rate_error_integral_limit = 0.40;
+        config->pwm.gate_positive_turn_max_pwm_delta = 70;
+        config->pwm.gate_negative_turn_max_pwm_delta = 40;
     }
     config->pwm.stall_target_speed_threshold_mps =
         std::min(config->pwm.stall_target_speed_threshold_mps, 0.018);

@@ -165,6 +165,10 @@ bool load_robot_calibration_profile(const std::string& path,
     read_number(json, "motor_time_constant_s", &parsed.motor_time_constant_s);
     read_number(json, "left_actuator_scale", &parsed.left_actuator_scale);
     read_number(json, "right_actuator_scale", &parsed.right_actuator_scale);
+    read_number(json, "left_pwm_command_scale", &parsed.left_pwm_command_scale);
+    read_number(json, "right_pwm_command_scale", &parsed.right_pwm_command_scale);
+    read_number(json, "left_pwm_command_offset", &parsed.left_pwm_command_offset);
+    read_number(json, "right_pwm_command_offset", &parsed.right_pwm_command_offset);
     read_number(json, "max_linear_speed_mps", &parsed.max_linear_speed_mps);
     read_number(json, "max_yaw_rate_rad_s", &parsed.max_yaw_rate_rad_s);
     double command_delay = 0.0;
@@ -192,6 +196,13 @@ bool load_robot_calibration_profile(const std::string& path,
         parsed.lidar_dropout_probability >= 1.0) {
         if (error != nullptr) {
             *error = "lidar_dropout_probability must be in [0,1)";
+        }
+        return false;
+    }
+    if (!(parsed.left_pwm_command_scale > 0.0) ||
+        !(parsed.right_pwm_command_scale > 0.0)) {
+        if (error != nullptr) {
+            *error = "PWM command scales must be positive";
         }
         return false;
     }

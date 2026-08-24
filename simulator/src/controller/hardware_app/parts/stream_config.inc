@@ -155,6 +155,10 @@ void apply_robot_calibration_profile(const AppOptions& options,
     config->pwm.min_effective_pwm = profile.min_effective_pwm;
     config->pwm.left_scale = profile.left_actuator_scale;
     config->pwm.right_scale = profile.right_actuator_scale;
+    config->pwm.left_command_scale = profile.left_pwm_command_scale;
+    config->pwm.right_command_scale = profile.right_pwm_command_scale;
+    config->pwm.left_command_offset = profile.left_pwm_command_offset;
+    config->pwm.right_command_offset = profile.right_pwm_command_offset;
     if (profile.speed_estimate_per_pwm > 1e-6) {
         config->pwm.wheel_speed_to_pwm_gain =
             1.0 / profile.speed_estimate_per_pwm;

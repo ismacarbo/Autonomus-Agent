@@ -45,6 +45,15 @@ thesis_sim::HardwarePlannerConfig make_config() {
     config.gap_extraction.gap_goal_acceptance_lateral_slack_m = 0.060;
     config.gap_extraction.gap_crossing_margin_m = 0.018;
     config.gap_extraction.gap_goal_cruise_speed_mps = 0.060;
+    config.pwm.left_command_scale = 1.0;
+    config.pwm.right_command_scale = 0.8494623655913978;
+    config.pwm.left_command_offset = 0.0;
+    config.pwm.right_command_offset = 26.021505376344084;
+    config.pwm.yaw_rate_tracking_kp = 1.0;
+    config.pwm.yaw_rate_tracking_ki = 0.40;
+    config.pwm.yaw_rate_error_integral_limit = 0.40;
+    config.pwm.gate_positive_turn_max_pwm_delta = 70;
+    config.pwm.gate_negative_turn_max_pwm_delta = 40;
     config.frontier_exploration.enabled = true;
     config.frontier_exploration.grid_resolution_m = 0.04;
     config.frontier_exploration.minimum_frontier_distance_m = 0.10;
@@ -139,7 +148,8 @@ thesis_sim::RealRobotObservation make_observation(
     const std::vector<thesis_sim::RPLidarA1::ScanPoint>& scan,
     std::int32_t left_encoder_ticks = 0,
     std::int32_t right_encoder_ticks = 0,
-    double imu_yaw = 0.0) {
+    double imu_yaw = 0.0,
+    double imu_yaw_rate = 0.0) {
     thesis_sim::RealRobotObservation observation;
     observation.host_timestamp_s = timestamp;
     observation.have_controller_telemetry = true;
@@ -161,6 +171,8 @@ thesis_sim::RealRobotObservation make_observation(
         static_cast<std::uint32_t>(std::lround(timestamp * 1000.0));
     observation.controller.yaw_mrad =
         static_cast<std::int32_t>(std::lround(imu_yaw * 1000.0));
+    observation.controller.yaw_rate_mrad_s =
+        static_cast<std::int32_t>(std::lround(imu_yaw_rate * 1000.0));
     observation.controller.ticks_left = left_encoder_ticks;
     observation.controller.ticks_right = right_encoder_ticks;
     observation.controller.motor_flags =
@@ -386,6 +398,39 @@ int main() {
     }
     if (maximum_stationary_exploration_steps > 1) {
         return fail("open-ended no-gate exploration stopped without a safety condition");
+    }
+
+    // With no gate the nominal request remains straight. If the BNO080 sees
+    // the measured negative-yaw drift from the 2026-08-24 ground test, the
+    // outer loop must generate a positive correction while preserving two
+    // forward wheel commands. This is actuator compensation, not a planned
+    // search arc.
+    thesis_sim::HardwarePlannerRunner yaw_correction_runner(
+        exploration_world, bridge_options, direct_config);
+    bool saw_body_yaw_correction = false;
+    for (int step = 0; step < 35; ++step) {
+        yaw_correction_runner.step_with_observation(
+            make_observation(
+                14.0 + 0.10 * step,
+                sparse_scan,
+                step * 2,
+                step * 2,
+                -0.014 * step,
+                -0.14),
+            0.10,
+            false);
+        const auto& command = yaw_correction_runner.last_command();
+        if (command.pwm_left < 0 || command.pwm_right < 0) {
+            return fail("body-yaw correction violated forward-only exploration");
+        }
+        saw_body_yaw_correction = saw_body_yaw_correction ||
+            (yaw_correction_runner.diagnostics().control_source ==
+                 thesis_sim::HardwareControlSource::StraightExploration &&
+             command.target_yaw_rate > 0.05 &&
+             command.pwm_right > command.pwm_left);
+    }
+    if (!saw_body_yaw_correction) {
+        return fail("negative IMU drift did not produce a positive body-yaw correction");
     }
 
     // Reproduce the final pose of hardware report 20260818_212510_695. The

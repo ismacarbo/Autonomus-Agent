@@ -131,3 +131,43 @@ Nel nuovo report devono risultare:
 
 Per la prima prova e' consigliato fermarsi dopo il primo gate valido e salvare
 subito il bundle, prima di eseguire una missione lunga.
+
+## Aggiornamento drivetrain 2026-08-24 (firmware 1.4)
+
+Il mapping fisico definitivo e' `RF=A2`, `RR=A0`, `LF=A1`, `LR=A3` con
+`PWMA=destra` e `PWMB=sinistra`. Le prove one-side sono tutte passate e il
+segno BNO080 e' stato validato in entrambe le direzioni.
+
+Sweep con ruote sollevate, durata 1,25 s:
+
+| PWM | tick sinistra | tick destra |
+|---:|---:|---:|
+| 70 | 45 | 38 |
+| 85 | 57 | 47 |
+| 100 | 67 | 57 |
+| 115 | 70 | 66 |
+| 130 | 78 | 75 |
+
+Le regressioni sono `L=0,5266667*PWM+10,7333333` e
+`R=0,6200000*PWM-5,4000000`. Per ottenere a destra la risposta canonica
+sinistra si applica quindi:
+
+```text
+PWM_R = 0,8494623656 * PWM_base + 26,0215053763
+```
+
+La prova a terra ha misurato `+2,18 deg` con `60/100` e `-31,97 deg` con
+`100/60`; l'osservazione fisica ha confermato che la prima virata era davvero
+debole. Il problema non e' il segno IMU ma l'autorita' fortemente asimmetrica
+del drivetrain sotto carico.
+
+Il profilo car 1.6 applica ora la calibrazione affine dopo la somma di
+feed-forward e feedback. Il runner chiude inoltre un PI esterno sullo yaw-rate
+BNO080 anche quando gli encoder sono validi, poi lascia al PI per-ruota il
+compito di realizzare le velocita' corrette. In modalita' unstructured le due
+ruote restano forward-only; la massima autorita' differenziale del gate e'
+70 PWM per yaw positivo e 40 PWM per yaw negativo. I vecchi scale identificati
+con A0/A1 incrociati sono stati azzerati.
+
+Il PID velocita' interno al micro resta disattivato: prima di usare
+`--mcu-wheel-pid` devono essere identificati separatamente `FF`, `KP` e `KI`.

@@ -20,13 +20,16 @@ namespace thesis_sim {
 namespace {
 
 using thesis_sim::mvc::model::apply_start_motion_boost;
+using thesis_sim::mvc::model::apply_signed_pwm_calibration;
 using thesis_sim::mvc::model::clamp_motion_pwm_band;
 using thesis_sim::mvc::model::enforce_forward_differential_pwm;
 using thesis_sim::mvc::model::enforce_forward_tracked_turn_authority;
+using thesis_sim::mvc::model::remove_signed_pwm_calibration;
 using thesis_sim::mvc::model::scale_motion_pwm_pair_to_full_scale;
 using thesis_sim::mvc::model::slew_limit_pwm;
 using thesis_sim::mvc::model::wheel_speed_from_pwm_estimate;
 using thesis_sim::mvc::model::wheel_speeds_from_body;
+using thesis_sim::mvc::model::yaw_rate_target_with_feedback;
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kStableEncoderReadyFrames = 3;
@@ -473,9 +476,23 @@ double signed_encoder_distance(std::int32_t delta_ticks, bool dir_negative, doub
     return signed_delta * ticks_to_distance;
 }
 
-double forward_speed_from_pwm_estimate(const ControllerTelemetry& telemetry, const VehicleGeometry& geometry) {
-    const double left_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_l, geometry.left_pwm_scale, geometry);
-    const double right_speed = wheel_speed_from_pwm_estimate(telemetry.pwm_r, geometry.right_pwm_scale, geometry);
+double forward_speed_from_pwm_estimate(const ControllerTelemetry& telemetry,
+                                       const VehicleGeometry& geometry,
+                                       const MotorPwmMapperConfig& pwm_config) {
+    const int canonical_left_pwm = remove_signed_pwm_calibration(
+        telemetry.pwm_l,
+        pwm_config.left_command_scale,
+        pwm_config.left_command_offset,
+        pwm_config.max_pwm);
+    const int canonical_right_pwm = remove_signed_pwm_calibration(
+        telemetry.pwm_r,
+        pwm_config.right_command_scale,
+        pwm_config.right_command_offset,
+        pwm_config.max_pwm);
+    const double left_speed = wheel_speed_from_pwm_estimate(
+        canonical_left_pwm, geometry.left_pwm_scale, geometry);
+    const double right_speed = wheel_speed_from_pwm_estimate(
+        canonical_right_pwm, geometry.right_pwm_scale, geometry);
     return 0.5 * (left_speed + right_speed);
 }
 

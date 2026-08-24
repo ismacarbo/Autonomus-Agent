@@ -24,6 +24,27 @@ int wheel_speed_to_pwm(double wheel_speed_mps,
                        double speed_to_pwm_gain,
                        double speed_to_pwm_bias);
 
+// Applies a measured affine correction to the magnitude of an already
+// computed PWM command while preserving stop and direction semantics.
+int apply_signed_pwm_calibration(int pwm,
+                                 double output_scale,
+                                 double output_offset,
+                                 int max_pwm);
+
+int remove_signed_pwm_calibration(int calibrated_pwm,
+                                  double output_scale,
+                                  double output_offset,
+                                  int max_pwm);
+
+// Outer-loop correction used to turn an MPC/body yaw-rate request into the
+// wheel-level yaw-rate request that compensates measured drivetrain slip.
+double yaw_rate_target_with_feedback(double target_yaw_rate,
+                                     double measured_yaw_rate,
+                                     double yaw_error_integral,
+                                     double proportional_gain,
+                                     double integral_gain,
+                                     double maximum_abs_yaw_rate);
+
 int clamp_motion_pwm_band(int pwm, int min_pwm, int max_pwm);
 int slew_limit_pwm(int previous_pwm, int target_pwm, int max_delta);
 

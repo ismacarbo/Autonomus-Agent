@@ -30,6 +30,10 @@ struct RobotCalibrationProfile {
     double motor_time_constant_s = 0.0;
     double left_actuator_scale = 1.0;
     double right_actuator_scale = 1.0;
+    double left_pwm_command_scale = 1.0;
+    double right_pwm_command_scale = 1.0;
+    double left_pwm_command_offset = 0.0;
+    double right_pwm_command_offset = 0.0;
     double max_linear_speed_mps = 0.0;
     double max_yaw_rate_rad_s = 0.0;
 

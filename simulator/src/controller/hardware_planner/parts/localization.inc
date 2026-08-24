@@ -157,7 +157,7 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {
         const double pwm_speed_estimate = clamp_value(
-            std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
+            std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_, config_.pwm)),
             0.0,
             geometry_.max_linear_speed);
         const bool controller_driving =
@@ -439,7 +439,7 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {
         const double pwm_speed_estimate = clamp_value(
-            std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_)),
+            std::abs(forward_speed_from_pwm_estimate(telemetry, geometry_, config_.pwm)),
             0.0,
             geometry_.max_linear_speed);
         const bool controller_driving =

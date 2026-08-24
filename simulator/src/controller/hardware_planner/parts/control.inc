@@ -16,6 +16,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         commanded_speed_ = 0.0;
         commanded_steer_angle_ = 0.0;
         last_command_ = {};
+        yaw_rate_error_integral_ = 0.0;
         last_mpc_command_.reset();
         exploration_state_ = UnstructuredExplorationState::StartMatching;
         return;
@@ -27,6 +28,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_speed = 0.0;
         last_command_.target_curvature = 0.0;
         last_command_.target_yaw_rate = 0.0;
+        yaw_rate_error_integral_ = 0.0;
         return;
     }
 
@@ -95,6 +97,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.safety_stop = true;
         wheel_speed_error_integral_left_ = 0.0;
         wheel_speed_error_integral_right_ = 0.0;
+        yaw_rate_error_integral_ = 0.0;
         no_motion_command_cycles_ = 0;
         left_wheel_stall_cycles_ = 0;
         right_wheel_stall_cycles_ = 0;
@@ -1353,7 +1356,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.target_yaw_rate = 0.0;
         } else {
             const double forward_arc_yaw_limit =
-                0.68 * std::abs(last_command_.target_speed) /
+                0.92 * std::abs(last_command_.target_speed) /
                 std::max(half_track, 1e-3);
             last_command_.target_yaw_rate = clamp_value(
                 last_command_.target_yaw_rate,
@@ -1364,6 +1367,38 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 -geometry_.max_curvature,
                 geometry_.max_curvature);
         }
+    }
+
+    const bool body_yaw_tracking_enabled =
+        forward_creep_gate_car &&
+        last_command_.target_speed > 1e-4 &&
+        !safety_stop_active_ &&
+        config_.pwm.yaw_rate_tracking_kp > 0.0;
+    if (body_yaw_tracking_enabled) {
+        const double requested_yaw_rate = last_command_.target_yaw_rate;
+        const double yaw_rate_error = requested_yaw_rate - estimate_.yaw_rate;
+        yaw_rate_error_integral_ += yaw_rate_error * safe_dt;
+        yaw_rate_error_integral_ = clamp_value(
+            yaw_rate_error_integral_,
+            -config_.pwm.yaw_rate_error_integral_limit,
+            config_.pwm.yaw_rate_error_integral_limit);
+        const double forward_yaw_limit =
+            0.92 * last_command_.target_speed /
+            std::max(half_track, 1e-3);
+        last_command_.target_yaw_rate = yaw_rate_target_with_feedback(
+            requested_yaw_rate,
+            estimate_.yaw_rate,
+            yaw_rate_error_integral_,
+            config_.pwm.yaw_rate_tracking_kp,
+            config_.pwm.yaw_rate_tracking_ki,
+            std::min(config_.drive.max_yaw_rate, forward_yaw_limit));
+        last_command_.target_curvature = clamp_value(
+            last_command_.target_yaw_rate /
+                std::max(last_command_.target_speed, 1e-4),
+            -geometry_.max_curvature,
+            geometry_.max_curvature);
+    } else {
+        yaw_rate_error_integral_ = 0.0;
     }
 
     const auto [left_wheel_speed, right_wheel_speed] =
@@ -1380,6 +1415,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (!commanding_motion) {
         wheel_speed_error_integral_left_ = 0.0;
         wheel_speed_error_integral_right_ = 0.0;
+        yaw_rate_error_integral_ = 0.0;
     }
 
     double measured_left_wheel_speed = measured_left_wheel_speed_;
@@ -1446,6 +1482,21 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             -config_.pwm.max_pwm,
             config_.pwm.max_pwm));
     }
+
+    // The wheel controller works in a canonical PWM domain. Apply the
+    // measured driver/side calibration only after feed-forward and feedback
+    // have been combined, so every correction reaches the physical channels
+    // with the same mapping.
+    last_command_.pwm_left = apply_signed_pwm_calibration(
+        last_command_.pwm_left,
+        config_.pwm.left_command_scale,
+        config_.pwm.left_command_offset,
+        config_.pwm.max_pwm);
+    last_command_.pwm_right = apply_signed_pwm_calibration(
+        last_command_.pwm_right,
+        config_.pwm.right_command_scale,
+        config_.pwm.right_command_offset,
+        config_.pwm.max_pwm);
 
     const double max_target_wheel_speed = std::max(std::abs(left_wheel_speed), std::abs(right_wheel_speed));
     const double max_measured_wheel_speed =
@@ -1796,12 +1847,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         if (std::abs(last_command_.target_yaw_rate) > 0.015) {
             const bool gate_tracking_turn =
                 control_source_ == HardwareControlSource::GateMpc;
+            const int gate_turn_max_delta =
+                last_command_.target_yaw_rate >= 0.0
+                    ? config_.pwm.gate_positive_turn_max_pwm_delta
+                    : config_.pwm.gate_negative_turn_max_pwm_delta;
             const int minimum_turn_delta = gate_tracking_turn
                 ? std::clamp(
                       static_cast<int>(std::lround(
                           12.0 + 100.0 * std::abs(last_command_.target_yaw_rate))),
                       14,
-                      38)
+                      std::max(14, gate_turn_max_delta))
                 : std::clamp(
                       static_cast<int>(std::lround(
                           6.0 + 55.0 * std::abs(last_command_.target_yaw_rate))),

@@ -69,6 +69,60 @@ int wheel_speed_to_pwm(double wheel_speed_mps,
     return sign * magnitude;
 }
 
+int apply_signed_pwm_calibration(int pwm,
+                                 double output_scale,
+                                 double output_offset,
+                                 int max_pwm) {
+    if (pwm == 0 || max_pwm <= 0) {
+        return 0;
+    }
+    const int sign = signum(pwm);
+    const double safe_scale = std::max(std::abs(output_scale), 1e-3);
+    const double calibrated_magnitude =
+        std::abs(static_cast<double>(pwm)) * safe_scale + output_offset;
+    const int magnitude = static_cast<int>(std::lround(std::clamp(
+        calibrated_magnitude,
+        0.0,
+        static_cast<double>(max_pwm))));
+    return sign * magnitude;
+}
+
+int remove_signed_pwm_calibration(int calibrated_pwm,
+                                  double output_scale,
+                                  double output_offset,
+                                  int max_pwm) {
+    if (calibrated_pwm == 0 || max_pwm <= 0) {
+        return 0;
+    }
+    const int sign = signum(calibrated_pwm);
+    const double safe_scale = std::max(std::abs(output_scale), 1e-3);
+    const double canonical_magnitude =
+        (std::abs(static_cast<double>(calibrated_pwm)) - output_offset) /
+        safe_scale;
+    const int magnitude = static_cast<int>(std::lround(std::clamp(
+        canonical_magnitude,
+        0.0,
+        static_cast<double>(max_pwm))));
+    return sign * magnitude;
+}
+
+double yaw_rate_target_with_feedback(double target_yaw_rate,
+                                     double measured_yaw_rate,
+                                     double yaw_error_integral,
+                                     double proportional_gain,
+                                     double integral_gain,
+                                     double maximum_abs_yaw_rate) {
+    const double safe_limit = std::max(maximum_abs_yaw_rate, 0.0);
+    if (safe_limit <= 0.0) {
+        return 0.0;
+    }
+    const double yaw_error = target_yaw_rate - measured_yaw_rate;
+    const double corrected =
+        target_yaw_rate + proportional_gain * yaw_error +
+        integral_gain * yaw_error_integral;
+    return std::clamp(corrected, -safe_limit, safe_limit);
+}
+
 int clamp_motion_pwm_band(int pwm, int min_pwm, int max_pwm) {
     if (pwm == 0 || max_pwm <= 0) {
         return 0;

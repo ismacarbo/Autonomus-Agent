@@ -65,6 +65,15 @@ int main(int argc, char** argv) {
                   << planner_config.calibration_profile_hash << '\n';
         std::cout << "startup_controller_motor_channels_swapped="
                   << (planner_config.controller_motor_channels_swapped ? 1 : 0) << '\n';
+        std::cout << "startup_pwm_command_left="
+                  << planner_config.pwm.left_command_scale << ','
+                  << planner_config.pwm.left_command_offset << '\n';
+        std::cout << "startup_pwm_command_right="
+                  << planner_config.pwm.right_command_scale << ','
+                  << planner_config.pwm.right_command_offset << '\n';
+        std::cout << "startup_yaw_rate_tracking_pi="
+                  << planner_config.pwm.yaw_rate_tracking_kp << ','
+                  << planner_config.pwm.yaw_rate_tracking_ki << '\n';
 
         runner = std::make_unique<HardwarePlannerRunner>(
             world,
