@@ -16,11 +16,11 @@
 
 // =========================
 // Encoder AO mapping
-// RF(A2) RR(A1) LF(A0) LR(A3)
+// RF(A2) RR(A0) LF(A1) LR(A3), validated by manual wheel rotation.
 // =========================
 #define ENC_RF_AO A2
-#define ENC_RR_AO A1
-#define ENC_LF_AO A0
+#define ENC_RR_AO A0
+#define ENC_LF_AO A1
 #define ENC_LR_AO A3
 
 const long SERIAL_BAUD = 115200;

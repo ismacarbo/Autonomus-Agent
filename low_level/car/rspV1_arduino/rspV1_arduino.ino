@@ -25,16 +25,19 @@ void disableWatchdogEarly(void) {
 
 // =========================
 // Encoder AO mapping
-// RF(A2) RR(A1) LF(A0) LR(A3)
+// Physical mapping validated by manual wheel rotation (2026-08-23):
+// RF(A2) RR(A0) LF(A1) LR(A3).
+// A0/A1 must not be restored to the old crossed-side mapping: doing so makes
+// both side totals advance during every one-sided motor command.
 // =========================
 #define ENC_RF_AO A2
-#define ENC_RR_AO A1
-#define ENC_LF_AO A0
+#define ENC_RR_AO A0
+#define ENC_LF_AO A1
 #define ENC_LR_AO A3
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 3;
+const uint8_t FW_MINOR = 4;
 const bool BOOT_DIAG_ASCII = true;
 
 const uint16_t BNO080_REPORT_INTERVAL_MS = 20U;

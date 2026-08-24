@@ -91,3 +91,33 @@ Se una fase monolaterale fallisce, non ha senso modificare l'MPC: prima va
 corretta la mappatura o la misura hardware. Se le fasi monolaterali passano ma
 falliscono quelle a terra, il problema e piu probabilmente soglia PWM sotto
 carico, attrito, alimentazione o controllo open-loop.
+
+## Diagnostica diretta dei quattro ingressi analogici
+
+Se nel test host entrambi i contatori di lato avanzano durante un comando
+monolaterale, usare lo sketch standalone:
+
+```text
+low_level/car/tests/encoder_channel_mapping_test/encoder_channel_mapping_test.ino
+```
+
+Lo sketch usa il mapping corretto validato ruota per ruota e applicato al
+firmware RSP 1.4 (`RF=A2`, `RR=A0`, `LF=A1`, `LR=A3`), mostrando separatamente
+raw, span, arming, tick e transizioni di ogni sensore. Non richiede la libreria
+IMU. Dopo il flash aprire il monitor
+seriale a 115200 baud, mettere la car in sicurezza con ruote sollevate e inviare:
+
+- `a` per la sequenza automatica sinistra/destra;
+- `l` o `r` per provare un solo lato;
+- `m` per cinque secondi di acquisizione a motori spenti mentre si ruota a mano
+  una sola ruota;
+- `s` o spazio per l'arresto immediato.
+
+Al termine occorre riflashare `low_level/car/rspV1_arduino/rspV1_arduino.ino`
+prima di riutilizzare runner e GUI.
+
+Il vecchio mapping RSP 1.2/1.3 associava erroneamente `RR=A1` e `LF=A0`.
+Di conseguenza `left_ticks_total()` e `right_ticks_total()` contenevano entrambi
+un encoder fisico sinistro e uno destro, producendo conteggi quasi identici
+anche durante i comandi monolaterali. Lo swap corretto riguarda soltanto gli
+encoder A0/A1; il mapping dei motori rimane invariato.
