@@ -315,6 +315,10 @@ void HardwarePlannerRunner::reset() {
     wheel_speed_error_integral_left_ = 0.0;
     wheel_speed_error_integral_right_ = 0.0;
     yaw_rate_error_integral_ = 0.0;
+    filtered_yaw_rate_feedback_ = 0.0;
+    previous_yaw_rate_target_ = 0.0;
+    previous_planner_yaw_rate_target_ = 0.0;
+    filtered_yaw_rate_feedback_valid_ = false;
     last_left_encoder_ticks_ = 0;
     last_right_encoder_ticks_ = 0;
     latest_controller_left_encoder_ticks_ = 0;
@@ -445,6 +449,10 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     wheel_speed_error_integral_left_ = 0.0;
     wheel_speed_error_integral_right_ = 0.0;
     yaw_rate_error_integral_ = 0.0;
+    filtered_yaw_rate_feedback_ = 0.0;
+    previous_yaw_rate_target_ = 0.0;
+    previous_planner_yaw_rate_target_ = 0.0;
+    filtered_yaw_rate_feedback_valid_ = false;
     encoder_ready_streak_ = 0;
     measured_wheel_speeds_valid_ = false;
     no_motion_command_cycles_ = 0;

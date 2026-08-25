@@ -262,9 +262,19 @@ void apply_unstructured_hardware_config(const WorldMap& world,
         // positive yaw request needs much more authority than a negative one.
         // Close the body-yaw loop outside the per-wheel encoder loop and keep
         // the measured direction-specific PWM limits explicit.
-        config->pwm.yaw_rate_tracking_kp = 1.0;
-        config->pwm.yaw_rate_tracking_ki = 0.40;
-        config->pwm.yaw_rate_error_integral_limit = 0.40;
+        // The planner is driven by fresh LiDAR frames (about 7 Hz on the
+        // measured hardware) while the BNO080 and the motor command each have
+        // their own latency. A unit-gain outer loop therefore chased the
+        // previous PWM command and alternated the turn direction. Keep a
+        // deliberately slow, bounded trim around the MPC request instead.
+        config->pwm.yaw_rate_tracking_kp = 0.45;
+        config->pwm.yaw_rate_tracking_ki = 0.15;
+        config->pwm.yaw_rate_error_integral_limit = 0.25;
+        config->pwm.yaw_rate_feedback_filter_tau_s = 1.00;
+        config->pwm.yaw_rate_feedback_deadband_rad_s = 0.012;
+        config->pwm.yaw_rate_feedback_correction_limit_rad_s = 0.22;
+        config->pwm.yaw_rate_target_slew_rate_rad_s2 = 1.80;
+        config->pwm.yaw_rate_sign_preservation_threshold_rad_s = 0.020;
         config->pwm.gate_positive_turn_max_pwm_delta = 70;
         config->pwm.gate_negative_turn_max_pwm_delta = 40;
     }

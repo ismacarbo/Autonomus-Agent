@@ -58,6 +58,11 @@ struct MotorPwmMapperConfig {
     double yaw_rate_tracking_kp = 0.0;
     double yaw_rate_tracking_ki = 0.0;
     double yaw_rate_error_integral_limit = 0.40;
+    double yaw_rate_feedback_filter_tau_s = 1.00;
+    double yaw_rate_feedback_deadband_rad_s = 0.012;
+    double yaw_rate_feedback_correction_limit_rad_s = 0.22;
+    double yaw_rate_target_slew_rate_rad_s2 = 1.80;
+    double yaw_rate_sign_preservation_threshold_rad_s = 0.020;
     double linear_feedback_gain = 75.0;
     double yaw_feedback_gain = 35.0;
     int gate_positive_turn_max_pwm_delta = 38;
@@ -310,7 +315,10 @@ struct HardwareControlCommand {
     int pwm_left = 0;
     int pwm_right = 0;
     double target_speed = 0.0;
+    // Planner/MPC request before the hardware-only body-yaw compensator.
+    double planner_target_yaw_rate = 0.0;
     double target_yaw_rate = 0.0;
+    double yaw_rate_feedback_measurement = 0.0;
     double target_curvature = 0.0;
     double target_left_wheel_speed_mps = 0.0;
     double target_right_wheel_speed_mps = 0.0;
@@ -425,6 +433,10 @@ struct HardwareTelemetrySample {
     double slam_graph_nodes = 0.0;
     double slam_loop_edges = 0.0;
     double slam_map_age_s = -1.0;
+    double planner_target_yaw_rate = 0.0;
+    double yaw_rate_feedback_measurement = 0.0;
+    double locked_gate_reference_failure_streak = 0.0;
+    double gate_reference_grace_active = 0.0;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -750,6 +762,10 @@ class HardwarePlannerRunner {
     double wheel_speed_error_integral_left_ = 0.0;
     double wheel_speed_error_integral_right_ = 0.0;
     double yaw_rate_error_integral_ = 0.0;
+    double filtered_yaw_rate_feedback_ = 0.0;
+    double previous_yaw_rate_target_ = 0.0;
+    double previous_planner_yaw_rate_target_ = 0.0;
+    bool filtered_yaw_rate_feedback_valid_ = false;
     std::int32_t last_left_encoder_ticks_ = 0;
     std::int32_t last_right_encoder_ticks_ = 0;
     std::int32_t latest_controller_left_encoder_ticks_ = 0;
@@ -803,6 +819,9 @@ class HardwarePlannerRunner {
     int locked_gap_invalid_streak_ = 0;
     int locked_gap_reference_failure_streak_ = 0;
     bool locked_gap_tracking_started_ = false;
+    bool gate_reference_grace_active_ = false;
+    std::vector<ReferenceWaypoint> last_safe_gate_reference_trajectory_;
+    std::vector<Vec2> last_safe_gate_planned_trajectory_;
     bool stall_boost_active_ = false;
     bool encoder_slip_guard_active_ = false;
     bool connected_ = false;

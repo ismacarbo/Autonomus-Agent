@@ -121,6 +121,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
     planned_trajectory_.clear();
     reference_trajectory_.clear();
     diagnostics_.planner_has_reference = false;
+    gate_reference_grace_active_ = false;
     const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     const auto assign_structured_centerline_fallback = [&]() {
         if (!world_has_structured_reference(world_) ||
@@ -175,6 +176,48 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         cl_.prev_road.num_segments() > 0 &&
         std::isfinite(cl_.end_point_s) &&
         cl_.end_point_s > 0.10;
+    const auto restore_last_safe_gate_reference = [&](const char* reason) {
+        const bool committed_gate =
+            navigation_target_kind_ == NavigationTargetKind::PhysicalGate &&
+            locked_gap_goal_.has_value() &&
+            locked_gap_tracking_started_;
+        if (!committed_gate) {
+            return false;
+        }
+
+        ++locked_gap_invalid_streak_;
+        ++locked_gap_reference_failure_streak_;
+        if (locked_gap_reference_failure_streak_ > 12) {
+            restart_unstructured_scan();
+            diagnostics_.reference_invalidation_reason = reason;
+            return true;
+        }
+        publish_locked_gap_goal();
+
+        constexpr int kLastSafeReferenceGraceFrames = 3;
+        const bool inside_final_gate_corridor =
+            locked_gap_longitudinal_progress(estimate_.position) >=
+                -std::max(0.12, 0.55 * geometry_.body_length) &&
+            std::abs(locked_gap_lateral_offset(estimate_.position)) <=
+                locked_gap_pass_lateral_limit();
+        if ((locked_gap_reference_failure_streak_ <=
+                 kLastSafeReferenceGraceFrames ||
+             inside_final_gate_corridor) &&
+            last_safe_gate_reference_trajectory_.size() >= 2) {
+            reference_trajectory_ = last_safe_gate_reference_trajectory_;
+            planned_trajectory_ = last_safe_gate_planned_trajectory_;
+            diagnostics_.planner_has_reference = true;
+            diagnostics_.reference_invalidation_reason =
+                inside_final_gate_corridor
+                    ? "physical_gate_finishing_last_safe_clothoid"
+                    : "physical_gate_using_last_safe_clothoid";
+            gate_reference_grace_active_ = true;
+            structured_anchor_hint_index_ = 0;
+        } else {
+            diagnostics_.reference_invalidation_reason = reason;
+        }
+        return true;
+    };
 
     if (world_has_structured_reference(world_) &&
         !mixed_gate_active &&
@@ -197,6 +240,8 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         return;
     }
     if (!has_planner_clothoid) {
+        restore_last_safe_gate_reference(
+            "physical_gate_clothoid_temporarily_unavailable");
         return;
     }
 
@@ -290,6 +335,10 @@ void HardwarePlannerRunner::update_selected_trajectory() {
             ? (tiny_indoor_loop ? 0.04 : (micro_loop ? 0.06 : (compact_mixed_loop ? 0.08 : 0.10)))
             : 0.10;
     if (!(s_end > s_start + min_reference_span)) {
+        if (restore_last_safe_gate_reference(
+                "physical_gate_clothoid_remaining_span_too_short")) {
+            return;
+        }
         assign_structured_centerline_fallback();
         return;
     }
@@ -329,6 +378,56 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 : std::max(config_.frontier_exploration.grid_resolution_m, 0.02);
         const double known_free_tolerance =
             std::max(1.8 * global_map_resolution, 0.055);
+        const Vec2 gate_normal = normalize_with_fallback(
+            locked_gap_approach_direction_,
+            Vec2{std::cos(estimate_.yaw), std::sin(estimate_.yaw)});
+        const Vec2 gate_lateral{-gate_normal.y, gate_normal.x};
+        const double gate_boundary_longitudinal_band =
+            std::max(0.080, 0.55 * geometry_.body_length);
+        const double gate_boundary_min_lateral = std::max(
+            0.5 * geometry_.body_width +
+                0.45 * locked_gap_corridor_half_width_m_,
+            0.5 * geometry_.body_width + 0.025);
+        const double gate_target_progress = dot_product(
+            Vec2{locked_gap_goal_.value_or(locked_gap_crossing_point_).x -
+                     locked_gap_crossing_point_.x,
+                 locked_gap_goal_.value_or(locked_gap_crossing_point_).y -
+                     locked_gap_crossing_point_.y},
+            gate_normal);
+        const auto selected_gate_boundary_sample =
+            [&](const Vec2& point, const ReferenceWaypoint& waypoint) {
+                if (!committed_physical_gate) {
+                    return false;
+                }
+                const Vec2 point_relative{
+                    point.x - locked_gap_crossing_point_.x,
+                    point.y - locked_gap_crossing_point_.y,
+                };
+                const Vec2 waypoint_relative{
+                    waypoint.position.x - locked_gap_crossing_point_.x,
+                    waypoint.position.y - locked_gap_crossing_point_.y,
+                };
+                const double point_longitudinal =
+                    dot_product(point_relative, gate_normal);
+                const double point_lateral =
+                    dot_product(point_relative, gate_lateral);
+                const double waypoint_longitudinal =
+                    dot_product(waypoint_relative, gate_normal);
+                const double waypoint_lateral =
+                    dot_product(waypoint_relative, gate_lateral);
+                const bool waypoint_inside_measured_corridor =
+                    std::abs(waypoint_lateral) <=
+                    locked_gap_corridor_half_width_m_ + 0.010;
+                const bool waypoint_crosses_aperture_band =
+                    waypoint_longitudinal >= -geometry_.body_length &&
+                    waypoint_longitudinal <=
+                        gate_target_progress + geometry_.body_length;
+                return waypoint_inside_measured_corridor &&
+                       waypoint_crosses_aperture_band &&
+                       std::abs(point_longitudinal) <=
+                           gate_boundary_longitudinal_band &&
+                       std::abs(point_lateral) >= gate_boundary_min_lateral;
+            };
         bool reference_is_safe = true;
         for (const ReferenceWaypoint& waypoint : reference_trajectory_) {
             const auto corners = make_box_corners(
@@ -364,6 +463,9 @@ void HardwarePlannerRunner::update_selected_trajectory() {
             const double cos_yaw = std::cos(waypoint.yaw);
             const double sin_yaw = std::sin(waypoint.yaw);
             for (const Vec2& occupied : global_occupied_points_) {
+                if (selected_gate_boundary_sample(occupied, waypoint)) {
+                    continue;
+                }
                 const double dx = occupied.x - waypoint.position.x;
                 const double dy = occupied.y - waypoint.position.y;
                 const double longitudinal = cos_yaw * dx + sin_yaw * dy;
@@ -381,6 +483,9 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 if (!hit.hit ||
                     !(hit.distance > 0.0) ||
                     hit.distance >= config_.localization.max_range_m - 0.03) {
+                    continue;
+                }
+                if (selected_gate_boundary_sample(hit.point, waypoint)) {
                     continue;
                 }
                 const double dx = hit.point.x - waypoint.position.x;
@@ -424,6 +529,33 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 publish_locked_gap_goal();
                 diagnostics_.reference_invalidation_reason =
                     "physical_gate_clothoid_failed_footprint_validation";
+                constexpr int kLastSafeReferenceGraceFrames = 3;
+                const bool inside_final_gate_corridor =
+                    locked_gap_longitudinal_progress(estimate_.position) >=
+                        -std::max(0.12, 0.55 * geometry_.body_length) &&
+                    std::abs(locked_gap_lateral_offset(estimate_.position)) <=
+                        locked_gap_pass_lateral_limit();
+                if ((locked_gap_reference_failure_streak_ <=
+                         kLastSafeReferenceGraceFrames ||
+                     inside_final_gate_corridor) &&
+                    last_safe_gate_reference_trajectory_.size() >= 2) {
+                    // A single noisy scan must not make the actuator alternate
+                    // between GateMpc and free-space search. Continue only the
+                    // last trajectory that passed the complete footprint
+                    // validation. The normal grace is a few planner frames;
+                    // inside the measured final corridor it lasts until the
+                    // centre crosses the gate plane or the lock expires.
+                    reference_trajectory_ = last_safe_gate_reference_trajectory_;
+                    planned_trajectory_ = last_safe_gate_planned_trajectory_;
+                    diagnostics_.planner_has_reference = true;
+                    diagnostics_.reference_invalidation_reason =
+                        inside_final_gate_corridor
+                            ? "physical_gate_finishing_last_safe_clothoid"
+                            : "physical_gate_using_last_safe_clothoid";
+                    gate_reference_grace_active_ = true;
+                    structured_anchor_hint_index_ = 0;
+                    return;
+                }
             } else {
                 restart_unstructured_scan();
             }
@@ -441,6 +573,8 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         if (committed_physical_gate) {
             locked_gap_tracking_started_ = true;
             locked_gap_reference_failure_streak_ = 0;
+            last_safe_gate_reference_trajectory_ = reference_trajectory_;
+            last_safe_gate_planned_trajectory_ = planned_trajectory_;
         }
         // This local reference is rebuilt from the robot's current projection
         // every cycle. An anchor index inherited from the previous reference

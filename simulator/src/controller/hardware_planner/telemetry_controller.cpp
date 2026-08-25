@@ -194,6 +194,10 @@ void HardwarePlannerRunner::push_history() {
         static_cast<double>(slam_toolbox_snapshot_.graph_nodes),
         static_cast<double>(slam_toolbox_snapshot_.loop_edges),
         diagnostics_.slam_map_age_s,
+        last_command_.planner_target_yaw_rate,
+        last_command_.yaw_rate_feedback_measurement,
+        static_cast<double>(locked_gap_reference_failure_streak_),
+        gate_reference_grace_active_ ? 1.0 : 0.0,
     });
 
     if (static_cast<int>(history_.size()) > config_.max_history) {

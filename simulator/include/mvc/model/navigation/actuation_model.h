@@ -45,6 +45,17 @@ double yaw_rate_target_with_feedback(double target_yaw_rate,
                                      double integral_gain,
                                      double maximum_abs_yaw_rate);
 
+double stabilize_yaw_rate_target(double requested_yaw_rate,
+                                 double measured_yaw_rate,
+                                 double yaw_error_integral,
+                                 double proportional_gain,
+                                 double integral_gain,
+                                 double maximum_abs_yaw_rate,
+                                 double maximum_feedback_correction,
+                                 double previous_target_yaw_rate,
+                                 double maximum_target_step,
+                                 double sign_preservation_threshold);
+
 int clamp_motion_pwm_band(int pwm, int min_pwm, int max_pwm);
 int slew_limit_pwm(int previous_pwm, int target_pwm, int max_delta);
 

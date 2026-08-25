@@ -17,6 +17,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         commanded_steer_angle_ = 0.0;
         last_command_ = {};
         yaw_rate_error_integral_ = 0.0;
+        filtered_yaw_rate_feedback_ = 0.0;
+        previous_yaw_rate_target_ = 0.0;
+        previous_planner_yaw_rate_target_ = 0.0;
+        filtered_yaw_rate_feedback_valid_ = false;
         last_mpc_command_.reset();
         exploration_state_ = UnstructuredExplorationState::StartMatching;
         return;
@@ -29,6 +33,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.target_curvature = 0.0;
         last_command_.target_yaw_rate = 0.0;
         yaw_rate_error_integral_ = 0.0;
+        filtered_yaw_rate_feedback_ = 0.0;
+        previous_yaw_rate_target_ = 0.0;
+        previous_planner_yaw_rate_target_ = 0.0;
+        filtered_yaw_rate_feedback_valid_ = false;
         return;
     }
 
@@ -738,7 +746,29 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                !scanning_startup &&
                use_dynamic_gap_gates_ &&
                !have_reference_trajectory) {
-        if (open_ended_unstructured_exploration(world_)) {
+        const bool committed_gate_waiting_for_replan =
+            open_ended_unstructured_exploration(world_) &&
+            locked_gap_goal_.has_value() &&
+            navigation_target_kind_ == NavigationTargetKind::PhysicalGate &&
+            locked_gap_tracking_started_;
+        if (committed_gate_waiting_for_replan) {
+            // The selected gate still owns navigation. Moving under the
+            // free-space search controller here made the car drive past the
+            // aperture while a fresh clothoid was being validated. A short
+            // last-safe-reference grace is handled in trajectory.inc; after
+            // that grace, hold this target and replan instead of changing the
+            // mission objective.
+            gap_recovery_turn_active_ = false;
+            use_gap_recovery_turn = false;
+            use_direct_yaw_rate_command = false;
+            commanded_speed_ = 0.0;
+            commanded_steer_angle_ = 0.0;
+            last_command_.target_speed = 0.0;
+            last_command_.target_curvature = 0.0;
+            last_mpc_command_.reset();
+            exploration_state_ = UnstructuredExplorationState::GateLocked;
+            control_source_ = HardwareControlSource::Hold;
+        } else if (open_ended_unstructured_exploration(world_)) {
             // One LiDAR-sector selector owns both cases: it returns zero yaw in
             // an open corridor and a bounded forward arc near obstacles or
             // bounds. This prevents a barely-valid straight fallback from
@@ -1369,14 +1399,52 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         }
     }
 
+    last_command_.planner_target_yaw_rate = last_command_.target_yaw_rate;
     const bool body_yaw_tracking_enabled =
         forward_creep_gate_car &&
         last_command_.target_speed > 1e-4 &&
         !safety_stop_active_ &&
         config_.pwm.yaw_rate_tracking_kp > 0.0;
     if (body_yaw_tracking_enabled) {
-        const double requested_yaw_rate = last_command_.target_yaw_rate;
-        const double yaw_rate_error = requested_yaw_rate - estimate_.yaw_rate;
+        const double requested_yaw_rate = last_command_.planner_target_yaw_rate;
+        const double measured_yaw_rate = clamp_value(
+            estimate_.yaw_rate,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
+        const double filter_tau = std::max(
+            config_.pwm.yaw_rate_feedback_filter_tau_s,
+            0.0);
+        if (!filtered_yaw_rate_feedback_valid_) {
+            // Start from rest rather than accepting a single vibration spike as
+            // the state of the body-rate loop.
+            filtered_yaw_rate_feedback_ = 0.0;
+            filtered_yaw_rate_feedback_valid_ = true;
+        }
+        const double filter_alpha = filter_tau > 1e-6
+            ? clamp_value(safe_dt / (filter_tau + safe_dt), 0.02, 1.0)
+            : 1.0;
+        filtered_yaw_rate_feedback_ += filter_alpha *
+            (measured_yaw_rate - filtered_yaw_rate_feedback_);
+        double feedback_measurement = filtered_yaw_rate_feedback_;
+        if (std::abs(feedback_measurement) <
+            std::max(config_.pwm.yaw_rate_feedback_deadband_rad_s, 0.0)) {
+            feedback_measurement = 0.0;
+        }
+        last_command_.yaw_rate_feedback_measurement = feedback_measurement;
+
+        const double sign_threshold = std::max(
+            config_.pwm.yaw_rate_sign_preservation_threshold_rad_s,
+            0.0);
+        const bool planner_reversed_turn =
+            std::abs(requested_yaw_rate) >= sign_threshold &&
+            std::abs(previous_planner_yaw_rate_target_) >= sign_threshold &&
+            requested_yaw_rate * previous_planner_yaw_rate_target_ < 0.0;
+        if (planner_reversed_turn) {
+            yaw_rate_error_integral_ = 0.0;
+            previous_yaw_rate_target_ = 0.0;
+        }
+
+        const double yaw_rate_error = requested_yaw_rate - feedback_measurement;
         yaw_rate_error_integral_ += yaw_rate_error * safe_dt;
         yaw_rate_error_integral_ = clamp_value(
             yaw_rate_error_integral_,
@@ -1385,13 +1453,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const double forward_yaw_limit =
             0.92 * last_command_.target_speed /
             std::max(half_track, 1e-3);
-        last_command_.target_yaw_rate = yaw_rate_target_with_feedback(
+        last_command_.target_yaw_rate = stabilize_yaw_rate_target(
             requested_yaw_rate,
-            estimate_.yaw_rate,
+            feedback_measurement,
             yaw_rate_error_integral_,
             config_.pwm.yaw_rate_tracking_kp,
             config_.pwm.yaw_rate_tracking_ki,
-            std::min(config_.drive.max_yaw_rate, forward_yaw_limit));
+            std::min(config_.drive.max_yaw_rate, forward_yaw_limit),
+            config_.pwm.yaw_rate_feedback_correction_limit_rad_s,
+            previous_yaw_rate_target_,
+            std::max(config_.pwm.yaw_rate_target_slew_rate_rad_s2, 0.0) * safe_dt,
+            sign_threshold);
+        previous_yaw_rate_target_ = last_command_.target_yaw_rate;
+        previous_planner_yaw_rate_target_ = requested_yaw_rate;
         last_command_.target_curvature = clamp_value(
             last_command_.target_yaw_rate /
                 std::max(last_command_.target_speed, 1e-4),
@@ -1399,6 +1473,15 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             geometry_.max_curvature);
     } else {
         yaw_rate_error_integral_ = 0.0;
+        previous_yaw_rate_target_ = last_command_.target_yaw_rate;
+        previous_planner_yaw_rate_target_ = last_command_.planner_target_yaw_rate;
+        last_command_.yaw_rate_feedback_measurement = estimate_.yaw_rate;
+        if (std::abs(last_command_.target_speed) <= 1e-4) {
+            filtered_yaw_rate_feedback_ = 0.0;
+            previous_yaw_rate_target_ = 0.0;
+            previous_planner_yaw_rate_target_ = 0.0;
+            filtered_yaw_rate_feedback_valid_ = false;
+        }
     }
 
     const auto [left_wheel_speed, right_wheel_speed] =

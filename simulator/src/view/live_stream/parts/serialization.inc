@@ -22,7 +22,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 12U;
+constexpr std::uint16_t kPacketVersion = 13U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 2U;
 constexpr std::uint16_t kPacketHello = 0U;
@@ -537,6 +537,10 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.slam_graph_nodes);
     write_pod(out, sample.slam_loop_edges);
     write_pod(out, sample.slam_map_age_s);
+    write_pod(out, sample.planner_target_yaw_rate);
+    write_pod(out, sample.yaw_rate_feedback_measurement);
+    write_pod(out, sample.locked_gate_reference_failure_streak);
+    write_pod(out, sample.gate_reference_grace_active);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
@@ -639,7 +643,11 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->slam_map_updates) &&
            read_pod(data, offset, &sample->slam_graph_nodes) &&
            read_pod(data, offset, &sample->slam_loop_edges) &&
-           read_pod(data, offset, &sample->slam_map_age_s);
+           read_pod(data, offset, &sample->slam_map_age_s) &&
+           read_pod(data, offset, &sample->planner_target_yaw_rate) &&
+           read_pod(data, offset, &sample->yaw_rate_feedback_measurement) &&
+           read_pod(data, offset, &sample->locked_gate_reference_failure_streak) &&
+           read_pod(data, offset, &sample->gate_reference_grace_active);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {

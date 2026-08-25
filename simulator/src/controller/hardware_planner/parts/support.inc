@@ -30,6 +30,7 @@ using thesis_sim::mvc::model::slew_limit_pwm;
 using thesis_sim::mvc::model::wheel_speed_from_pwm_estimate;
 using thesis_sim::mvc::model::wheel_speeds_from_body;
 using thesis_sim::mvc::model::yaw_rate_target_with_feedback;
+using thesis_sim::mvc::model::stabilize_yaw_rate_target;
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kStableEncoderReadyFrames = 3;

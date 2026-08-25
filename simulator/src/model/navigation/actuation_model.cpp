@@ -123,6 +123,55 @@ double yaw_rate_target_with_feedback(double target_yaw_rate,
     return std::clamp(corrected, -safe_limit, safe_limit);
 }
 
+double stabilize_yaw_rate_target(double requested_yaw_rate,
+                                 double measured_yaw_rate,
+                                 double yaw_error_integral,
+                                 double proportional_gain,
+                                 double integral_gain,
+                                 double maximum_abs_yaw_rate,
+                                 double maximum_feedback_correction,
+                                 double previous_target_yaw_rate,
+                                 double maximum_target_step,
+                                 double sign_preservation_threshold) {
+    const double safe_limit = std::max(maximum_abs_yaw_rate, 0.0);
+    if (safe_limit <= 0.0) {
+        return 0.0;
+    }
+
+    const double raw_feedback_target = yaw_rate_target_with_feedback(
+        requested_yaw_rate,
+        measured_yaw_rate,
+        yaw_error_integral,
+        proportional_gain,
+        integral_gain,
+        safe_limit);
+    const double correction_limit = std::max(maximum_feedback_correction, 0.0);
+    double stabilized = requested_yaw_rate + std::clamp(
+        raw_feedback_target - requested_yaw_rate,
+        -correction_limit,
+        correction_limit);
+    stabilized = std::clamp(stabilized, -safe_limit, safe_limit);
+
+    const double safe_step = std::max(maximum_target_step, 0.0);
+    if (safe_step > 0.0) {
+        stabilized = std::clamp(
+            stabilized,
+            previous_target_yaw_rate - safe_step,
+            previous_target_yaw_rate + safe_step);
+    }
+
+    const double sign_threshold = std::max(sign_preservation_threshold, 0.0);
+    if (std::abs(requested_yaw_rate) >= sign_threshold &&
+        stabilized * requested_yaw_rate <= 0.0) {
+        // A delayed body-rate sample may reduce a planned turn, but it must
+        // never reverse it. Reversals are owned by the planner/MPC itself.
+        stabilized = std::copysign(
+            std::min(std::abs(requested_yaw_rate), safe_limit),
+            requested_yaw_rate);
+    }
+    return std::clamp(stabilized, -safe_limit, safe_limit);
+}
+
 int clamp_motion_pwm_band(int pwm, int min_pwm, int max_pwm) {
     if (pwm == 0 || max_pwm <= 0) {
         return 0;

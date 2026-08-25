@@ -101,6 +101,19 @@ int main() {
         return 1;
     }
 
+    const double delayed_positive_turn = stabilize_yaw_rate_target(
+        0.20, 1.00, 0.0, 0.35, 0.12, 0.85, 0.22, 0.20, 0.18, 0.02);
+    const double bounded_straight_trim = stabilize_yaw_rate_target(
+        0.0, -0.80, 0.0, 0.35, 0.12, 0.85, 0.22, 0.0, 0.18, 0.02);
+    const double slew_limited_turn = stabilize_yaw_rate_target(
+        0.80, 0.0, 0.0, 0.35, 0.12, 0.85, 0.22, 0.0, 0.18, 0.02);
+    if (!(delayed_positive_turn > 0.0) ||
+        !close(bounded_straight_trim, 0.18) ||
+        !close(slew_limited_turn, 0.18)) {
+        std::cerr << "stabilized_yaw_rate_feedback_failed\n";
+        return 1;
+    }
+
     int boosted_left = 8;
     int boosted_right = 12;
     apply_start_motion_boost(40, &boosted_left, &boosted_right);

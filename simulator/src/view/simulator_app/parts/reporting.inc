@@ -310,6 +310,11 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"slam_graph_nodes\":" << sample.slam_graph_nodes
         << ",\"slam_loop_edges\":" << sample.slam_loop_edges
         << ",\"slam_map_age_s\":" << sample.slam_map_age_s
+        << ",\"planner_target_yaw_rate\":" << sample.planner_target_yaw_rate
+        << ",\"yaw_rate_feedback_measurement\":" << sample.yaw_rate_feedback_measurement
+        << ",\"locked_gate_reference_failure_streak\":"
+        << sample.locked_gate_reference_failure_streak
+        << ",\"gate_reference_grace_active\":" << sample.gate_reference_grace_active
         << "}";
 }
 
@@ -696,7 +701,8 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
            "stall_boost_active,left_wheel_stall_cycles,right_wheel_stall_cycles,encoder_slip_guard_active,"
            "exploration_map_source,exploration_state,control_source,selected_frontier_valid,selected_frontier_x,selected_frontier_y,"
            "global_free_cells,global_occupied_cells,start_matching_enabled,start_matching_complete,start_matching_accepted,start_matching_confidence,"
-           "slam_toolbox_enabled,slam_toolbox_connected,slam_map_updates,slam_graph_nodes,slam_loop_edges,slam_map_age_s\n";
+           "slam_toolbox_enabled,slam_toolbox_connected,slam_map_updates,slam_graph_nodes,slam_loop_edges,slam_map_age_s,"
+           "planner_target_yaw_rate,yaw_rate_feedback_measurement,locked_gate_reference_failure_streak,gate_reference_grace_active\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
             << sample.position_x << ','
@@ -782,7 +788,11 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.slam_map_updates << ','
             << sample.slam_graph_nodes << ','
             << sample.slam_loop_edges << ','
-            << sample.slam_map_age_s << '\n';
+            << sample.slam_map_age_s << ','
+            << sample.planner_target_yaw_rate << ','
+            << sample.yaw_rate_feedback_measurement << ','
+            << sample.locked_gate_reference_failure_streak << ','
+            << sample.gate_reference_grace_active << '\n';
     }
     return true;
 }

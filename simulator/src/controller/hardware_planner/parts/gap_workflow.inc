@@ -24,6 +24,9 @@ void HardwarePlannerRunner::clear_locked_gap_goal() {
     locked_gap_invalid_streak_ = 0;
     locked_gap_reference_failure_streak_ = 0;
     locked_gap_tracking_started_ = false;
+    gate_reference_grace_active_ = false;
+    last_safe_gate_reference_trajectory_.clear();
+    last_safe_gate_planned_trajectory_.clear();
     navigation_target_kind_ = NavigationTargetKind::None;
 }
 
@@ -357,6 +360,9 @@ void HardwarePlannerRunner::set_locked_gap_goal(
     locked_gap_invalid_streak_ = 0;
     locked_gap_reference_failure_streak_ = 0;
     locked_gap_tracking_started_ = false;
+    gate_reference_grace_active_ = false;
+    last_safe_gate_reference_trajectory_.clear();
+    last_safe_gate_planned_trajectory_.clear();
     structured_anchor_hint_index_ = 0;
 }
 
@@ -799,7 +805,9 @@ void HardwarePlannerRunner::count_unstructured_gate_crossing_if_needed() {
         gate_distance <= near_pass_gate_radius;
     const bool gate_crossed =
         lateral_offset <= pass_lateral_limit &&
-        (crossing_progress >= crossing_margin || gate_nearly_crossed);
+        (require_center_crossing
+             ? crossing_progress >= crossing_margin
+             : (crossing_progress >= crossing_margin || gate_nearly_crossed));
 
     if (!gate_crossed) {
         goal_reached_ = false;

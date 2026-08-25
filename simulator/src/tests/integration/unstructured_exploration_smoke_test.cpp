@@ -49,9 +49,14 @@ thesis_sim::HardwarePlannerConfig make_config() {
     config.pwm.right_command_scale = 0.8494623655913978;
     config.pwm.left_command_offset = 0.0;
     config.pwm.right_command_offset = 26.021505376344084;
-    config.pwm.yaw_rate_tracking_kp = 1.0;
-    config.pwm.yaw_rate_tracking_ki = 0.40;
-    config.pwm.yaw_rate_error_integral_limit = 0.40;
+    config.pwm.yaw_rate_tracking_kp = 0.45;
+    config.pwm.yaw_rate_tracking_ki = 0.15;
+    config.pwm.yaw_rate_error_integral_limit = 0.25;
+    config.pwm.yaw_rate_feedback_filter_tau_s = 1.00;
+    config.pwm.yaw_rate_feedback_deadband_rad_s = 0.012;
+    config.pwm.yaw_rate_feedback_correction_limit_rad_s = 0.22;
+    config.pwm.yaw_rate_target_slew_rate_rad_s2 = 1.80;
+    config.pwm.yaw_rate_sign_preservation_threshold_rad_s = 0.020;
     config.pwm.gate_positive_turn_max_pwm_delta = 70;
     config.pwm.gate_negative_turn_max_pwm_delta = 40;
     config.frontier_exploration.enabled = true;
@@ -408,6 +413,7 @@ int main() {
     thesis_sim::HardwarePlannerRunner yaw_correction_runner(
         exploration_world, bridge_options, direct_config);
     bool saw_body_yaw_correction = false;
+    double maximum_body_yaw_correction = 0.0;
     for (int step = 0; step < 35; ++step) {
         yaw_correction_runner.step_with_observation(
             make_observation(
@@ -423,14 +429,58 @@ int main() {
         if (command.pwm_left < 0 || command.pwm_right < 0) {
             return fail("body-yaw correction violated forward-only exploration");
         }
+        maximum_body_yaw_correction = std::max(
+            maximum_body_yaw_correction,
+            command.target_yaw_rate);
         saw_body_yaw_correction = saw_body_yaw_correction ||
             (yaw_correction_runner.diagnostics().control_source ==
                  thesis_sim::HardwareControlSource::StraightExploration &&
-             command.target_yaw_rate > 0.05 &&
+             command.target_yaw_rate > 0.015 &&
              command.pwm_right > command.pwm_left);
     }
     if (!saw_body_yaw_correction) {
+        std::cerr << "yaw_correction_debug max="
+                  << maximum_body_yaw_correction
+                  << " estimate=" << yaw_correction_runner.estimate().yaw_rate
+                  << " feedback="
+                  << yaw_correction_runner.last_command().yaw_rate_feedback_measurement
+                  << " planner="
+                  << yaw_correction_runner.last_command().planner_target_yaw_rate
+                  << " speed=" << yaw_correction_runner.last_command().target_speed
+                  << " source="
+                  << thesis_sim::hardware_control_source_name(
+                         yaw_correction_runner.diagnostics().control_source)
+                  << '\n';
         return fail("negative IMU drift did not produce a positive body-yaw correction");
+    }
+
+    // A one-frame-delayed BNO rate can alternate around zero while the car is
+    // mechanically settling. The filtered actuator trim must not turn that
+    // measurement noise into alternating left/right exploration commands.
+    thesis_sim::HardwarePlannerRunner alternating_yaw_runner(
+        exploration_world, bridge_options, direct_config);
+    int alternating_trim_steps = 0;
+    for (int step = 0; step < 35; ++step) {
+        const double alternating_rate = (step % 2 == 0) ? 0.65 : -0.65;
+        alternating_yaw_runner.step_with_observation(
+            make_observation(
+                18.0 + 0.10 * step,
+                sparse_scan,
+                step * 2,
+                step * 2,
+                0.0,
+                alternating_rate),
+            0.10,
+            false);
+        const auto& command = alternating_yaw_runner.last_command();
+        if (alternating_yaw_runner.diagnostics().control_source ==
+                thesis_sim::HardwareControlSource::StraightExploration &&
+            std::abs(command.target_yaw_rate) > 0.015) {
+            ++alternating_trim_steps;
+        }
+    }
+    if (alternating_trim_steps > 1) {
+        return fail("alternating IMU rate noise still generated alternating exploration turns");
     }
 
     // Reproduce the final pose of hardware report 20260818_212510_695. The
@@ -745,6 +795,36 @@ int main() {
         return fail("compact gate crossing retained an excessively wide lateral acceptance band");
     }
 
+    thesis_sim::HardwarePlannerRunner delayed_yaw_gate_runner(
+        offset_gate_world, bridge_options, config);
+    bool checked_delayed_gate_yaw = false;
+    for (int step = 0; step < 45; ++step) {
+        const double delayed_rate = (step % 2 == 0) ? 1.10 : -1.10;
+        delayed_yaw_gate_runner.step_with_observation(
+            make_observation(
+                24.0 + 0.10 * step,
+                gate_scan,
+                0,
+                0,
+                0.0,
+                delayed_rate),
+            0.10,
+            false);
+        const auto& command = delayed_yaw_gate_runner.last_command();
+        if (delayed_yaw_gate_runner.diagnostics().control_source !=
+                thesis_sim::HardwareControlSource::GateMpc ||
+            std::abs(command.planner_target_yaw_rate) < 0.020) {
+            continue;
+        }
+        checked_delayed_gate_yaw = true;
+        if (command.target_yaw_rate * command.planner_target_yaw_rate <= 0.0) {
+            return fail("delayed yaw feedback reversed the MPC gate turn");
+        }
+    }
+    if (!checked_delayed_gate_yaw) {
+        return fail("delayed-yaw gate regression never produced an MPC turn request");
+    }
+
     // A large free sector bounded by returns on opposite sides of the LiDAR
     // is free space, not a gate. Its midpoint must not become a crossing plane
     // underneath the car and must therefore never increment passed_gates.
@@ -867,6 +947,7 @@ int main() {
     bool crossing_saw_gate_mpc = false;
     bool crossing_saw_verification = false;
     bool crossing_lock_dropped = false;
+    bool crossing_used_free_search_while_locked = false;
     for (int step = 0; step < 80 && crossing_runner.passed_gate_count() == 0;
          ++step) {
         const auto moving_scan = make_scan(
@@ -889,6 +970,13 @@ int main() {
         crossing_saw_verification = crossing_saw_verification ||
             crossing_runner.diagnostics().exploration_state ==
                 thesis_sim::UnstructuredExplorationState::VerifyingGateCrossing;
+        if (crossing_saw_gate_mpc &&
+            crossing_runner.passed_gate_count() == 0 &&
+            crossing_runner.diagnostics().candidate_gates > 0 &&
+            crossing_runner.diagnostics().control_source ==
+                thesis_sim::HardwareControlSource::ForwardSearch) {
+            crossing_used_free_search_while_locked = true;
+        }
         if (crossing_saw_gate_mpc &&
             crossing_runner.passed_gate_count() == 0 &&
             crossing_runner.diagnostics().candidate_gates == 0 &&
@@ -919,6 +1007,9 @@ int main() {
                   << "'\n";
         return fail("physical gate lock was erased during the committed approach");
     }
+    if (crossing_used_free_search_while_locked) {
+        return fail("committed gate tracking fell back to free-space search");
+    }
     if (crossing_runner.passed_gate_count() < 1) {
         std::cerr << "crossing_debug position="
                   << crossing_runner.estimate().position.x << ','
@@ -937,6 +1028,9 @@ int main() {
                   << crossing_runner.diagnostics().reference_invalidation_reason
                   << "'\n";
         return fail("moving narrow-gate regression did not count the crossing");
+    }
+    if (crossing_runner.estimate().position.x < 0.49) {
+        return fail("gate was counted before the robot centre crossed the aperture plane");
     }
 
     // The closed mixed hardware road used in the reported run may legitimately
