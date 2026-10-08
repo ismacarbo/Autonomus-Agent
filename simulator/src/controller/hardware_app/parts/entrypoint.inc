@@ -74,6 +74,10 @@ int main(int argc, char** argv) {
         std::cout << "startup_yaw_rate_tracking_pi="
                   << planner_config.pwm.yaw_rate_tracking_kp << ','
                   << planner_config.pwm.yaw_rate_tracking_ki << '\n';
+        std::cout << "startup_start_matching_enabled="
+                  << planner_config.start_matching.enabled << '\n';
+        std::cout << "startup_slam_toolbox_enabled="
+                  << planner_config.slam_toolbox_enabled << std::endl;
 
         runner = std::make_unique<HardwarePlannerRunner>(
             world,
@@ -124,6 +128,13 @@ int main(int argc, char** argv) {
             return true;
         };
         runner->connect();
+        const ControllerTelemetry& controller = runner->bridge().observation().controller;
+        if (controller.have_heartbeat) {
+            std::cout << "controller_firmware=" << static_cast<int>(controller.fw_major)
+                      << '.' << static_cast<int>(controller.fw_minor) << std::endl;
+        } else {
+            std::cout << "controller_firmware=unavailable (waiting for heartbeat)" << std::endl;
+        }
         if (!setup_stream_client(options, &streamer)) {
             runner->disconnect();
             return 2;
@@ -155,6 +166,21 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        std::string last_start_matching_status;
+        const auto log_start_matching = [&]() {
+            const auto& match = runner->start_matching_status();
+            if (match.status == last_start_matching_status) return;
+            last_start_matching_status = match.status;
+            std::cout << "start_matching_status=" << match.status
+                      << " enabled=" << match.enabled
+                      << " complete=" << match.complete
+                      << " accepted=" << match.accepted
+                      << " confidence=" << match.confidence
+                      << " motion_permitted="
+                      << (!match.enabled || (match.complete && match.accepted))
+                      << std::endl;
+        };
+        log_start_matching();
         const int limit = options.max_steps > 0 ? options.max_steps : 1500;
         while (runner->step_count() < limit && !runner->goal_reached() && !g_shutdown_requested.load()) {
             if (!ensure_stream_client(true)) {
@@ -186,6 +212,7 @@ int main(int argc, char** argv) {
             }
             poll_external_pose(options, &external_pose_receiver, runner.get());
             runner->step();
+            log_start_matching();
             if (slam_bridge.active() &&
                 runner->config().slam_toolbox_enabled &&
                 !runner->lidar_hits().empty()) {
@@ -229,6 +256,15 @@ int main(int argc, char** argv) {
         runner->disconnect();
 
         std::cout << "status=" << (report.goal_reached ? "goal_reached" : "stopped") << '\n';
+        const auto& match = runner->start_matching_status();
+        std::cout << "exploration_state="
+                  << thesis_sim::unstructured_exploration_state_name(runner->diagnostics().exploration_state) << '\n';
+        std::cout << "control_source="
+                  << thesis_sim::hardware_control_source_name(runner->diagnostics().control_source) << '\n';
+        std::cout << "start_matching_enabled=" << match.enabled << '\n';
+        std::cout << "start_matching_accepted=" << match.accepted << '\n';
+        std::cout << "start_matching_status=" << match.status << '\n';
+        std::cout << "slam_toolbox_enabled=" << runner->config().slam_toolbox_enabled << '\n';
         std::cout << "telemetry_ready=" << (report.telemetry_ready ? 1 : 0) << '\n';
         std::cout << "safety_stop_active=" << (report.safety_stop_active ? 1 : 0) << '\n';
         std::cout << "controller_front_alert=" << (report.controller_front_alert ? 1 : 0) << '\n';

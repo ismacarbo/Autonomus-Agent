@@ -283,25 +283,39 @@ bool process_stream_control(const AppOptions& options,
         const LiveRuntimeSettings& settings = *poll_result.runtime_settings;
         HardwarePlannerConfig next_config =
             active_config != nullptr ? *active_config : base_config;
-        // Store the operator choice independently of the current scenario.  A
-        // structured world does not consume LiDAR, but switching back to an
-        // unstructured world must restore the requested safety/mapping mode.
-        next_config.start_matching.enabled = settings.start_matching_enabled;
-        next_config.slam_toolbox_enabled = settings.slam_toolbox_enabled;
-        runner->apply_config(next_config);
+        // The GUI sends its defaults on every connection. Explicit CLI debug
+        // overrides remain authoritative for this process, including reconnects
+        // and subsequent map/profile changes. Without overrides the GUI retains
+        // control, independently of the currently selected scenario.
+        next_config.start_matching.enabled = settings.start_matching_enabled &&
+            options.start_matching_enabled && !options.simulate;
+        next_config.slam_toolbox_enabled =
+            settings.slam_toolbox_enabled && options.slam_toolbox_enabled;
+        const bool changed =
+            next_config.start_matching.enabled != runner->config().start_matching.enabled ||
+            next_config.slam_toolbox_enabled != runner->config().slam_toolbox_enabled;
+        if (changed) runner->apply_config(next_config);
         if (active_config != nullptr) *active_config = next_config;
-        if (!streamer->send_control_ack(
-                true,
-                std::string("runtime settings applied: start_matching=") +
-                    (next_config.start_matching.enabled ? "on" : "off") +
-                    " slam_toolbox=" +
-                    (next_config.slam_toolbox_enabled ? "on" : "off") +
-                    " (planner reset)")) {
+        std::string message = std::string("runtime settings applied: start_matching=") +
+            (next_config.start_matching.enabled ? "on" : "off") +
+            " slam_toolbox=" + (next_config.slam_toolbox_enabled ? "on" : "off");
+        if (!options.start_matching_enabled) message += " [--no-start-matching]";
+        if (!options.slam_toolbox_enabled) message += " [--no-slam-toolbox]";
+        if (options.simulate) message += " [simulated start matching disabled]";
+        message += changed ? " (planner reset)" : " (planner unchanged)";
+        std::cout << "live_stream_runtime_settings=" << message << std::endl;
+        if (!streamer->send_control_ack(true, message)) {
             std::cerr << "live_stream_error=" << streamer->last_error() << '\n';
             streamer->disconnect();
             return true;
         }
-        if (world_applied != nullptr) *world_applied = true;
+        if (changed) {
+            if (world_applied != nullptr) *world_applied = true;
+        } else {
+            // Echo the effective settings so the GUI corrects its checkboxes,
+            // without resetting the runner/plant or its accumulated odometry.
+            send_stream_scene(options, *runner, streamer);
+        }
     }
 
     if (poll_result.world_received && poll_result.world.has_value()) {

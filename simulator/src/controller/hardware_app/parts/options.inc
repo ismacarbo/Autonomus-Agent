@@ -621,9 +621,9 @@ void print_usage(const char* argv0) {
         << "  --slam-bridge-port N      stream odometry + LiDAR to the SLAM Toolbox UDP bridge\n"
         << "  --slam-bridge-host HOST   bridge host (default 127.0.0.1)\n"
         << "  --slam-pose-feedback      enable bounded SLAM-to-EKF corrections\n"
-        << "  --no-slam-toolbox         disable SLAM Toolbox (GUI can override at runtime)\n"
+        << "  --no-slam-toolbox         keep SLAM Toolbox disabled, including GUI requests\n"
         << "  --start-reference PATH    initial LiDAR reference used before motor enable\n"
-        << "  --no-start-matching       bypass initial LiDAR start matching for debug\n"
+        << "  --no-start-matching       bypass initial LiDAR start matching for this debug session (overrides GUI)\n"
         << "  --calibration-profile P   override the versioned robot calibration JSON\n";
 }
 

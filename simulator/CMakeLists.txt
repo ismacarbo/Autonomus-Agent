@@ -343,6 +343,17 @@ target_link_libraries(thesis_sim_lidar_start_matcher PRIVATE
 )
 
 if(BUILD_TESTING)
+  add_executable(thesis_hardware_runtime_settings_smoke
+    src/tests/integration/hardware_runtime_settings_test.cpp
+  )
+  target_link_libraries(thesis_hardware_runtime_settings_smoke PRIVATE
+    thesis_hardware_planner
+    thesis_live_view
+    thesis_slam_bridge
+  )
+  add_test(NAME thesis_hardware_runtime_settings COMMAND thesis_hardware_runtime_settings_smoke)
+  set_tests_properties(thesis_hardware_runtime_settings PROPERTIES TIMEOUT 30)
+
   add_executable(thesis_structured_path_model_smoke
     src/tests/unit/structured_path_model_test.cpp
   )
