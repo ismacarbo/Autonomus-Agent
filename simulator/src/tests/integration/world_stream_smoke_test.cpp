@@ -65,6 +65,21 @@ int main() {
     live_frame.latest_sample.start_matching_accepted = 1.0;
     live_frame.latest_sample.slam_toolbox_connected = 1.0;
     live_frame.latest_sample.slam_map_age_s = 0.04;
+    live_frame.latest_sample.controller_imu_yaw = -0.2;
+    live_frame.latest_sample.controller_imu_yaw_rate = -0.14;
+    live_frame.latest_sample.controller_imu_ms = 12500;
+    live_frame.latest_sample.controller_encoder_ms = 12480;
+    live_frame.latest_sample.controller_encoder_packet_dt_ms = 100;
+    live_frame.latest_sample.body_yaw_rate_measurement = -0.14;
+    live_frame.latest_sample.body_yaw_rate_source = 2;
+    live_frame.latest_sample.imu_sample_new = 1;
+    live_frame.latest_sample.encoder_sample_new = 1;
+    live_frame.latest_sample.encoder_sample_valid = 1;
+    live_frame.latest_sample.controller_firmware_major = 1;
+    live_frame.latest_sample.controller_firmware_minor = 5;
+    live_frame.latest_sample.locked_gate_heading_rad = 0.35;
+    live_frame.latest_sample.locked_gate_crossing_x = 0.5;
+    live_frame.latest_sample.locked_gate_crossing_y = 0.61;
     const std::vector<std::uint8_t> frame_payload =
         thesis_sim::serialize_live_frame_blob(live_frame);
     thesis_sim::LiveFrameSnapshot decoded_frame;
@@ -80,6 +95,25 @@ int main() {
         !near(decoded_frame.latest_sample.global_occupied_cells, 17.0) ||
         !near(decoded_frame.latest_sample.slam_map_age_s, 0.04)) {
         return fail("live exploration frame changed during roundtrip");
+    }
+
+    if (
+        !near(decoded_frame.latest_sample.controller_imu_yaw, live_frame.latest_sample.controller_imu_yaw) ||
+        !near(decoded_frame.latest_sample.controller_imu_yaw_rate, live_frame.latest_sample.controller_imu_yaw_rate) ||
+        !near(decoded_frame.latest_sample.controller_imu_ms, live_frame.latest_sample.controller_imu_ms) ||
+        !near(decoded_frame.latest_sample.controller_encoder_ms, live_frame.latest_sample.controller_encoder_ms) ||
+        !near(decoded_frame.latest_sample.controller_encoder_packet_dt_ms, live_frame.latest_sample.controller_encoder_packet_dt_ms) ||
+        !near(decoded_frame.latest_sample.body_yaw_rate_measurement, live_frame.latest_sample.body_yaw_rate_measurement) ||
+        !near(decoded_frame.latest_sample.body_yaw_rate_source, live_frame.latest_sample.body_yaw_rate_source) ||
+        !near(decoded_frame.latest_sample.imu_sample_new, live_frame.latest_sample.imu_sample_new) ||
+        !near(decoded_frame.latest_sample.encoder_sample_new, live_frame.latest_sample.encoder_sample_new) ||
+        !near(decoded_frame.latest_sample.encoder_sample_valid, live_frame.latest_sample.encoder_sample_valid) ||
+        !near(decoded_frame.latest_sample.controller_firmware_major, live_frame.latest_sample.controller_firmware_major) ||
+        !near(decoded_frame.latest_sample.controller_firmware_minor, live_frame.latest_sample.controller_firmware_minor) ||
+        !near(decoded_frame.latest_sample.locked_gate_heading_rad, live_frame.latest_sample.locked_gate_heading_rad) ||
+        !near(decoded_frame.latest_sample.locked_gate_crossing_x, live_frame.latest_sample.locked_gate_crossing_x) ||
+        !near(decoded_frame.latest_sample.locked_gate_crossing_y, live_frame.latest_sample.locked_gate_crossing_y)) {
+        return fail("raw sensors and feedback provenance changed during roundtrip");
     }
 
     const thesis_sim::WorldMap source = thesis_sim::WorldMap::mixed_hardware_aligned_demo();

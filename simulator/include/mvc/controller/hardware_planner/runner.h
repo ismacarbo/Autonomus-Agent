@@ -90,6 +90,7 @@ struct LidarLocalizationConfig {
     double obstacle_stop_distance_m = 0.28;
     double max_controller_age_s = 0.25;
     double max_lidar_age_s = 0.35;
+    double max_imu_feedback_age_s = 0.12;
     bool motion_compensate_scan = true;
 };
 
@@ -125,6 +126,12 @@ struct GapExtractionConfig {
     double gap_acquire_turn_in_place_heading_rad = 0.22;
     double gap_acquire_creep_speed_mps = 0.05;
     double gap_acquire_yaw_gain = 1.05;
+    double gate_search_reachable_heading_rad = 85.0 * 3.14159265358979323846 / 180.0;
+    double gate_search_acquire_heading_limit_rad = 120.0 * 3.14159265358979323846 / 180.0;
+    double gate_search_acquire_timeout_s = 3.0;
+    double gate_search_acquire_cooldown_s = 2.5;
+    double gate_search_acquire_max_yaw_rate = 0.28;
+    double gate_search_straight_clearance_slack_m = 0.10;
     double strict_locked_gate_drive_heading_rad = 0.35;
     double strict_locked_gate_creep_speed_mps = 0.055;
     double recovery_creep_speed_mps = 0.07;
@@ -176,6 +183,16 @@ enum class UnstructuredExplorationState {
     Complete,
     AdvancingStraight,
     SearchingFreeSpace,
+    AcquiringGate,
+};
+
+enum class GateCandidateStatus {
+    None = 0,
+    Ready,
+    Locked,
+    OutsideReachableSector,
+    RearSectorRejected,
+    AcquisitionTimedOut,
 };
 
 enum class HardwareControlSource {
@@ -198,6 +215,7 @@ enum class NavigationTargetKind {
 const char* exploration_map_source_name(ExplorationMapSource source);
 const char* unstructured_exploration_state_name(UnstructuredExplorationState state);
 const char* hardware_control_source_name(HardwareControlSource source);
+const char* gate_candidate_status_name(GateCandidateStatus status);
 
 const char* hardware_localization_policy_name(HardwareLocalizationPolicy policy);
 const char* hardware_localization_policy_cli_name(HardwareLocalizationPolicy policy);
@@ -437,6 +455,33 @@ struct HardwareTelemetrySample {
     double yaw_rate_feedback_measurement = 0.0;
     double locked_gate_reference_failure_streak = 0.0;
     double gate_reference_grace_active = 0.0;
+    double imu_yaw_rate_from_yaw = 0.0;
+    double imu_yaw_rate_consistency_error = 0.0;
+    double imu_yaw_rate_fallback_active = 0.0;
+    double raw_gate_candidates = 0.0;
+    double candidate_gate_heading_error_deg = 0.0;
+    double candidate_gate_track_score = 0.0;
+    double candidate_gate_track_hits = 0.0;
+    double candidate_gate_track_misses = 0.0;
+    double candidate_gate_width_m = 0.0;
+    double candidate_gate_status = 0.0;
+    double gate_acquisition_active = 0.0;
+    // Body rate source: 0 unavailable/quarantined, 1 gyro, 2 yaw derivative.
+    double controller_imu_yaw = 0.0;
+    double controller_imu_yaw_rate = 0.0;
+    double controller_imu_ms = 0.0;
+    double controller_encoder_ms = 0.0;
+    double controller_encoder_packet_dt_ms = 0.0;
+    double body_yaw_rate_measurement = 0.0;
+    double body_yaw_rate_source = 0.0;
+    double imu_sample_new = 0.0;
+    double encoder_sample_new = 0.0;
+    double encoder_sample_valid = 0.0;
+    double controller_firmware_major = 0.0;
+    double controller_firmware_minor = 0.0;
+    double locked_gate_heading_rad = 0.0;
+    double locked_gate_crossing_x = 0.0;
+    double locked_gate_crossing_y = 0.0;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -470,6 +515,17 @@ struct HardwarePlannerDiagnostics {
     std::string slam_session_id;
     std::string slam_reset_reason;
     std::string reference_invalidation_reason;
+    GateCandidateStatus gate_candidate_status = GateCandidateStatus::None;
+    int raw_gate_candidates = 0;
+    double candidate_gate_heading_error_rad = 0.0;
+    double candidate_gate_track_score = 0.0;
+    int candidate_gate_track_hits = 0;
+    int candidate_gate_track_misses = 0;
+    double candidate_gate_width_m = 0.0;
+    bool gate_acquisition_active = false;
+    bool imu_yaw_rate_fallback_active = false;
+    double imu_yaw_rate_from_yaw = 0.0;
+    double imu_yaw_rate_consistency_error = 0.0;
 };
 
 struct HardwarePlannerReport {
@@ -592,9 +648,10 @@ class HardwarePlannerRunner {
 
     void update_estimate_from_observation(const RealRobotObservation& observation, double dt);
     void update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
-                                                         double dt,
-                                                         double measured_yaw,
-                                                         double measured_yaw_rate);
+                                                          double dt,
+                                                          double measured_yaw,
+                                                          double measured_yaw_rate,
+                                                          bool imu_feedback_fresh);
     void mitigate_compact_unstructured_encoder_slip(double measured_yaw_rate,
                                                      double left_wheel_speed,
                                                      double right_wheel_speed,
@@ -608,6 +665,7 @@ class HardwarePlannerRunner {
                                             std::int32_t right_delta_ticks,
                                             double encoder_dt) const;
     void update_controller_encoder_snapshot(const ControllerTelemetry& telemetry,
+                                           double observation_time_s,
                                            std::int32_t* left_delta_ticks,
                                            std::int32_t* right_delta_ticks);
     bool rearm_controller_if_needed(const ControllerTelemetry& telemetry);
@@ -653,7 +711,7 @@ class HardwarePlannerRunner {
     void update_selected_trajectory();
     void compute_control_command(double dt);
     void send_last_control_command(bool force);
-    void push_history();
+    void push_history(const RealRobotObservation& observation);
 
     double compute_min_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const;
     double compute_front_lidar_distance(const std::vector<RPLidarA1::ScanPoint>& scan) const;
@@ -753,6 +811,14 @@ class HardwarePlannerRunner {
     double yaw_offset_ = 0.0;
     double last_raw_imu_yaw_ = 0.0;
     double last_accepted_imu_yaw_ = 0.0;
+    double imu_yaw_rate_from_yaw_ = 0.0;
+    double imu_yaw_rate_consistency_error_ = 0.0;
+    int imu_yaw_rate_inconsistent_streak_ = 0;
+    int imu_yaw_rate_consistent_streak_ = 0;
+    bool imu_yaw_rate_fallback_active_ = false;
+    double body_yaw_rate_measurement_ = 0.0;
+    bool body_yaw_rate_measurement_valid_ = false;
+    bool imu_sample_new_ = false;
     double last_observation_time_ = 0.0;
     double distance_to_goal_ = 0.0;
     double commanded_speed_ = 0.0;
@@ -773,6 +839,9 @@ class HardwarePlannerRunner {
     std::int32_t latest_controller_left_encoder_delta_ = 0;
     std::int32_t latest_controller_right_encoder_delta_ = 0;
     double latest_controller_encoder_dt_ms_ = 0.0;
+    std::uint32_t last_encoder_ms_ = 0;
+    bool encoder_snapshot_fresh_ = false;
+    bool encoder_snapshot_valid_ = false;
     int chosen_gate_index_ = -1;
     double structured_goal_progress_target_ = 0.0;
     double structured_progress_s_ = 0.0;
@@ -812,6 +881,17 @@ class HardwarePlannerRunner {
     double lidar_reverse_reposition_cooldown_until_s_ = -1.0;
     Vec2 lidar_reverse_reposition_start_position_{};
     double lidar_post_reverse_search_until_s_ = -1.0;
+    bool gate_acquisition_active_ = false;
+    std::string gate_acquisition_name_;
+    double gate_acquisition_started_s_ = -1.0;
+    double gate_acquisition_cooldown_until_s_ = -1.0;
+    double candidate_gate_heading_error_rad_ = 0.0;
+    double candidate_gate_track_score_ = 0.0;
+    int candidate_gate_track_hits_ = 0;
+    int candidate_gate_track_misses_ = 0;
+    double candidate_gate_width_m_ = 0.0;
+    GateCandidateStatus gate_candidate_status_ = GateCandidateStatus::None;
+    int raw_gate_candidate_count_ = 0;
     double last_controller_rearm_time_s_ = -1.0;
     double active_lidar_scan_duration_s_ = 0.0;
     bool use_dynamic_gap_gates_ = false;

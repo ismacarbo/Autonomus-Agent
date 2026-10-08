@@ -632,7 +632,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     diagnostics_.slam_session_id = slam_toolbox_snapshot_.session_id;
     diagnostics_.slam_reset_reason = slam_toolbox_snapshot_.reset_reason;
     step_compute_ms_ = elapsed_ms(step_start, std::chrono::steady_clock::now());
-    push_history();
+    push_history(observation);
 
     if (send_pwm && connected_ && bridge_.controller_connected()) {
         send_last_control_command(false);

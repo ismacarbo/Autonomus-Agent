@@ -47,6 +47,17 @@ void HardwarePlannerRunner::restart_unstructured_scan() {
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
     diagnostics_.planner_has_reference = false;
     structured_anchor_hint_index_ = 0;
+    gate_acquisition_active_ = false;
+    gate_acquisition_name_.clear();
+    gate_acquisition_started_s_ = -1.0;
+    candidate_gate_heading_error_rad_ = 0.0;
+    candidate_gate_track_score_ = 0.0;
+    candidate_gate_track_hits_ = 0;
+    candidate_gate_track_misses_ = 0;
+    candidate_gate_width_m_ = 0.0;
+    gate_candidate_status_ = GateCandidateStatus::None;
+    diagnostics_.gate_acquisition_active = false;
+    diagnostics_.gate_candidate_status = GateCandidateStatus::None;
 }
 
 void HardwarePlannerRunner::update_unstructured_scan_direction(bool flip_when_aligned) {
@@ -103,12 +114,19 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
     double best_clearance = forward_clearance;
     std::optional<double> preferred_gate_heading;
     double preferred_gate_heading_abs = std::numeric_limits<double>::infinity();
-    for (const GateSpec& spec : gate_specs_) {
-        const double heading = wrap_angle(
-            angle_to(estimate_.position, spec.position) - estimate_.yaw);
-        if (std::abs(heading) < preferred_gate_heading_abs) {
-            preferred_gate_heading_abs = std::abs(heading);
-            preferred_gate_heading = heading;
+    if (gate_acquisition_active_ &&
+        sim_time_ >= gate_acquisition_cooldown_until_s_) {
+        for (const GateSpec& spec : gate_specs_) {
+            if (!gate_acquisition_name_.empty() &&
+                spec.name != gate_acquisition_name_) {
+                continue;
+            }
+            const double heading = wrap_angle(
+                angle_to(estimate_.position, spec.position) - estimate_.yaw);
+            if (std::abs(heading) < preferred_gate_heading_abs) {
+                preferred_gate_heading_abs = std::abs(heading);
+                preferred_gate_heading = heading;
+            }
         }
     }
     double probe_distance = clamp_value(
@@ -246,14 +264,19 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
         !passed_unstructured_gap_positions_.empty() &&
         distance(estimate_.position, passed_unstructured_gap_positions_.back()) <
             geometry_.body_length;
+    const bool prefer_forward_first =
+        manual_exploration &&
+        !gate_acquisition_active_ &&
+        sim_time_ >= lidar_post_reverse_search_until_s_;
     if (heading_arc_is_clear(0.0) &&
-        (!manual_exploration ||
-         (gate_specs_.empty() &&
-          (unstructured_no_candidate_scan_elapsed_s_ < 0.80 ||
-           clearing_recent_gate))) &&
+        (!manual_exploration || prefer_forward_first || clearing_recent_gate) &&
         forward_clearance > required_clearance &&
         (clearing_recent_gate ||
-         forward_clearance + 0.10 >= best_clearance)) {
+         forward_clearance +
+                 std::max(
+                     config_.gap_extraction.gate_search_straight_clearance_slack_m,
+                     0.02) >=
+             best_clearance)) {
         best_heading = 0.0;
         best_clearance = forward_clearance;
     }
@@ -271,10 +294,16 @@ bool HardwarePlannerRunner::compute_forward_gate_search_command(
                   (0.78 + 0.22 * clearance_scale),
               0.040,
               search_speed_cap);
+    const double search_yaw_rate_limit = gate_acquisition_active_
+        ? clamp_value(
+              config_.gap_extraction.gate_search_acquire_max_yaw_rate,
+              0.08,
+              0.38)
+        : 0.38;
     *target_yaw_rate = clamp_value(
         0.72 * best_heading,
-        -0.38,
-        0.38);
+        -search_yaw_rate_limit,
+        search_yaw_rate_limit);
     return true;
 }
 
@@ -364,6 +393,12 @@ void HardwarePlannerRunner::set_locked_gap_goal(
     last_safe_gate_reference_trajectory_.clear();
     last_safe_gate_planned_trajectory_.clear();
     structured_anchor_hint_index_ = 0;
+    gate_acquisition_active_ = false;
+    gate_acquisition_name_.clear();
+    gate_acquisition_started_s_ = -1.0;
+    gate_candidate_status_ = GateCandidateStatus::Locked;
+    diagnostics_.gate_acquisition_active = false;
+    diagnostics_.gate_candidate_status = GateCandidateStatus::Locked;
 }
 
 double HardwarePlannerRunner::locked_gap_longitudinal_progress(const Vec2& position) const {
@@ -821,6 +856,18 @@ void HardwarePlannerRunner::count_unstructured_gate_crossing_if_needed() {
     const Vec2 completed_gap = *locked_gap_goal_;
     locked_gap_crossed_ = true;
     passed_unstructured_gap_positions_.push_back(completed_gap);
+    const double passed_track_reject_radius = std::max(
+        config_.gap_extraction.gap_goal_acceptance_radius_m,
+        std::max(config_.gap_extraction.gap_track_match_radius_m, 0.24));
+    dynamic_gap_tracks_.erase(
+        std::remove_if(
+            dynamic_gap_tracks_.begin(),
+            dynamic_gap_tracks_.end(),
+            [&](const DynamicGapTrack& track) {
+                return distance(track.position, completed_gap) <=
+                       passed_track_reject_radius;
+            }),
+        dynamic_gap_tracks_.end());
     ++passed_unstructured_gap_count_;
     goal_reached_ =
         passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count();
@@ -853,6 +900,22 @@ void HardwarePlannerRunner::count_unstructured_gate_crossing_if_needed() {
 }
 
 void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
+    candidate_gate_heading_error_rad_ = 0.0;
+    candidate_gate_track_score_ = 0.0;
+    candidate_gate_track_hits_ = 0;
+    candidate_gate_track_misses_ = 0;
+    candidate_gate_width_m_ = 0.0;
+    gate_candidate_status_ = locked_gap_goal_.has_value()
+        ? GateCandidateStatus::Locked
+        : GateCandidateStatus::None;
+    diagnostics_.raw_gate_candidates = raw_gate_candidate_count_;
+    diagnostics_.candidate_gate_heading_error_rad = 0.0;
+    diagnostics_.candidate_gate_track_score = 0.0;
+    diagnostics_.candidate_gate_track_hits = 0;
+    diagnostics_.candidate_gate_track_misses = 0;
+    diagnostics_.candidate_gate_width_m = 0.0;
+    diagnostics_.gate_candidate_status = gate_candidate_status_;
+    diagnostics_.gate_acquisition_active = gate_acquisition_active_;
     if (!use_dynamic_gap_gates_) {
         clear_locked_gap_goal();
         startup_scan_elapsed_s_ = 0.0;
@@ -1466,6 +1529,12 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             chosen_gate_index_ = -1;
             visible_gate_indices_.clear();
             diagnostics_.candidate_gates = 0;
+            gate_acquisition_active_ = false;
+            gate_acquisition_name_.clear();
+            gate_acquisition_started_s_ = -1.0;
+            gate_candidate_status_ = GateCandidateStatus::None;
+            diagnostics_.gate_acquisition_active = false;
+            diagnostics_.gate_candidate_status = gate_candidate_status_;
             unstructured_no_candidate_scan_elapsed_s_ += std::max(dt, 0.0);
             return;
         }
@@ -1558,6 +1627,12 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     if (!startup_scan_complete_ || !perception_map_ready() || gate_specs_.empty()) {
         chosen_gate_index_ = -1;
         diagnostics_.candidate_gates = static_cast<int>(gate_specs_.size());
+        gate_acquisition_active_ = false;
+        gate_acquisition_name_.clear();
+        gate_acquisition_started_s_ = -1.0;
+        gate_candidate_status_ = GateCandidateStatus::None;
+        diagnostics_.gate_acquisition_active = false;
+        diagnostics_.gate_candidate_status = gate_candidate_status_;
         if (strict_locked_motion && !manual_lidar_exploration) {
             startup_scan_complete_ = false;
         }
@@ -1576,17 +1651,48 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
     // one into the reachable sector. Directly locking a 100--145 degree
     // candidate creates a looping clothoid instead of a useful forward
     // approach.
-    const double reachable_heading_limit =
-        (manual_car ? 85.0 : (manual_exploration ? 145.0 : 85.0)) *
-        kPi / 180.0;
+    const double reachable_heading_limit = manual_car
+        ? clamp_value(
+              config_.gap_extraction.gate_search_reachable_heading_rad,
+              45.0 * kPi / 180.0,
+              110.0 * kPi / 180.0)
+        : (manual_exploration ? 145.0 : 85.0) * kPi / 180.0;
     bool have_reachable_gate = false;
+    size_t closest_heading_gate_index = 0U;
+    double closest_heading_error = std::numeric_limits<double>::infinity();
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const double heading_error = std::abs(
             wrap_angle(angle_to(estimate_.position, gate_specs_[i].position) - estimate_.yaw));
+        if (heading_error < closest_heading_error) {
+            closest_heading_error = heading_error;
+            closest_heading_gate_index = i;
+        }
         if (heading_error <= reachable_heading_limit) {
             have_reachable_gate = true;
-            break;
         }
+    }
+
+    if (!gate_specs_.empty() && std::isfinite(closest_heading_error)) {
+        const GateSpec& closest_spec = gate_specs_[closest_heading_gate_index];
+        candidate_gate_heading_error_rad_ = wrap_angle(
+            angle_to(estimate_.position, closest_spec.position) - estimate_.yaw);
+        double best_track_distance = std::numeric_limits<double>::infinity();
+        for (const DynamicGapTrack& track : dynamic_gap_tracks_) {
+            const double track_distance = distance(track.position, closest_spec.position);
+            if (track_distance < best_track_distance) {
+                best_track_distance = track_distance;
+                candidate_gate_track_score_ = track.score;
+                candidate_gate_track_hits_ = track.hits;
+                candidate_gate_track_misses_ = track.misses;
+                candidate_gate_width_m_ = track.gap_width;
+            }
+        }
+        diagnostics_.candidate_gate_heading_error_rad =
+            candidate_gate_heading_error_rad_;
+        diagnostics_.candidate_gate_track_score = candidate_gate_track_score_;
+        diagnostics_.candidate_gate_track_hits = candidate_gate_track_hits_;
+        diagnostics_.candidate_gate_track_misses = candidate_gate_track_misses_;
+        diagnostics_.candidate_gate_width_m = candidate_gate_width_m_;
     }
     if (manual_car && !have_reachable_gate) {
         // Preserve the detections so the sector search can bias its forward
@@ -1603,9 +1709,55 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
         reference_trajectory_.clear();
         planned_trajectory_.clear();
         last_mpc_command_.reset();
-        exploration_state_ = UnstructuredExplorationState::SearchingFreeSpace;
+        const GateSpec& closest_spec = gate_specs_[closest_heading_gate_index];
+        const double acquire_heading_limit = clamp_value(
+            config_.gap_extraction.gate_search_acquire_heading_limit_rad,
+            reachable_heading_limit + 0.05,
+            150.0 * kPi / 180.0);
+        const bool rear_sector = closest_heading_error > acquire_heading_limit;
+        const bool acquisition_cooldown =
+            sim_time_ < gate_acquisition_cooldown_until_s_;
+        if (rear_sector) {
+            gate_acquisition_active_ = false;
+            gate_acquisition_name_.clear();
+            gate_acquisition_started_s_ = -1.0;
+            gate_candidate_status_ = GateCandidateStatus::RearSectorRejected;
+        } else if (acquisition_cooldown) {
+            gate_acquisition_active_ = false;
+            gate_candidate_status_ = GateCandidateStatus::AcquisitionTimedOut;
+        } else {
+            if (!gate_acquisition_active_ ||
+                gate_acquisition_name_ != closest_spec.name) {
+                gate_acquisition_name_ = closest_spec.name;
+                gate_acquisition_started_s_ = sim_time_;
+            }
+            const double acquire_timeout_s = std::max(
+                config_.gap_extraction.gate_search_acquire_timeout_s,
+                0.5);
+            if (sim_time_ - gate_acquisition_started_s_ >= acquire_timeout_s) {
+                gate_acquisition_active_ = false;
+                gate_acquisition_cooldown_until_s_ = sim_time_ + std::max(
+                    config_.gap_extraction.gate_search_acquire_cooldown_s,
+                    0.5);
+                gate_candidate_status_ = GateCandidateStatus::AcquisitionTimedOut;
+            } else {
+                gate_acquisition_active_ = true;
+                gate_candidate_status_ = GateCandidateStatus::OutsideReachableSector;
+            }
+        }
+        diagnostics_.gate_acquisition_active = gate_acquisition_active_;
+        diagnostics_.gate_candidate_status = gate_candidate_status_;
+        exploration_state_ = gate_acquisition_active_
+            ? UnstructuredExplorationState::AcquiringGate
+            : UnstructuredExplorationState::SearchingFreeSpace;
         return;
     }
+    gate_acquisition_active_ = false;
+    gate_acquisition_name_.clear();
+    gate_acquisition_started_s_ = -1.0;
+    gate_candidate_status_ = GateCandidateStatus::Ready;
+    diagnostics_.gate_acquisition_active = false;
+    diagnostics_.gate_candidate_status = gate_candidate_status_;
     for (size_t i = 0; i < gate_specs_.size(); ++i) {
         const Vec2& target = gate_specs_[i].position;
         const double heading_error = std::abs(

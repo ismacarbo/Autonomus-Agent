@@ -63,6 +63,10 @@ int run_simulated(const AppOptions& options,
         observation.host_timestamp_s = host_time_s;
         observation.have_controller_telemetry = true;
         observation.controller = make_controller_telemetry(plant_state, runner.last_command());
+        // Use the same timestamped packet contract as the real MCU.
+        observation.controller.ms = static_cast<std::uint32_t>(std::llround(host_time_s * 1000.0));
+        observation.controller.imu_ms = observation.controller.ms;
+        observation.controller.encoder_ms = observation.controller.ms;
         observation.controller.rx_timestamp_s = host_time_s;
         observation.controller.imu_rx_timestamp_s = host_time_s;
         observation.controller.safety_rx_timestamp_s = host_time_s;

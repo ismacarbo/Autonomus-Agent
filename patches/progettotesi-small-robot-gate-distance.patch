@@ -1,0 +1,17 @@
+diff --git a/src/lib/behaviours.cpp b/src/lib/behaviours.cpp
+index dad98fd..7808497 100644
+--- a/src/lib/behaviours.cpp
++++ b/src/lib/behaviours.cpp
+@@ -636,8 +636,10 @@ vector<motor_cortex_element> gate_behaviour(gate& door, states x0, global_states
+     const double gate_distance = sqrt(pow(x_gate-g_x0.x_fix, 2) + pow(y_gate-g_x0.y_fix, 2));
+     const double gate_progress =
+         door.road.end_point_s > 1e-6 ? x0.x / door.road.end_point_s : 0.0;
+-    const double gate_pass_distance =
+-        clamp_value(0.20 + 0.10 * door.road.end_point_s, 0.30, 2.20);
++    const bool metric_small_robot = sim.veh_W > 0.0 && sim.veh_W <= 0.20;
++    const double gate_pass_distance = metric_small_robot
++        ? clamp_value(0.55 * sim.veh_W + 0.12 * door.road.end_point_s, 0.18, 0.24)
++        : clamp_value(0.20 + 0.10 * door.road.end_point_s, 0.30, 2.20);
+     if((gate_distance < gate_pass_distance || gate_progress > 0.985) && !(door.final)){
+         door.passed = true;
+     }

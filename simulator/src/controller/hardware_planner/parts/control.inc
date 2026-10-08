@@ -160,7 +160,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         gap_recovery_turn_active_ = !straight_search_command;
         exploration_state_ = straight_search_command
             ? UnstructuredExplorationState::AdvancingStraight
-            : UnstructuredExplorationState::SearchingFreeSpace;
+            : (gate_acquisition_active_
+                   ? UnstructuredExplorationState::AcquiringGate
+                   : UnstructuredExplorationState::SearchingFreeSpace);
         control_source_ = straight_search_command
             ? HardwareControlSource::StraightExploration
             : HardwareControlSource::ForwardSearch;
@@ -1401,6 +1403,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
     last_command_.planner_target_yaw_rate = last_command_.target_yaw_rate;
     const bool body_yaw_tracking_enabled =
+        body_yaw_rate_measurement_valid_ &&
         forward_creep_gate_car &&
         last_command_.target_speed > 1e-4 &&
         !safety_stop_active_ &&
@@ -1408,7 +1411,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (body_yaw_tracking_enabled) {
         const double requested_yaw_rate = last_command_.planner_target_yaw_rate;
         const double measured_yaw_rate = clamp_value(
-            estimate_.yaw_rate,
+            body_yaw_rate_measurement_,
             -config_.drive.max_yaw_rate,
             config_.drive.max_yaw_rate);
         const double filter_tau = std::max(
@@ -1475,8 +1478,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         yaw_rate_error_integral_ = 0.0;
         previous_yaw_rate_target_ = last_command_.target_yaw_rate;
         previous_planner_yaw_rate_target_ = last_command_.planner_target_yaw_rate;
-        last_command_.yaw_rate_feedback_measurement = estimate_.yaw_rate;
-        if (std::abs(last_command_.target_speed) <= 1e-4) {
+        last_command_.yaw_rate_feedback_measurement =
+            body_yaw_rate_measurement_valid_ ? body_yaw_rate_measurement_ : 0.0;
+        if (!body_yaw_rate_measurement_valid_ || std::abs(last_command_.target_speed) <= 1e-4) {
             filtered_yaw_rate_feedback_ = 0.0;
             previous_yaw_rate_target_ = 0.0;
             previous_planner_yaw_rate_target_ = 0.0;
@@ -1651,7 +1655,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const int stall_boost_cycles_required =
         use_dynamic_gap_gates_ ? std::max(1, config_.pwm.stall_boost_after_cycles - 1)
                                : config_.pwm.stall_boost_after_cycles;
-    const int compact_breakaway_retry_cycles = 10;
+    // Retry quickly enough that one moving side cannot drag the chassis for a
+    // full second while the other side remains stalled. The pulse itself is
+    // still short and is removed as soon as encoder motion returns.
+    const int compact_breakaway_retry_cycles = 4;
     const bool compact_breakaway_pulse =
         compact_unstructured_car &&
         no_motion_command_cycles_ >= stall_boost_cycles_required &&
@@ -1671,6 +1678,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         stall_boost_active_ = true;
     }
 
+    bool hold_left_for_right_breakaway = false;
+    bool hold_right_for_left_breakaway = false;
     const bool forward_arc_command =
         compact_unstructured_car && last_command_.target_speed > 1e-4;
     if (forward_arc_command) {
@@ -1688,7 +1697,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         double right_speed_for_stall = std::abs(measured_right_wheel_speed);
         const double raw_encoder_dt_s = latest_controller_encoder_dt_ms_ * 0.001;
         const bool raw_encoder_motion_available =
-            encoder_ticks_initialized_ && raw_encoder_dt_s > 1e-4;
+            encoder_snapshot_valid_ && raw_encoder_dt_s > 1e-4;
         if (raw_encoder_motion_available) {
             const double meters_per_tick =
                 (2.0 * kPi * geometry_.wheel_radius) /
@@ -1703,16 +1712,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         }
         const bool have_individual_wheel_motion =
             measured_wheel_speeds_valid_ || raw_encoder_motion_available;
-        left_wheel_stall_cycles_ =
-            have_individual_wheel_motion &&
-                    left_requested && left_speed_for_stall < wheel_motion_threshold
-                ? left_wheel_stall_cycles_ + 1
-                : 0;
-        right_wheel_stall_cycles_ =
-            have_individual_wheel_motion &&
-                    right_requested && right_speed_for_stall < wheel_motion_threshold
-                ? right_wheel_stall_cycles_ + 1
-                : 0;
+        if (have_individual_wheel_motion) {
+            left_wheel_stall_cycles_ = left_requested && left_speed_for_stall < wheel_motion_threshold
+                ? left_wheel_stall_cycles_ + 1 : 0;
+            right_wheel_stall_cycles_ = right_requested && right_speed_for_stall < wheel_motion_threshold
+                ? right_wheel_stall_cycles_ + 1 : 0;
+        } else if (!encoder_ticks_initialized_ || encoder_snapshot_fresh_) {
+            left_wheel_stall_cycles_ = 0;
+            right_wheel_stall_cycles_ = 0;
+        }
+        // A duplicated cached packet must neither count another stall sample
+        // nor erase the streak accumulated from real encoder observations.
 
         const int per_wheel_breakaway_pwm = std::clamp(
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
@@ -1722,7 +1732,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         // turning the break-away level into the sustained cruise command.
         constexpr int kBreakawayHoldCycles = 2;
         const auto wheel_breakaway_pulse_due = [&](int stall_cycles) {
-            return stall_cycles >= stall_boost_cycles_required &&
+            return have_individual_wheel_motion &&
+                   stall_cycles >= stall_boost_cycles_required &&
                    ((stall_cycles - stall_boost_cycles_required) %
                         compact_breakaway_retry_cycles ==
                     0);
@@ -1733,7 +1744,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         if (wheel_breakaway_pulse_due(right_wheel_stall_cycles_) && right_requested) {
             right_wheel_breakaway_hold_cycles_ = kBreakawayHoldCycles;
         }
-        if (left_wheel_breakaway_hold_cycles_ > 0 && left_requested) {
+        const bool left_breakaway_active =
+            left_wheel_breakaway_hold_cycles_ > 0 && left_requested;
+        const bool right_breakaway_active =
+            right_wheel_breakaway_hold_cycles_ > 0 && right_requested;
+        if (left_breakaway_active) {
             last_command_.pwm_left = std::max(last_command_.pwm_left, per_wheel_breakaway_pwm);
             wheel_speed_error_integral_left_ = 0.0;
             stall_boost_active_ = true;
@@ -1741,13 +1756,20 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         } else {
             left_wheel_breakaway_hold_cycles_ = 0;
         }
-        if (right_wheel_breakaway_hold_cycles_ > 0 && right_requested) {
+        if (right_breakaway_active) {
             last_command_.pwm_right = std::max(last_command_.pwm_right, per_wheel_breakaway_pwm);
             wheel_speed_error_integral_right_ = 0.0;
             stall_boost_active_ = true;
             --right_wheel_breakaway_hold_cycles_;
         } else {
             right_wheel_breakaway_hold_cycles_ = 0;
+        }
+        if (left_breakaway_active && !right_breakaway_active &&
+            left_wheel_stall_cycles_ > 0) {
+            hold_right_for_left_breakaway = true;
+        } else if (right_breakaway_active && !left_breakaway_active &&
+                   right_wheel_stall_cycles_ > 0) {
+            hold_left_for_right_breakaway = true;
         }
     } else {
         left_wheel_stall_cycles_ = 0;
@@ -1952,6 +1974,16 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 &last_command_.pwm_left,
                 &last_command_.pwm_right);
         }
+    }
+    // Apply the one-wheel hold after every calibration, minimum-PWM and slew
+    // stage. Applying it earlier is ineffective because the forward-only
+    // clamps restore the held side to min_effective_pwm. During the short
+    // break-away pulse this prevents the healthy wheel from dragging the car
+    // into an unintended arc while the stalled side receives starting torque.
+    if (hold_left_for_right_breakaway) {
+        last_command_.pwm_left = 0;
+    } else if (hold_right_for_left_breakaway) {
+        last_command_.pwm_right = 0;
     }
     if (!commanding_motion && std::abs(last_command_.pwm_left) < 4) {
         last_command_.pwm_left = 0;

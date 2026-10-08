@@ -171,6 +171,7 @@ thesis_sim::RealRobotObservation make_observation(
     observation.controller.encoder_host_timestamp_s = timestamp;
     observation.controller.motor_host_timestamp_s = timestamp;
     observation.controller.heartbeat_host_timestamp_s = timestamp;
+    observation.controller.encoder_ms = observation.controller.ms;
     observation.controller.enc_dt_ms = 100;
     observation.controller.imu_ms =
         static_cast<std::uint32_t>(std::lround(timestamp * 1000.0));
@@ -453,6 +454,132 @@ int main() {
                   << '\n';
         return fail("negative IMU drift did not produce a positive body-yaw correction");
     }
+    if (yaw_correction_runner.diagnostics().imu_yaw_rate_fallback_active) {
+        return fail("coherent IMU yaw and gyro incorrectly activated the yaw-rate fallback");
+    }
+
+    // A one-tick difference at this encoder resolution is ~0.42 rad/s.
+    // It must not reverse the response to independently coherent body motion.
+    for (double body_rate : {-0.14, 0.14, 0.0}) {
+        thesis_sim::HardwarePlannerRunner angular_runner(
+            exploration_world, bridge_options, direct_config);
+        for (int step = 0; step < 35; ++step) {
+            angular_runner.step_with_observation(
+                make_observation(40.0 + 0.1 * step, sparse_scan,
+                                 step * (body_rate > 0.0 ? 4 : 3),
+                                 step * (body_rate > 0.0 ? 3 : 4),
+                                 body_rate * 0.1 * step,
+                                 body_rate == 0.0 ? 0.65 : body_rate),
+                0.1, false);
+        }
+        const auto& command = angular_runner.last_command();
+        const auto& sample = angular_runner.history().back();
+        if (std::abs(angular_runner.estimate().yaw_rate - body_rate) > 0.02 ||
+            std::abs(command.yaw_rate_feedback_measurement - body_rate) > 0.02) {
+            return fail("encoder disagreement contaminated the inertial body rate");
+        }
+        if (body_rate == 0.0) {
+            if (sample.body_yaw_rate_source != 2.0 ||
+                std::abs(command.target_yaw_rate) > 0.015) {
+                return fail("yaw fallback with unequal encoder ticks still manufactured a turn");
+            }
+        } else if (sample.body_yaw_rate_source != 1.0 ||
+                   command.target_yaw_rate * body_rate >= 0.0) {
+            return fail("coherent body drift was corrected in the wrong direction");
+        }
+    }
+
+    // Cumulative ticks and elapsed MCU time must describe the same interval,
+    // even when the host consumes two or three wire packets at once.
+    const double meters_per_tick = 2.0 * kPi * config.drive.wheel_radius /
+                                  config.drive.encoder_ticks_per_revolution;
+    for (int packet_factor : {1, 2, 3}) {
+        thesis_sim::HardwarePlannerRunner timing_runner(
+            exploration_world, bridge_options, direct_config);
+        for (int step = 0; step < 12; ++step) {
+            const auto before = timing_runner.estimate().position;
+            timing_runner.step_with_observation(
+                make_observation(50.0 + step * packet_factor * 0.1, {},
+                                 step * 2 * packet_factor, step * 2 * packet_factor),
+                packet_factor * 0.1, false);
+            if (step > 4 &&
+                (std::abs(timing_runner.estimate().speed - 20.0 * meters_per_tick) > 1e-6 ||
+                 std::abs(std::hypot(timing_runner.estimate().position.x - before.x,
+                                    timing_runner.estimate().position.y - before.y) -
+                          2.0 * packet_factor * meters_per_tick) > 1e-6 ||
+                 timing_runner.history().back().controller_encoder_dt_ms != 100.0 * packet_factor)) {
+                std::cerr << "timing factor=" << packet_factor << " step=" << step
+                          << " speed=" << timing_runner.estimate().speed
+                          << " expected=" << 20.0 * meters_per_tick
+                          << " delta=" << std::hypot(timing_runner.estimate().position.x - before.x,
+                                                     timing_runner.estimate().position.y - before.y)
+                          << " dt=" << timing_runner.history().back().controller_encoder_dt_ms << '\n';
+                return fail("skipped encoder packets changed physical speed or distance");
+            }
+        }
+    }
+
+    for (int packet_factor : {1, 2}) {
+        thesis_sim::HardwarePlannerRunner structured_timing_runner(
+            thesis_sim::WorldMap::structured_demo(), bridge_options, direct_config);
+        for (int step = 0; step < 12; ++step) {
+            structured_timing_runner.step_with_observation(
+                make_observation(60.0 + 0.1 * packet_factor * step, {},
+                                 2 * packet_factor * step, 2 * packet_factor * step),
+                0.1 * packet_factor, false);
+        }
+        if (std::abs(structured_timing_runner.estimate().speed - 20.0 * meters_per_tick) > 1e-6) {
+            return fail("structured odometry still used the last wire packet duration");
+        }
+    }
+
+    // Cached packets are not new zero-motion samples. MCU restart and millis/
+    // signed counter rollover must never create a fictitious displacement.
+    thesis_sim::HardwarePlannerRunner timestamp_runner(
+        exploration_world, bridge_options, direct_config);
+    auto last_timestamp_observation = make_observation(70.0, {});
+    for (int step = 0; step < 8; ++step) {
+        last_timestamp_observation = make_observation(70.0 + 0.1 * step, {}, 2 * step, 2 * step);
+        timestamp_runner.step_with_observation(last_timestamp_observation, 0.1, false);
+    }
+    const auto before_duplicate = timestamp_runner.estimate().position;
+    last_timestamp_observation.host_timestamp_s += 0.02;
+    timestamp_runner.step_with_observation(last_timestamp_observation, 0.02, false);
+    if (std::hypot(timestamp_runner.estimate().position.x - before_duplicate.x,
+                   timestamp_runner.estimate().position.y - before_duplicate.y) > 1e-9 ||
+        timestamp_runner.history().back().encoder_sample_new != 0.0 ||
+        timestamp_runner.history().back().imu_sample_new != 0.0) {
+        return fail("cached telemetry was integrated twice");
+    }
+    auto restarted = make_observation(70.8, {});
+    restarted.controller.encoder_ms = 1U;
+    timestamp_runner.step_with_observation(restarted, 0.1, false);
+    if (std::hypot(timestamp_runner.estimate().position.x - before_duplicate.x,
+                   timestamp_runner.estimate().position.y - before_duplicate.y) > 1e-9 ||
+        timestamp_runner.history().back().encoder_sample_valid != 0.0) {
+        return fail("MCU reset injected an encoder displacement");
+    }
+    for (int step = 1; step <= 5; ++step) {
+        restarted = make_observation(70.8 + 0.1 * step, {}, 2 * step, 2 * step);
+        restarted.controller.encoder_ms = 1U + 100U * step;
+        timestamp_runner.step_with_observation(restarted, 0.1, false);
+    }
+    if (std::abs(timestamp_runner.estimate().speed - 20.0 * meters_per_tick) > 1e-6) {
+        return fail("encoder odometry did not recover after an MCU restart");
+    }
+    thesis_sim::HardwarePlannerRunner rollover_runner(
+        exploration_world, bridge_options, direct_config);
+    for (int step = 0; step < 8; ++step) {
+        const std::int64_t total = 2147483642LL + 2 * step;
+        const std::int32_t ticks = static_cast<std::int32_t>(
+            total > 2147483647LL ? total - 4294967296LL : total);
+        auto obs = make_observation(80.0 + 0.1 * step, {}, ticks, ticks);
+        obs.controller.encoder_ms = 0xffffff00U + 100U * step;
+        rollover_runner.step_with_observation(obs, 0.1, false);
+    }
+    if (std::abs(rollover_runner.estimate().speed - 20.0 * meters_per_tick) > 1e-6) {
+        return fail("counter rollover corrupted the encoder interval");
+    }
 
     // A one-frame-delayed BNO rate can alternate around zero while the car is
     // mechanically settling. The filtered actuator trim must not turn that
@@ -481,6 +608,93 @@ int main() {
     }
     if (alternating_trim_steps > 1) {
         return fail("alternating IMU rate noise still generated alternating exploration turns");
+    }
+    if (!alternating_yaw_runner.diagnostics().imu_yaw_rate_fallback_active) {
+        return fail("yaw/gyro disagreement did not activate the yaw-derived rate fallback");
+    }
+    if (std::abs(alternating_yaw_runner.last_command().yaw_rate_feedback_measurement) > 0.08) {
+        return fail("incoherent gyro remained authoritative after fallback activation");
+    }
+
+    // Once the host timestamp says that an IMU sample is stale, neither its
+    // cached yaw nor its cached gyro may be applied to the EKF again.
+    thesis_sim::HardwarePlannerRunner stale_imu_runner(
+        exploration_world, bridge_options, direct_config);
+    for (int step = 0; step < 8; ++step) {
+        stale_imu_runner.step_with_observation(
+            make_observation(
+                20.0 + 0.10 * step,
+                sparse_scan,
+                step * 2,
+                step * 2,
+                0.0,
+                0.0),
+            0.10,
+            false);
+    }
+    const double yaw_before_stale_imu = stale_imu_runner.estimate().yaw;
+    auto stale_imu_observation = make_observation(
+        20.8,
+        sparse_scan,
+        16,
+        16,
+        1.20,
+        1.00);
+    stale_imu_observation.controller.imu_host_timestamp_s = 19.0;
+    stale_imu_runner.step_with_observation(stale_imu_observation, 0.10, false);
+    const double stale_imu_yaw_delta = std::abs(std::atan2(
+        std::sin(stale_imu_runner.estimate().yaw - yaw_before_stale_imu),
+        std::cos(stale_imu_runner.estimate().yaw - yaw_before_stale_imu)));
+    if (!stale_imu_runner.diagnostics().imu_yaw_rate_fallback_active ||
+        stale_imu_yaw_delta > 0.12) {
+        return fail("stale cached IMU data was still applied to the pose estimator");
+    }
+
+    if (stale_imu_runner.history().back().body_yaw_rate_source != 0.0) {
+        return fail("stale IMU was still advertised as valid body-rate feedback");
+    }
+    auto missing_imu = make_observation(20.9, sparse_scan, 18, 18, 1.2, 1.0);
+    missing_imu.controller.have_imu = false;
+    stale_imu_runner.step_with_observation(missing_imu, 0.1, false);
+    if (stale_imu_runner.history().back().body_yaw_rate_source != 0.0 ||
+        stale_imu_runner.history().back().imu_sample_new != 0.0) {
+        return fail("absent IMU was accepted through a fresh controller timestamp");
+    }
+
+    // If one encoder advances and the other stays at zero, briefly hold the
+    // healthy side while pulsing the stalled side. Otherwise the healthy side
+    // drags the chassis into the long arc seen at the end of report 224457.
+    thesis_sim::HardwarePlannerRunner one_wheel_stall_runner(
+        exploration_world, bridge_options, direct_config);
+    bool saw_isolated_right_breakaway = false;
+    for (int step = 0; step < 24; ++step) {
+        one_wheel_stall_runner.step_with_observation(
+            make_observation(
+                21.5 + 0.10 * step,
+                sparse_scan,
+                step * 3,
+                0,
+                0.0,
+                0.0),
+            0.10,
+            false);
+        const auto& command = one_wheel_stall_runner.last_command();
+        saw_isolated_right_breakaway = saw_isolated_right_breakaway ||
+            (one_wheel_stall_runner.diagnostics().stall_boost_active &&
+             command.target_right_wheel_speed_mps > 0.010 &&
+             command.pwm_left == 0 &&
+             command.pwm_right >= direct_config.pwm.start_motion_pwm);
+    }
+    if (!saw_isolated_right_breakaway) {
+        return fail("stalled right wheel was not pulsed without dragging the healthy left wheel");
+    }
+
+    const double right_stall_samples = one_wheel_stall_runner.history().back().right_wheel_stall_cycles;
+    auto duplicate_stall = make_observation(23.8, sparse_scan, 23 * 3, 0, 0.0, 0.0);
+    duplicate_stall.host_timestamp_s += 0.02;
+    one_wheel_stall_runner.step_with_observation(duplicate_stall, 0.02, false);
+    if (one_wheel_stall_runner.history().back().right_wheel_stall_cycles != right_stall_samples) {
+        return fail("cached encoder packet altered the single-wheel stall streak");
     }
 
     // Reproduce the final pose of hardware report 20260818_212510_695. The
@@ -712,6 +926,66 @@ int main() {
         return fail("debug start-matching toggle did not release the interlock");
     }
 
+    // Observe the same opening off-centre, then rotate the whole fixture and
+    // robot together. The aperture normal must follow the wall, not the bearing from
+    // the robot to its midpoint. Check persistence over repeated observations.
+    for (double rotation : {0.0, 0.35, -0.35}) {
+        auto oblique_world = exploration_world;
+        oblique_world.set_start({0.22, 0.50});
+        oblique_world.set_start_heading(rotation);
+        auto oblique_fixture = physical_fixture;
+        oblique_fixture.set_bounds({-3.0, -3.0, 3.0, 3.0});
+        oblique_fixture.editable_obstacles() = {
+            {0.49, -3.0, 0.53, 0.42}, {0.49, 0.78, 0.53, 3.0}};
+        auto oblique_scan = make_scan(oblique_fixture, oblique_world.start(), 0.0, config);
+        thesis_sim::HardwarePlannerRunner oblique_runner(
+            oblique_world, bridge_options, config);
+        const thesis_sim::Vec2 sensor_origin{
+            oblique_world.start().x + std::cos(rotation) * config.localization.lidar_x_offset -
+                std::sin(rotation) * config.localization.lidar_y_offset,
+            oblique_world.start().y + std::sin(rotation) * config.localization.lidar_x_offset +
+                std::cos(rotation) * config.localization.lidar_y_offset};
+        const double aperture_dx = 0.49 - oblique_world.start().x - config.localization.lidar_x_offset;
+        const double aperture_dy = 0.60 - oblique_world.start().y - config.localization.lidar_y_offset;
+        const thesis_sim::Vec2 expected_aperture{
+            sensor_origin.x + std::cos(rotation) * aperture_dx - std::sin(rotation) * aperture_dy,
+            sensor_origin.y + std::sin(rotation) * aperture_dx + std::cos(rotation) * aperture_dy};
+        int observed_normals = 0;
+        for (int step = 0; step < 12; ++step) {
+            oblique_runner.step_with_observation(
+                make_observation(90.0 + 0.1 * step, oblique_scan), 0.1, false);
+            for (const auto& spec : oblique_runner.gate_specs()) {
+                // Other scan sectors may contain separate openings at the
+                // fixture boundaries; select the known two-post aperture.
+                if (std::hypot(spec.anchor_position.x - expected_aperture.x,
+                               spec.anchor_position.y - expected_aperture.y) > 0.06) {
+                    continue;
+                }
+                const double dx = spec.position.x - spec.anchor_position.x;
+                const double dy = spec.position.y - spec.anchor_position.y;
+                if (std::hypot(dx, dy) < 0.029) {
+                    continue;
+                }
+                const double heading_error = std::atan2(
+                    std::sin(spec.heading_hint - rotation),
+                    std::cos(spec.heading_hint - rotation));
+                if (std::abs(heading_error) > 0.06 ||
+                    dx * std::cos(rotation) + dy * std::sin(rotation) < 0.029) {
+                    std::cerr << "oblique rotation=" << rotation << " heading=" << spec.heading_hint
+                              << " target=" << spec.position.x << ',' << spec.position.y
+                              << " anchor=" << spec.anchor_position.x << ',' << spec.anchor_position.y << '\n';
+                    return fail("gate terminal heading followed the view bearing instead of aperture normal");
+                }
+                ++observed_normals;
+            }
+        }
+        if (observed_normals < 3) {
+            std::cerr << "oblique rotation=" << rotation << " observed=" << observed_normals
+                      << " candidates=" << oblique_runner.gate_specs().size() << '\n';
+            return fail("oblique aperture was not retained across observations");
+        }
+    }
+
     // Feed the same planner a scan from the physical two-wall gate fixture.
     // A confirmed aperture must replace any active frontier and become the
     // clothoid/MPC control source.
@@ -882,6 +1156,8 @@ int main() {
     bool saw_rear_candidate = false;
     bool rear_candidate_allowed_forward = false;
     bool rear_candidate_started_gate_mpc = false;
+    bool rear_candidate_was_classified = false;
+    bool rear_candidate_kept_straight = false;
     for (int step = 0; step < 30; ++step) {
         const auto rear_gate_scan = make_scan(
             rear_gate_fixture,
@@ -904,6 +1180,14 @@ int main() {
         rear_candidate_started_gate_mpc = rear_candidate_started_gate_mpc ||
             rear_gate_runner.diagnostics().control_source ==
                 thesis_sim::HardwareControlSource::GateMpc;
+        rear_candidate_was_classified = rear_candidate_was_classified ||
+            rear_gate_runner.diagnostics().gate_candidate_status ==
+                thesis_sim::GateCandidateStatus::RearSectorRejected;
+        rear_candidate_kept_straight = rear_candidate_kept_straight ||
+            (rear_gate_runner.diagnostics().candidate_gates > 0 &&
+             rear_gate_runner.diagnostics().control_source ==
+                 thesis_sim::HardwareControlSource::StraightExploration &&
+             std::abs(rear_gate_runner.last_command().target_yaw_rate) <= 0.015);
     }
     if (!saw_rear_candidate) {
         std::cerr << "rear_gate_debug state="
@@ -936,6 +1220,83 @@ int main() {
                   << " ref=" << rear_gate_runner.diagnostics().planner_has_reference
                   << '\n';
         return fail("an unreachable rear gate candidate still blocked forward exploration");
+    }
+    if (!rear_candidate_was_classified || !rear_candidate_kept_straight) {
+        return fail("rear gate was not rejected while preserving straight exploration");
+    }
+
+    // A gate just outside the clothoid-reachable sector may be approached by
+    // a bounded forward arc, but it must not monopolize exploration forever.
+    // With a fixed pose it stays near 100 degrees: acquisition must time out
+    // and control must return to unconstrained free-space exploration.
+    thesis_sim::HardwarePlannerConfig acquisition_config = direct_config;
+    acquisition_config.gap_extraction.gate_search_acquire_timeout_s = 0.80;
+    acquisition_config.gap_extraction.gate_search_acquire_cooldown_s = 0.80;
+    thesis_sim::WorldMap side_gate_world = exploration_world;
+    side_gate_world.set_start({1.02, 0.60});
+    side_gate_world.set_start_heading(80.0 * kPi / 180.0);
+    thesis_sim::HardwarePlannerRunner side_gate_runner(
+        side_gate_world, bridge_options, acquisition_config);
+    bool saw_bounded_acquisition = false;
+    bool saw_acquisition_timeout = false;
+    bool saw_free_exploration_after_timeout = false;
+    bool side_gate_started_mpc = false;
+    for (int step = 0; step < 35; ++step) {
+        const auto side_gate_scan = make_scan(
+            rear_gate_fixture,
+            side_gate_runner.estimate().position,
+            side_gate_runner.estimate().yaw,
+            acquisition_config);
+        side_gate_runner.step_with_observation(
+            make_observation(39.0 + 0.10 * step, side_gate_scan),
+            0.10,
+            false);
+        const auto& diagnostics = side_gate_runner.diagnostics();
+        const auto& command = side_gate_runner.last_command();
+        saw_bounded_acquisition = saw_bounded_acquisition ||
+            (diagnostics.gate_candidate_status ==
+                 thesis_sim::GateCandidateStatus::OutsideReachableSector &&
+             diagnostics.gate_acquisition_active &&
+             std::abs(command.target_yaw_rate) <=
+                 acquisition_config.gap_extraction.gate_search_acquire_max_yaw_rate + 1e-6);
+        saw_acquisition_timeout = saw_acquisition_timeout ||
+            diagnostics.gate_candidate_status ==
+                thesis_sim::GateCandidateStatus::AcquisitionTimedOut;
+        saw_free_exploration_after_timeout = saw_free_exploration_after_timeout ||
+            (saw_acquisition_timeout &&
+             !diagnostics.gate_acquisition_active &&
+             (diagnostics.control_source ==
+                  thesis_sim::HardwareControlSource::StraightExploration ||
+              diagnostics.control_source ==
+                  thesis_sim::HardwareControlSource::ForwardSearch) &&
+             command.target_speed > 1e-4 &&
+             !diagnostics.planner_has_reference);
+        side_gate_started_mpc = side_gate_started_mpc ||
+            diagnostics.control_source == thesis_sim::HardwareControlSource::GateMpc;
+    }
+    if (!saw_bounded_acquisition || !saw_acquisition_timeout ||
+        !saw_free_exploration_after_timeout || side_gate_started_mpc) {
+        std::cerr << "side_gate_debug acquisition=" << saw_bounded_acquisition
+                  << " timeout=" << saw_acquisition_timeout
+                  << " free_after_timeout=" << saw_free_exploration_after_timeout
+                  << " mpc=" << side_gate_started_mpc
+                  << " candidates=" << side_gate_runner.diagnostics().candidate_gates
+                  << " raw=" << side_gate_runner.diagnostics().raw_gate_candidates
+                  << " heading_deg="
+                  << side_gate_runner.diagnostics().candidate_gate_heading_error_rad *
+                         180.0 / kPi
+                  << " status="
+                  << thesis_sim::gate_candidate_status_name(
+                         side_gate_runner.diagnostics().gate_candidate_status)
+                  << " state="
+                  << thesis_sim::unstructured_exploration_state_name(
+                         side_gate_runner.diagnostics().exploration_state)
+                  << " control="
+                  << thesis_sim::hardware_control_source_name(
+                         side_gate_runner.diagnostics().control_source)
+                  << " yaw_rate=" << side_gate_runner.last_command().target_yaw_rate
+                  << '\n';
+        return fail("side-gate acquisition did not time out back to free exploration");
     }
 
     thesis_sim::WorldMap crossing_world = exploration_world;

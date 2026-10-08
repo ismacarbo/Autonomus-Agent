@@ -7,6 +7,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
     diagnostics_.dynamic_gap_gates = use_dynamic_gap_gates_;
     diagnostics_.candidate_gates = 0;
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
+    raw_gate_candidate_count_ = 0;
+    diagnostics_.raw_gate_candidates = 0;
     if (!use_dynamic_gap_gates_) {
         dynamic_gap_tracks_.clear();
         return;
@@ -622,6 +624,42 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         config_.gap_extraction.gap_goal_acceptance_radius_m,
         std::max(config_.gap_extraction.gap_goal_tolerance_m * 1.15, 0.24));
 
+    // Intersect the forward normal of the measured aperture with the usable
+    // range circle. A clamped target must stay beyond the aperture; a point
+    // in front of it would reverse the terminal heading and crossing plane.
+    const auto aperture_target = [&](const Vec2& left, const Vec2& right,
+                                     const Vec2& center, double desired_range,
+                                     double range_cap) -> std::optional<Vec2> {
+        const double width = distance(left, right);
+        if (width <= 1e-6) {
+            return std::nullopt;
+        }
+        Vec2 normal{-(right.y - left.y) / width, (right.x - left.x) / width};
+        const Vec2 approach{center.x - lidar_origin.x, center.y - lidar_origin.y};
+        double projection = dot_product(approach, normal);
+        if (projection < 0.0) {
+            normal.x = -normal.x;
+            normal.y = -normal.y;
+            projection = -projection;
+        }
+        const double radius = distance(lidar_origin, center);
+        if (projection < 0.15 * radius) {
+            return std::nullopt;
+        }
+        const double discriminant = projection * projection +
+            range_cap * range_cap - radius * radius;
+        if (discriminant <= 0.0) {
+            return std::nullopt;
+        }
+        const double max_advance = std::sqrt(discriminant) - projection;
+        constexpr double min_advance = 0.03;
+        if (max_advance < min_advance) {
+            return std::nullopt;
+        }
+        const double advance = clamp_value(desired_range - radius, min_advance, max_advance);
+        return Vec2{center.x + advance * normal.x, center.y + advance * normal.y};
+    };
+
     auto try_add_candidate = [&](const Vec2& target,
                                  const Vec2& crossing_point,
                                  double base_score,
@@ -993,10 +1031,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             nominal_target_distance,
             min_target_distance,
             target_distance_cap);
-        const Vec2 target{
-            lidar_origin.x + std::cos(center_world_angle) * target_distance,
-            lidar_origin.y + std::sin(center_world_angle) * target_distance,
-        };
+        const auto target = aperture_target(left_boundary.hit, right_boundary.hit,
+                                            aperture_center, target_distance,
+                                            target_distance_cap);
+        if (!target.has_value()) {
+            return;
+        }
         const double width_score = clamp_value(
             (gap_width - required_gap_width) / std::max(required_gap_width, 0.05),
             0.0,
@@ -1014,7 +1054,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             0.0,
             1.0);
         try_add_candidate(
-            target,
+            *target,
             aperture_center,
             range_jump_bonus + 1.80 * width_score + 0.85 * depth_score +
                 1.30 * goal_alignment + 0.90 * forward_alignment +
@@ -1136,10 +1176,12 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             nominal_target_distance,
             min_target_distance,
             target_distance_cap);
-        const Vec2 target{
-            lidar_origin.x + std::cos(center_world_angle) * target_distance,
-            lidar_origin.y + std::sin(center_world_angle) * target_distance,
-        };
+        const auto target = aperture_target(left_boundary.hit, right_boundary.hit,
+                                            aperture_center, target_distance,
+                                            target_distance_cap);
+        if (!target.has_value()) {
+            return;
+        }
         const double width_score = clamp_value(
             (gap_width - required_gap_width) / std::max(required_gap_width, 0.05),
             0.0,
@@ -1162,7 +1204,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             0.0,
             1.0);
         try_add_candidate(
-            target,
+            *target,
             aperture_center,
             range_jump_bonus + 1.80 * width_score + 0.85 * depth_score +
                 1.30 * goal_alignment + 0.90 * forward_alignment +
@@ -1363,6 +1405,8 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
+    raw_gate_candidate_count_ = static_cast<int>(candidates.size());
+    diagnostics_.raw_gate_candidates = raw_gate_candidate_count_;
     if (candidates.empty()) {
         for (DynamicGapTrack& track : dynamic_gap_tracks_) {
             ++track.misses;
@@ -1397,7 +1441,6 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             grid_segment_is_clear(local_grid, lidar_origin, persisted_spec->position) &&
             scan_supports_target(persisted_spec->position, scan)) {
             GateSpec spec = *persisted_spec;
-            spec.heading_hint = angle_to(lidar_origin, spec.position);
             gate_specs_.push_back(spec);
 
             gate g = *persisted_gate;
@@ -1420,6 +1463,13 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 continue;
             }
 
+            // Smooth the aperture and its target together, retaining the normal.
+            if (candidate.crossing_point_valid) {
+                candidate.crossing_point.x = 0.35 * persisted_spec->anchor_position.x +
+                    0.65 * candidate.crossing_point.x;
+                candidate.crossing_point.y = 0.35 * persisted_spec->anchor_position.y +
+                    0.65 * candidate.crossing_point.y;
+            }
             candidate.target.x = 0.35 * persisted_spec->position.x + 0.65 * candidate.target.x;
             candidate.target.y = 0.35 * persisted_spec->position.y + 0.65 * candidate.target.y;
             candidate.center_world_angle = angle_to(lidar_origin, candidate.target);
@@ -1622,7 +1672,9 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         spec.motion_amplitude = {0.0, 0.0};
         spec.motion_frequency_hz = 0.0;
         spec.motion_phase_rad = 0.0;
-        spec.heading_hint = candidate.center_world_angle;
+        spec.heading_hint = candidate.crossing_point_valid
+            ? angle_to(candidate.crossing_point, candidate.target)
+            : candidate.center_world_angle;
         spec.final = false;
         gate_specs_.push_back(spec);
 

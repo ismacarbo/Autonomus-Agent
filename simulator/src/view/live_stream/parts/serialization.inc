@@ -22,7 +22,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 13U;
+constexpr std::uint16_t kPacketVersion = 15U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 2U;
 constexpr std::uint16_t kPacketHello = 0U;
@@ -541,6 +541,32 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.yaw_rate_feedback_measurement);
     write_pod(out, sample.locked_gate_reference_failure_streak);
     write_pod(out, sample.gate_reference_grace_active);
+    write_pod(out, sample.imu_yaw_rate_from_yaw);
+    write_pod(out, sample.imu_yaw_rate_consistency_error);
+    write_pod(out, sample.imu_yaw_rate_fallback_active);
+    write_pod(out, sample.raw_gate_candidates);
+    write_pod(out, sample.candidate_gate_heading_error_deg);
+    write_pod(out, sample.candidate_gate_track_score);
+    write_pod(out, sample.candidate_gate_track_hits);
+    write_pod(out, sample.candidate_gate_track_misses);
+    write_pod(out, sample.candidate_gate_width_m);
+    write_pod(out, sample.candidate_gate_status);
+    write_pod(out, sample.gate_acquisition_active);
+    write_pod(out, sample.controller_imu_yaw);
+    write_pod(out, sample.controller_imu_yaw_rate);
+    write_pod(out, sample.controller_imu_ms);
+    write_pod(out, sample.controller_encoder_ms);
+    write_pod(out, sample.controller_encoder_packet_dt_ms);
+    write_pod(out, sample.body_yaw_rate_measurement);
+    write_pod(out, sample.body_yaw_rate_source);
+    write_pod(out, sample.imu_sample_new);
+    write_pod(out, sample.encoder_sample_new);
+    write_pod(out, sample.encoder_sample_valid);
+    write_pod(out, sample.controller_firmware_major);
+    write_pod(out, sample.controller_firmware_minor);
+    write_pod(out, sample.locked_gate_heading_rad);
+    write_pod(out, sample.locked_gate_crossing_x);
+    write_pod(out, sample.locked_gate_crossing_y);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
@@ -647,7 +673,33 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->planner_target_yaw_rate) &&
            read_pod(data, offset, &sample->yaw_rate_feedback_measurement) &&
            read_pod(data, offset, &sample->locked_gate_reference_failure_streak) &&
-           read_pod(data, offset, &sample->gate_reference_grace_active);
+           read_pod(data, offset, &sample->gate_reference_grace_active) &&
+           read_pod(data, offset, &sample->imu_yaw_rate_from_yaw) &&
+           read_pod(data, offset, &sample->imu_yaw_rate_consistency_error) &&
+           read_pod(data, offset, &sample->imu_yaw_rate_fallback_active) &&
+           read_pod(data, offset, &sample->raw_gate_candidates) &&
+           read_pod(data, offset, &sample->candidate_gate_heading_error_deg) &&
+           read_pod(data, offset, &sample->candidate_gate_track_score) &&
+           read_pod(data, offset, &sample->candidate_gate_track_hits) &&
+           read_pod(data, offset, &sample->candidate_gate_track_misses) &&
+           read_pod(data, offset, &sample->candidate_gate_width_m) &&
+           read_pod(data, offset, &sample->candidate_gate_status) &&
+           read_pod(data, offset, &sample->gate_acquisition_active) &&
+           read_pod(data, offset, &sample->controller_imu_yaw) &&
+           read_pod(data, offset, &sample->controller_imu_yaw_rate) &&
+           read_pod(data, offset, &sample->controller_imu_ms) &&
+           read_pod(data, offset, &sample->controller_encoder_ms) &&
+           read_pod(data, offset, &sample->controller_encoder_packet_dt_ms) &&
+           read_pod(data, offset, &sample->body_yaw_rate_measurement) &&
+           read_pod(data, offset, &sample->body_yaw_rate_source) &&
+           read_pod(data, offset, &sample->imu_sample_new) &&
+           read_pod(data, offset, &sample->encoder_sample_new) &&
+           read_pod(data, offset, &sample->encoder_sample_valid) &&
+           read_pod(data, offset, &sample->controller_firmware_major) &&
+           read_pod(data, offset, &sample->controller_firmware_minor) &&
+           read_pod(data, offset, &sample->locked_gate_heading_rad) &&
+           read_pod(data, offset, &sample->locked_gate_crossing_x) &&
+           read_pod(data, offset, &sample->locked_gate_crossing_y);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {

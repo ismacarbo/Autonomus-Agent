@@ -1034,7 +1034,8 @@ HardwareThesisMetrics summarize_hardware_thesis_metrics(const HardwareViewerStat
         if (sample.min_lidar > 0.0) {
             metrics.min_clearance_m = std::min(metrics.min_clearance_m, sample.min_lidar);
         }
-        if (metrics.time_to_goal_s < 0.0 && sample.distance_to_goal <= 1e-3) {
+        if (metrics.time_to_goal_s < 0.0 &&
+            sample.distance_to_goal >= 0.0 && sample.distance_to_goal <= 1e-3) {
             metrics.time_to_goal_s = sample.time;
         }
         if (ticks_to_distance > 0.0) {

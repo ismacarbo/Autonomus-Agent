@@ -37,7 +37,7 @@ void disableWatchdogEarly(void) {
 
 const long SERIAL_BAUD = 115200;
 const uint8_t FW_MAJOR = 1;
-const uint8_t FW_MINOR = 4;
+const uint8_t FW_MINOR = 5;
 const bool BOOT_DIAG_ASCII = true;
 
 const uint16_t BNO080_REPORT_INTERVAL_MS = 20U;
@@ -189,6 +189,9 @@ float imu_raw_yaw_rad = 0.0f;
 float yaw_rad = 0.0f;
 float yaw_rate_rad_s = 0.0f;
 uint8_t imu_valid_frames = 0U;
+uint32_t last_orientation_report_ms = 0U;
+uint32_t last_gyro_report_ms = 0U;
+uint32_t last_accel_report_ms = 0U;
 int16_t acc_x_raw = 0;
 int16_t acc_y_raw = 0;
 int16_t acc_z_raw = 0;
@@ -691,35 +694,50 @@ void update_velocity_control() {
 void update_imu() {
   if (!imu_present) return;
   uint32_t now = millis();
-  if (!imu.dataAvailable()) return;
+  const uint16_t report_id = imu.getReadings();
+  if (report_id == 0U) return;
+  bool fresh_motion_report = false;
 
-  const float raw_yaw = imu.getYaw();
-  const float gyro_z = imu.getGyroZ();
-  const float acc_x = imu.getAccelX();
-  const float acc_y = imu.getAccelY();
-  const float acc_z = imu.getAccelZ();
-
-  if (finite_float(acc_x)) acc_x_raw = clamp_i16_long(lroundf(acc_x * 1000.0f));
-  if (finite_float(acc_y)) acc_y_raw = clamp_i16_long(lroundf(acc_y * 1000.0f));
-  if (finite_float(acc_z)) acc_z_raw = clamp_i16_long(lroundf(acc_z * 1000.0f));
-
-  if (finite_float(gyro_z)) {
-    yaw_rate_rad_s = BNO080_GYRO_Z_SIGN * gyro_z;
-    gyro_z_raw = clamp_i16_long(lroundf(yaw_rate_rad_s * 1000.0f));
+  // getReadings() identifies which BNO080 feature actually changed. Reading
+  // every cached getter after dataAvailable() made an accelerometer packet
+  // look like a fresh yaw/gyro sample and hid stale or mutually inconsistent
+  // orientation data from the host.
+  if (report_id == SENSOR_REPORTID_GAME_ROTATION_VECTOR ||
+      report_id == SENSOR_REPORTID_AR_VR_STABILIZED_GAME_ROTATION_VECTOR) {
+    const float raw_yaw = imu.getYaw();
+    if (finite_float(raw_yaw)) {
+      imu_raw_yaw_rad = raw_yaw;
+      yaw_rad = wrap_pi(BNO080_YAW_SIGN * (raw_yaw - imu_yaw_zero_rad));
+      last_orientation_report_ms = now;
+      fresh_motion_report = true;
+      if (imu_valid_frames < BNO080_MIN_VALID_FRAMES) {
+        ++imu_valid_frames;
+      }
+      if (imu_valid_frames >= BNO080_MIN_VALID_FRAMES) {
+        imu_ready = true;
+      }
+    }
+  } else if (report_id == SENSOR_REPORTID_GYROSCOPE) {
+    const float gyro_z = imu.getGyroZ();
+    if (finite_float(gyro_z)) {
+      yaw_rate_rad_s = BNO080_GYRO_Z_SIGN * gyro_z;
+      gyro_z_raw = clamp_i16_long(lroundf(yaw_rate_rad_s * 1000.0f));
+      last_gyro_report_ms = now;
+      fresh_motion_report = true;
+    }
+  } else if (report_id == SENSOR_REPORTID_ACCELEROMETER) {
+    const float acc_x = imu.getAccelX();
+    const float acc_y = imu.getAccelY();
+    const float acc_z = imu.getAccelZ();
+    if (finite_float(acc_x)) acc_x_raw = clamp_i16_long(lroundf(acc_x * 1000.0f));
+    if (finite_float(acc_y)) acc_y_raw = clamp_i16_long(lroundf(acc_y * 1000.0f));
+    if (finite_float(acc_z)) acc_z_raw = clamp_i16_long(lroundf(acc_z * 1000.0f));
+    last_accel_report_ms = now;
   }
 
-  if (finite_float(raw_yaw)) {
-    imu_raw_yaw_rad = raw_yaw;
-    yaw_rad = wrap_pi(BNO080_YAW_SIGN * (raw_yaw - imu_yaw_zero_rad));
-    if (imu_valid_frames < BNO080_MIN_VALID_FRAMES) {
-      ++imu_valid_frames;
-    }
-    if (imu_valid_frames >= BNO080_MIN_VALID_FRAMES) {
-      imu_ready = true;
-    }
+  if (fresh_motion_report) {
+    last_imu_ms = now;
   }
-
-  last_imu_ms = now;
 }
 
 bool zero_bno080_yaw_reference(uint16_t wait_ms) {
@@ -1168,6 +1186,12 @@ void send_imu_telemetry() {
 
   static uint32_t last_tx = 0U;
   uint32_t now = millis();
+  const uint32_t max_report_age_ms = 5U * BNO080_REPORT_INTERVAL_MS;
+  if (last_orientation_report_ms == 0U || last_gyro_report_ms == 0U ||
+      (uint32_t)(now - last_orientation_report_ms) > max_report_age_ms ||
+      (uint32_t)(now - last_gyro_report_ms) > max_report_age_ms) {
+    return;
+  }
   if ((uint32_t)(now - last_tx) < imu_telemetry_ms) return;
   last_tx = now;
 
@@ -1306,7 +1330,10 @@ void setup() {
     imu_present = true;
     imu_ready = false;
     boot_log(F("bno080-detected"));
-    imu.enableRotationVector(BNO080_REPORT_INTERVAL_MS);
+    // Game Rotation Vector excludes the magnetometer. The normal Rotation
+    // Vector was observed to disagree with gyro Z while the motors were
+    // energised, which is consistent with drivetrain magnetic interference.
+    imu.enableGameRotationVector(BNO080_REPORT_INTERVAL_MS);
     imu.enableGyro(BNO080_REPORT_INTERVAL_MS);
     imu.enableAccelerometer(BNO080_REPORT_INTERVAL_MS);
     boot_log(F("bno080-init"));

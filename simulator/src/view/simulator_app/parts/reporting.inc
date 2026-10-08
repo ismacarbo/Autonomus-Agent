@@ -315,6 +315,39 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"locked_gate_reference_failure_streak\":"
         << sample.locked_gate_reference_failure_streak
         << ",\"gate_reference_grace_active\":" << sample.gate_reference_grace_active
+        << ",\"imu_yaw_rate_from_yaw\":" << sample.imu_yaw_rate_from_yaw
+        << ",\"imu_yaw_rate_consistency_error\":"
+        << sample.imu_yaw_rate_consistency_error
+        << ",\"imu_yaw_rate_fallback_active\":"
+        << sample.imu_yaw_rate_fallback_active
+        << ",\"raw_gate_candidates\":" << sample.raw_gate_candidates
+        << ",\"candidate_gate_heading_error_deg\":"
+        << sample.candidate_gate_heading_error_deg
+        << ",\"candidate_gate_track_score\":" << sample.candidate_gate_track_score
+        << ",\"candidate_gate_track_hits\":" << sample.candidate_gate_track_hits
+        << ",\"candidate_gate_track_misses\":" << sample.candidate_gate_track_misses
+        << ",\"candidate_gate_width_m\":" << sample.candidate_gate_width_m
+        << ",\"candidate_gate_status\":" << sample.candidate_gate_status
+        << ",\"candidate_gate_status_name\":\""
+        << thesis_sim::gate_candidate_status_name(static_cast<thesis_sim::GateCandidateStatus>(
+               static_cast<int>(sample.candidate_gate_status)))
+        << "\""
+        << ",\"gate_acquisition_active\":" << sample.gate_acquisition_active
+        << ",\"controller_imu_yaw\":" << sample.controller_imu_yaw
+        << ",\"controller_imu_yaw_rate\":" << sample.controller_imu_yaw_rate
+        << ",\"controller_imu_ms\":" << sample.controller_imu_ms
+        << ",\"controller_encoder_ms\":" << sample.controller_encoder_ms
+        << ",\"controller_encoder_packet_dt_ms\":" << sample.controller_encoder_packet_dt_ms
+        << ",\"body_yaw_rate_measurement\":" << sample.body_yaw_rate_measurement
+        << ",\"body_yaw_rate_source\":" << sample.body_yaw_rate_source
+        << ",\"imu_sample_new\":" << sample.imu_sample_new
+        << ",\"encoder_sample_new\":" << sample.encoder_sample_new
+        << ",\"encoder_sample_valid\":" << sample.encoder_sample_valid
+        << ",\"controller_firmware_major\":" << sample.controller_firmware_major
+        << ",\"controller_firmware_minor\":" << sample.controller_firmware_minor
+        << ",\"locked_gate_heading_rad\":" << sample.locked_gate_heading_rad
+        << ",\"locked_gate_crossing_x\":" << sample.locked_gate_crossing_x
+        << ",\"locked_gate_crossing_y\":" << sample.locked_gate_crossing_y
         << "}";
 }
 
@@ -702,7 +735,11 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
            "exploration_map_source,exploration_state,control_source,selected_frontier_valid,selected_frontier_x,selected_frontier_y,"
            "global_free_cells,global_occupied_cells,start_matching_enabled,start_matching_complete,start_matching_accepted,start_matching_confidence,"
            "slam_toolbox_enabled,slam_toolbox_connected,slam_map_updates,slam_graph_nodes,slam_loop_edges,slam_map_age_s,"
-           "planner_target_yaw_rate,yaw_rate_feedback_measurement,locked_gate_reference_failure_streak,gate_reference_grace_active\n";
+           "planner_target_yaw_rate,yaw_rate_feedback_measurement,locked_gate_reference_failure_streak,gate_reference_grace_active,"
+           "imu_yaw_rate_from_yaw,imu_yaw_rate_consistency_error,imu_yaw_rate_fallback_active,raw_gate_candidates,"
+           "candidate_gate_heading_error_deg,candidate_gate_track_score,candidate_gate_track_hits,candidate_gate_track_misses,"
+           "candidate_gate_width_m,candidate_gate_status,candidate_gate_status_name,gate_acquisition_active,"
+           "controller_imu_yaw,controller_imu_yaw_rate,controller_imu_ms,controller_encoder_ms,controller_encoder_packet_dt_ms,body_yaw_rate_measurement,body_yaw_rate_source,imu_sample_new,encoder_sample_new,encoder_sample_valid,controller_firmware_major,controller_firmware_minor,locked_gate_heading_rad,locked_gate_crossing_x,locked_gate_crossing_y\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
             << sample.position_x << ','
@@ -792,7 +829,35 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.planner_target_yaw_rate << ','
             << sample.yaw_rate_feedback_measurement << ','
             << sample.locked_gate_reference_failure_streak << ','
-            << sample.gate_reference_grace_active << '\n';
+            << sample.gate_reference_grace_active << ','
+            << sample.imu_yaw_rate_from_yaw << ','
+            << sample.imu_yaw_rate_consistency_error << ','
+            << sample.imu_yaw_rate_fallback_active << ','
+            << sample.raw_gate_candidates << ','
+            << sample.candidate_gate_heading_error_deg << ','
+            << sample.candidate_gate_track_score << ','
+            << sample.candidate_gate_track_hits << ','
+            << sample.candidate_gate_track_misses << ','
+            << sample.candidate_gate_width_m << ','
+            << sample.candidate_gate_status << ','
+            << thesis_sim::gate_candidate_status_name(static_cast<thesis_sim::GateCandidateStatus>(
+                   static_cast<int>(sample.candidate_gate_status))) << ','
+            << sample.gate_acquisition_active << ','
+            << sample.controller_imu_yaw << ','
+            << sample.controller_imu_yaw_rate << ','
+            << sample.controller_imu_ms << ','
+            << sample.controller_encoder_ms << ','
+            << sample.controller_encoder_packet_dt_ms << ','
+            << sample.body_yaw_rate_measurement << ','
+            << sample.body_yaw_rate_source << ','
+            << sample.imu_sample_new << ','
+            << sample.encoder_sample_new << ','
+            << sample.encoder_sample_valid << ','
+            << sample.controller_firmware_major << ','
+            << sample.controller_firmware_minor << ','
+            << sample.locked_gate_heading_rad << ','
+            << sample.locked_gate_crossing_x << ','
+            << sample.locked_gate_crossing_y << '\n';
     }
     return true;
 }

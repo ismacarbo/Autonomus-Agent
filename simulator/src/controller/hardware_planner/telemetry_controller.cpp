@@ -22,8 +22,7 @@ double wrap_angle(double angle) {
 
 }  // namespace
 
-void HardwarePlannerRunner::push_history() {
-    const RealRobotObservation& observation = bridge_.observation();
+void HardwarePlannerRunner::push_history(const RealRobotObservation& observation) {
     const std::int16_t controller_pwm_left = observation.have_controller_telemetry
                                                  ? observation.controller.pwm_l
                                                  : static_cast<std::int16_t>(0);
@@ -198,6 +197,32 @@ void HardwarePlannerRunner::push_history() {
         last_command_.yaw_rate_feedback_measurement,
         static_cast<double>(locked_gap_reference_failure_streak_),
         gate_reference_grace_active_ ? 1.0 : 0.0,
+        imu_yaw_rate_from_yaw_,
+        imu_yaw_rate_consistency_error_,
+        imu_yaw_rate_fallback_active_ ? 1.0 : 0.0,
+        static_cast<double>(raw_gate_candidate_count_),
+        candidate_gate_heading_error_rad_ * 180.0 / kPi,
+        candidate_gate_track_score_,
+        static_cast<double>(candidate_gate_track_hits_),
+        static_cast<double>(candidate_gate_track_misses_),
+        candidate_gate_width_m_,
+        static_cast<double>(static_cast<int>(gate_candidate_status_)),
+        gate_acquisition_active_ ? 1.0 : 0.0,
+        observation.controller.yaw_mrad * 0.001,
+        observation.controller.yaw_rate_mrad_s * 0.001,
+        static_cast<double>(observation.controller.imu_ms),
+        static_cast<double>(observation.controller.encoder_ms),
+        static_cast<double>(observation.controller.enc_dt_ms),
+        body_yaw_rate_measurement_,
+        body_yaw_rate_measurement_valid_ ? (imu_yaw_rate_fallback_active_ ? 2.0 : 1.0) : 0.0,
+        imu_sample_new_ ? 1.0 : 0.0,
+        encoder_snapshot_fresh_ ? 1.0 : 0.0,
+        encoder_snapshot_valid_ ? 1.0 : 0.0,
+        static_cast<double>(observation.controller.fw_major),
+        static_cast<double>(observation.controller.fw_minor),
+        std::atan2(locked_gap_approach_direction_.y, locked_gap_approach_direction_.x),
+        locked_gap_crossing_point_.x,
+        locked_gap_crossing_point_.y,
     });
 
     if (static_cast<int>(history_.size()) > config_.max_history) {

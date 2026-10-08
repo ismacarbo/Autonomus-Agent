@@ -60,16 +60,35 @@ void HardwarePlannerRunner::mitigate_compact_unstructured_encoder_slip(
 }
 
 void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObservation& observation, double dt) {
+    body_yaw_rate_measurement_valid_ = false;
+    imu_sample_new_ = false;
+    encoder_snapshot_fresh_ = false;
+    encoder_snapshot_valid_ = false;
+    latest_controller_left_encoder_delta_ = 0;
+    latest_controller_right_encoder_delta_ = 0;
+    latest_controller_encoder_dt_ms_ = 0.0;
     if (!observation.have_controller_telemetry) {
+        encoder_ticks_initialized_ = false;
+        encoder_ready_streak_ = 0;
+        measured_wheel_speeds_valid_ = false;
         return;
     }
 
     const ControllerTelemetry& telemetry = observation.controller;
     const double imu_yaw = static_cast<double>(telemetry.yaw_mrad) / 1000.0;
-    last_raw_imu_yaw_ = imu_yaw;
-    have_raw_imu_yaw_ = true;
+    const double imu_age = observation.host_timestamp_s - telemetry.imu_host_timestamp_s;
+    const bool imu_feedback_fresh =
+        telemetry.have_imu && telemetry.imu_host_timestamp_s > 0.0 &&
+        imu_age >= -0.02 &&
+        imu_age <= std::max(config_.localization.max_imu_feedback_age_s, 0.02);
+    imu_sample_new_ = imu_feedback_fresh &&
+        (!have_accepted_imu_yaw_ || telemetry.imu_ms != last_accepted_imu_ms_);
+    if (imu_sample_new_) {
+        last_raw_imu_yaw_ = imu_yaw;
+        have_raw_imu_yaw_ = true;
+    }
 
-    if (!yaw_offset_initialized_) {
+    if (imu_sample_new_ && !yaw_offset_initialized_) {
         yaw_offset_ = wrap_angle(estimator_.state().yaw - imu_yaw);
         yaw_offset_initialized_ = true;
     }
@@ -78,49 +97,115 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     const double measured_yaw_rate_raw = static_cast<double>(telemetry.yaw_rate_mrad_s) / 1000.0;
     // Hardware IMU spikes above the platform's physical yaw-rate envelope are
     // usually transients; keep them from destabilizing the EKF and controller.
-    const double measured_yaw_rate = clamp_value(
+    double measured_yaw_rate = clamp_value(
         measured_yaw_rate_raw,
         -1.5 * config_.drive.max_yaw_rate,
         1.5 * config_.drive.max_yaw_rate);
-
-    if (have_accepted_imu_yaw_ && telemetry.imu_ms != last_accepted_imu_ms_) {
-        const double imu_dt =
-            telemetry.imu_ms > last_accepted_imu_ms_
-                ? clamp_value(static_cast<double>(telemetry.imu_ms - last_accepted_imu_ms_) / 1000.0,
-                              0.005,
-                              0.25)
-                : std::max(dt, 0.005);
+    if (imu_sample_new_ && have_accepted_imu_yaw_) {
+        // Unsigned subtraction also covers the MCU millis() rollover. A reset
+        // or a long interruption rebaselines yaw without differentiating it.
+        const std::uint32_t elapsed_ms = telemetry.imu_ms - last_accepted_imu_ms_;
+        const bool continuous_sample = elapsed_ms > 0U && elapsed_ms <= 1000U;
+        const double imu_dt = continuous_sample ? elapsed_ms * 0.001 : std::max(dt, 0.005);
+        if (!continuous_sample) {
+            yaw_offset_ = wrap_angle(last_accepted_imu_yaw_ - imu_yaw);
+            measured_yaw = last_accepted_imu_yaw_;
+            imu_yaw_rate_from_yaw_ = 0.0;
+            imu_yaw_rate_inconsistent_streak_ = 0;
+            imu_yaw_rate_consistent_streak_ = 0;
+        }
         const double yaw_delta = std::abs(wrap_angle(measured_yaw - last_accepted_imu_yaw_));
         const double expected_delta =
             std::abs(measured_yaw_rate) * imu_dt +
             2.5 * config_.drive.max_yaw_rate * imu_dt;
         const double max_plausible_yaw_step = std::max(0.70, expected_delta + 0.20);
         if (yaw_delta > max_plausible_yaw_step) {
-            // BNO080 rotation-vector yaw can occasionally jump when magnetic
-            // calibration changes. Keep the estimator continuous and absorb
-            // the jump into the IMU-to-world offset.
+            // BNO080 fused yaw can occasionally jump after a fusion reset or
+            // calibration transition. Keep the estimator continuous and
+            // absorb the jump into the IMU-to-world offset.
             yaw_offset_ = wrap_angle(last_accepted_imu_yaw_ - imu_yaw);
             measured_yaw = last_accepted_imu_yaw_;
         }
-    }
-    last_accepted_imu_yaw_ = measured_yaw;
-    last_accepted_imu_ms_ = telemetry.imu_ms;
-    have_accepted_imu_yaw_ = true;
 
-    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
-    if (world_has_structured_reference(world_) && !mixed_gate_active) {
-        update_estimate_from_structured_motion_fallback(telemetry, dt, measured_yaw, measured_yaw_rate);
-        return;
+        const double yaw_rate_from_yaw_raw = clamp_value(
+            wrap_angle(measured_yaw - last_accepted_imu_yaw_) / imu_dt,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
+        const double derivative_tau_s = 0.14;
+        const double derivative_alpha = clamp_value(
+            imu_dt / (derivative_tau_s + imu_dt), 0.0, 1.0);
+        imu_yaw_rate_from_yaw_ += derivative_alpha *
+            (yaw_rate_from_yaw_raw - imu_yaw_rate_from_yaw_);
+        imu_yaw_rate_consistency_error_ =
+            std::abs(measured_yaw_rate - imu_yaw_rate_from_yaw_);
+
+        const bool opposite_rotation =
+            std::abs(measured_yaw_rate) > 0.08 &&
+            std::abs(imu_yaw_rate_from_yaw_) > 0.08 &&
+            measured_yaw_rate * imu_yaw_rate_from_yaw_ < 0.0;
+        const double allowed_disagreement = std::max(
+            0.28,
+            0.55 * std::max(
+                       std::abs(measured_yaw_rate),
+                       std::abs(imu_yaw_rate_from_yaw_)));
+        const bool inconsistent_rate =
+            opposite_rotation ||
+            imu_yaw_rate_consistency_error_ > allowed_disagreement;
+        if (inconsistent_rate) {
+            ++imu_yaw_rate_inconsistent_streak_;
+            imu_yaw_rate_consistent_streak_ = 0;
+        } else {
+            imu_yaw_rate_inconsistent_streak_ =
+                std::max(imu_yaw_rate_inconsistent_streak_ - 1, 0);
+            ++imu_yaw_rate_consistent_streak_;
+        }
+        if (imu_yaw_rate_inconsistent_streak_ >= 3) {
+            imu_yaw_rate_fallback_active_ = true;
+        } else if (imu_yaw_rate_consistent_streak_ >= 8) {
+            imu_yaw_rate_fallback_active_ = false;
+        }
+    }
+
+    if (!imu_feedback_fresh) {
+        imu_yaw_rate_fallback_active_ = true;
+    }
+    if (imu_yaw_rate_fallback_active_ || imu_yaw_rate_inconsistent_streak_ > 0) {
+        // Quarantine suspect gyro frames while the three-frame mode latch is
+        // pending; do not let the PI integrate a known-inconsistent transient.
+        measured_yaw_rate = clamp_value(
+            imu_yaw_rate_from_yaw_,
+            -config_.drive.max_yaw_rate,
+            config_.drive.max_yaw_rate);
+    }
+    diagnostics_.imu_yaw_rate_fallback_active = imu_yaw_rate_fallback_active_;
+    diagnostics_.imu_yaw_rate_from_yaw = imu_yaw_rate_from_yaw_;
+    diagnostics_.imu_yaw_rate_consistency_error = imu_yaw_rate_consistency_error_;
+    body_yaw_rate_measurement_ = measured_yaw_rate;
+    body_yaw_rate_measurement_valid_ = imu_feedback_fresh &&
+        (imu_yaw_rate_fallback_active_ || imu_yaw_rate_inconsistent_streak_ == 0);
+    if (imu_sample_new_) {
+        last_accepted_imu_yaw_ = measured_yaw;
+        last_accepted_imu_ms_ = telemetry.imu_ms;
+        have_accepted_imu_yaw_ = true;
     }
 
     std::int32_t left_delta_ticks = 0;
     std::int32_t right_delta_ticks = 0;
-    update_controller_encoder_snapshot(telemetry, &left_delta_ticks, &right_delta_ticks);
+    update_controller_encoder_snapshot(telemetry, observation.host_timestamp_s,
+                                       &left_delta_ticks, &right_delta_ticks);
 
-    const double encoder_dt =
-        telemetry.enc_dt_ms > 0
-            ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
-            : std::max(dt, 0.01);
+    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    if (world_has_structured_reference(world_) && !mixed_gate_active) {
+        update_estimate_from_structured_motion_fallback(
+            telemetry,
+            dt,
+            measured_yaw,
+            measured_yaw_rate,
+            imu_feedback_fresh);
+        return;
+    }
+
+    const double encoder_dt = latest_controller_encoder_dt_ms_ * 0.001;
     const bool encoder_ready =
         controller_encoder_odometry_usable(telemetry, left_delta_ticks, right_delta_ticks, encoder_dt);
 
@@ -147,12 +232,14 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         measured_wheel_speeds_valid_ = true;
         odom_speed = encoder_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / encoder_dt : 0.0;
         odom_yaw_rate = encoder_dt > 1e-6 ? odom_delta_yaw / encoder_dt : 0.0;
-        mitigate_compact_unstructured_encoder_slip(
-            measured_yaw_rate,
-            measured_left_wheel_speed_,
-            measured_right_wheel_speed_,
-            &odom_speed,
-            &odom_yaw_rate);
+        if (imu_feedback_fresh) {
+            mitigate_compact_unstructured_encoder_slip(
+                measured_yaw_rate,
+                measured_left_wheel_speed_,
+                measured_right_wheel_speed_,
+                &odom_speed,
+                &odom_yaw_rate);
+        }
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
         odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {
@@ -175,7 +262,9 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         }
 
         odom_yaw_rate = clamp_value(
-            std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
+            imu_feedback_fresh
+                ? measured_yaw_rate
+                : last_command_.target_yaw_rate,
             -config_.drive.max_yaw_rate,
             config_.drive.max_yaw_rate);
         const auto [fallback_left_wheel_speed, fallback_right_wheel_speed] =
@@ -184,8 +273,18 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
         measured_right_wheel_speed_ = fallback_right_wheel_speed;
         measured_wheel_speeds_valid_ = false;
     }
-    estimator_.predict(encoder_dt, odom_speed, odom_yaw_rate);
-    estimator_.update_imu(measured_yaw, measured_yaw_rate);
+    // Wheel differences describe drivetrain motion, not body rotation under
+    // slip. Feed the independently validated inertial rate to prediction and
+    // to the actuator loop, including a valid zero-rate measurement.
+    if (imu_feedback_fresh) {
+        odom_yaw_rate = measured_yaw_rate;
+    }
+    if (encoder_ready || !config_.use_encoder_odometry) {
+        estimator_.predict(encoder_ready ? encoder_dt : dt, odom_speed, odom_yaw_rate);
+    }
+    if (imu_sample_new_) {
+        estimator_.update_imu(measured_yaw, measured_yaw_rate);
+    }
     sync_estimate_from_ekf_state();
     if (encoder_ready) {
         stabilize_compact_open_gate_odometry(odom_speed, encoder_dt);
@@ -193,41 +292,56 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
 }
 
 void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerTelemetry& telemetry,
+                                                               double observation_time_s,
                                                                std::int32_t* left_delta_ticks,
                                                                std::int32_t* right_delta_ticks) {
-    if (!encoder_ticks_initialized_) {
-        last_left_encoder_ticks_ = telemetry.ticks_left;
-        last_right_encoder_ticks_ = telemetry.ticks_right;
-        encoder_ticks_initialized_ = true;
-    }
-
-    std::int32_t left_delta = telemetry.ticks_left - last_left_encoder_ticks_;
-    std::int32_t right_delta = telemetry.ticks_right - last_right_encoder_ticks_;
-    last_left_encoder_ticks_ = telemetry.ticks_left;
-    last_right_encoder_ticks_ = telemetry.ticks_right;
-
-    const double encoder_dt =
-        telemetry.enc_dt_ms > 0U
-            ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
-            : std::max(config_.nominal_dt, 0.01);
-    if (!controller_encoder_delta_plausible(left_delta, right_delta, encoder_dt)) {
-        left_delta = 0;
-        right_delta = 0;
+    *left_delta_ticks = 0;
+    *right_delta_ticks = 0;
+    const double age = observation_time_s - telemetry.encoder_host_timestamp_s;
+    if (!telemetry.have_encoder || telemetry.encoder_host_timestamp_s <= 0.0 ||
+        age < -0.02 || age > config_.localization.max_controller_age_s) {
         encoder_ready_streak_ = 0;
+        encoder_ticks_initialized_ = false;
+        return;
     }
-
     latest_controller_left_encoder_ticks_ = telemetry.ticks_left;
     latest_controller_right_encoder_ticks_ = telemetry.ticks_right;
+    if (encoder_ticks_initialized_ && telemetry.encoder_ms == last_encoder_ms_) {
+        // The bridge exposes a cached snapshot: no new distance or stall sample.
+        return;
+    }
+    encoder_snapshot_fresh_ = true;
+    const std::uint32_t elapsed_ms = telemetry.encoder_ms - last_encoder_ms_;
+    // Defined modulo arithmetic for cumulative signed counters at rollover.
+    const auto tick_delta = [](std::int32_t now, std::int32_t before) {
+        const std::uint32_t delta = static_cast<std::uint32_t>(now) -
+                                    static_cast<std::uint32_t>(before);
+        const std::int64_t signed_delta = delta <= 0x7fffffffU
+            ? static_cast<std::int64_t>(delta)
+            : static_cast<std::int64_t>(delta) - 0x100000000LL;
+        return static_cast<std::int32_t>(signed_delta);
+    };
+    const std::int32_t left_delta = tick_delta(telemetry.ticks_left, last_left_encoder_ticks_);
+    const std::int32_t right_delta = tick_delta(telemetry.ticks_right, last_right_encoder_ticks_);
+    const bool continuous_sample = encoder_ticks_initialized_ &&
+        elapsed_ms > 0U && elapsed_ms <= 1000U;
+    last_left_encoder_ticks_ = telemetry.ticks_left;
+    last_right_encoder_ticks_ = telemetry.ticks_right;
+    last_encoder_ms_ = telemetry.encoder_ms;
+    encoder_ticks_initialized_ = true;
+    if (!continuous_sample || !controller_encoders_ready(telemetry) ||
+        encoder_flag_set(telemetry.enc_flags, EncoderFlag::OverflowWarn) ||
+        !controller_encoder_delta_plausible(left_delta, right_delta, elapsed_ms * 0.001)) {
+        encoder_ready_streak_ = 0;
+        return;
+    }
+    // enc_dt_ms belongs only to the last wire packet; totals may span several.
+    latest_controller_encoder_dt_ms_ = static_cast<double>(elapsed_ms);
     latest_controller_left_encoder_delta_ = left_delta;
     latest_controller_right_encoder_delta_ = right_delta;
-    latest_controller_encoder_dt_ms_ = static_cast<double>(telemetry.enc_dt_ms);
-
-    if (left_delta_ticks != nullptr) {
-        *left_delta_ticks = left_delta;
-    }
-    if (right_delta_ticks != nullptr) {
-        *right_delta_ticks = right_delta;
-    }
+    encoder_snapshot_valid_ = true;
+    *left_delta_ticks = left_delta;
+    *right_delta_ticks = right_delta;
 }
 
 bool HardwarePlannerRunner::apply_slam_pose_correction(const Vec2& position,
@@ -305,7 +419,11 @@ bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerT
                                                                std::int32_t left_delta_ticks,
                                                                std::int32_t right_delta_ticks,
                                                                double encoder_dt) {
-    const bool raw_encoder_ready = config_.use_encoder_odometry && controller_encoders_ready(telemetry);
+    if (!encoder_snapshot_fresh_) {
+        return false;
+    }
+    const bool raw_encoder_ready = encoder_snapshot_valid_ &&
+        config_.use_encoder_odometry && controller_encoders_ready(telemetry);
     const bool overflow_warn = encoder_flag_set(telemetry.enc_flags, EncoderFlag::OverflowWarn);
     if (!raw_encoder_ready || overflow_warn || encoder_dt <= 1e-6) {
         encoder_ready_streak_ = 0;
@@ -394,15 +512,12 @@ bool HardwarePlannerRunner::rearm_controller_if_needed(const ControllerTelemetry
 void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(const ControllerTelemetry& telemetry,
                                                                             double dt,
                                                                             double measured_yaw,
-                                                                            double measured_yaw_rate) {
-    std::int32_t left_delta_ticks = 0;
-    std::int32_t right_delta_ticks = 0;
-    update_controller_encoder_snapshot(telemetry, &left_delta_ticks, &right_delta_ticks);
-
-    const double effective_dt =
-        telemetry.enc_dt_ms > 0U
-            ? clamp_value(static_cast<double>(telemetry.enc_dt_ms) / 1000.0, 0.01, 0.25)
-            : std::max(dt, 0.01);
+                                                                            double measured_yaw_rate,
+                                                                            bool imu_feedback_fresh) {
+    const std::int32_t left_delta_ticks = latest_controller_left_encoder_delta_;
+    const std::int32_t right_delta_ticks = latest_controller_right_encoder_delta_;
+    const double effective_dt = config_.use_encoder_odometry
+        ? latest_controller_encoder_dt_ms_ * 0.001 : dt;
     const bool encoder_ready =
         controller_encoder_odometry_usable(telemetry, left_delta_ticks, right_delta_ticks, effective_dt);
 
@@ -429,12 +544,14 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         measured_wheel_speeds_valid_ = true;
         odom_speed = effective_dt > 1e-6 ? 0.5 * (left_dist + right_dist) / effective_dt : 0.0;
         odom_yaw_rate = effective_dt > 1e-6 ? odom_delta_yaw / effective_dt : 0.0;
-        mitigate_compact_unstructured_encoder_slip(
-            measured_yaw_rate,
-            measured_left_wheel_speed_,
-            measured_right_wheel_speed_,
-            &odom_speed,
-            &odom_yaw_rate);
+        if (imu_feedback_fresh) {
+            mitigate_compact_unstructured_encoder_slip(
+                measured_yaw_rate,
+                measured_left_wheel_speed_,
+                measured_right_wheel_speed_,
+                &odom_speed,
+                &odom_yaw_rate);
+        }
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
         odom_yaw_rate = clamp_value(odom_yaw_rate, -config_.drive.max_yaw_rate, config_.drive.max_yaw_rate);
     } else {
@@ -457,7 +574,9 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         }
 
         odom_yaw_rate = clamp_value(
-            std::abs(measured_yaw_rate) > 1e-4 ? measured_yaw_rate : last_command_.target_yaw_rate,
+            imu_feedback_fresh
+                ? measured_yaw_rate
+                : last_command_.target_yaw_rate,
             -config_.drive.max_yaw_rate,
             config_.drive.max_yaw_rate);
         const auto [fallback_left_wheel_speed, fallback_right_wheel_speed] =
@@ -467,9 +586,21 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         measured_wheel_speeds_valid_ = false;
     }
 
-    estimator_.predict(effective_dt, odom_speed, odom_yaw_rate);
-    estimator_.update_imu(measured_yaw, measured_yaw_rate);
+    if (imu_feedback_fresh) {
+        odom_yaw_rate = measured_yaw_rate;
+    }
+    if (encoder_ready || !config_.use_encoder_odometry) {
+        estimator_.predict(encoder_ready ? effective_dt : dt, odom_speed, odom_yaw_rate);
+    }
+    if (imu_sample_new_) {
+        estimator_.update_imu(measured_yaw, measured_yaw_rate);
+    }
     sync_estimate_from_ekf_state();
+    if (config_.use_encoder_odometry && !encoder_ready) {
+        // No new distance observation: neither advance road progress from PWM
+        // nor repeatedly apply the same road projection as a pose measurement.
+        return;
+    }
 
     if (road_ == nullptr ||
         cl_.prev_road.num_segments() <= 0 ||

@@ -22,8 +22,21 @@ const char* unstructured_exploration_state_name(UnstructuredExplorationState sta
         case UnstructuredExplorationState::Complete: return "COMPLETE";
         case UnstructuredExplorationState::AdvancingStraight: return "ADVANCING_STRAIGHT";
         case UnstructuredExplorationState::SearchingFreeSpace: return "SEARCHING_FREE_SPACE";
+        case UnstructuredExplorationState::AcquiringGate: return "ACQUIRING_GATE";
         case UnstructuredExplorationState::Disabled:
         default: return "DISABLED";
+    }
+}
+
+const char* gate_candidate_status_name(GateCandidateStatus status) {
+    switch (status) {
+        case GateCandidateStatus::Ready: return "READY";
+        case GateCandidateStatus::Locked: return "LOCKED";
+        case GateCandidateStatus::OutsideReachableSector: return "OUTSIDE_REACHABLE_SECTOR";
+        case GateCandidateStatus::RearSectorRejected: return "REAR_SECTOR_REJECTED";
+        case GateCandidateStatus::AcquisitionTimedOut: return "ACQUISITION_TIMED_OUT";
+        case GateCandidateStatus::None:
+        default: return "NONE";
     }
 }
 
