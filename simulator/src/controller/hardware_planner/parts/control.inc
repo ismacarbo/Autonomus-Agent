@@ -1582,6 +1582,40 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.pwm.max_pwm));
     }
 
+    // Encoder wheel speeds alone cannot close body yaw under scrub/slip.
+    // Apply bounded inertial feedback in canonical PWM before side mapping.
+    const bool body_pwm_control = compact_unstructured_car &&
+        !config_.use_mcu_velocity_closed_loop && config_.pwm.body_yaw_pwm_kp > 0.0;
+    if (body_pwm_control && body_yaw_tracking_enabled && measured_wheel_speeds_valid_) {
+        const double correction = clamp_value(
+            config_.pwm.body_yaw_pwm_kp *
+                (last_command_.planner_target_yaw_rate - body_yaw_rate_measurement_) +
+            config_.pwm.body_yaw_pwm_ki * yaw_rate_error_integral_,
+            -config_.pwm.body_yaw_pwm_limit, config_.pwm.body_yaw_pwm_limit);
+        last_command_.pwm_left -= static_cast<int>(std::lround(correction));
+        last_command_.pwm_right += static_cast<int>(std::lround(correction));
+        // Braking an excessive rotation must not command the opposite arc.
+        if (std::abs(last_command_.planner_target_yaw_rate) > .08 &&
+            last_command_.planner_target_yaw_rate *
+                (last_command_.pwm_right - last_command_.pwm_left) < 0.0) {
+            const int average = (last_command_.pwm_left + last_command_.pwm_right) / 2;
+            last_command_.pwm_left = last_command_.pwm_right = average;
+        }
+    }
+    const bool hold_left_for_yaw = body_pwm_control && last_command_.target_speed > 0.0 &&
+        last_command_.pwm_left <= config_.pwm.min_effective_pwm;
+    const bool hold_right_for_yaw = body_pwm_control && last_command_.target_speed > 0.0 &&
+        last_command_.pwm_right <= config_.pwm.min_effective_pwm;
+    const double requested_turn = last_command_.planner_target_yaw_rate;
+    const bool turn_needs_authority = body_pwm_control && last_command_.target_speed > 0.0 &&
+        std::abs(requested_turn) > .04 &&
+        (!body_yaw_rate_measurement_valid_ ||
+         requested_turn * body_yaw_rate_measurement_ < .70 * requested_turn * requested_turn);
+    if (hold_left_for_yaw) last_command_.pwm_left = 0;
+    if (hold_right_for_yaw) last_command_.pwm_right = 0;
+    const int canonical_command_left = last_command_.pwm_left;
+    const int canonical_command_right = last_command_.pwm_right;
+
     // The wheel controller works in a canonical PWM domain. Apply the
     // measured driver/side calibration only after feed-forward and feedback
     // have been combined, so every correction reaches the physical channels
@@ -1691,6 +1725,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const int compact_breakaway_retry_cycles = 4;
     const bool compact_breakaway_pulse =
         compact_unstructured_car &&
+        !turn_needs_authority &&
         previous_pwm_left > 0 && previous_pwm_right > 0 &&
         no_motion_command_cycles_ >= stall_boost_cycles_required &&
         ((no_motion_command_cycles_ - stall_boost_cycles_required) %
@@ -1702,10 +1737,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (compact_breakaway_pulse ||
         continuous_breakaway_boost ||
         (forward_only_tracked_tracks && commanding_motion && robot_is_still)) {
-        apply_start_motion_boost(
-            std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
-            &last_command_.pwm_left,
-            &last_command_.pwm_right);
+        if (body_pwm_control) {
+            int left = canonical_command_left, right = canonical_command_right;
+            apply_start_motion_boost(
+                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm), &left, &right);
+            last_command_.pwm_left = apply_signed_pwm_calibration(left,
+                config_.pwm.left_command_scale, config_.pwm.left_command_offset, config_.pwm.max_pwm);
+            last_command_.pwm_right = apply_signed_pwm_calibration(right,
+                config_.pwm.right_command_scale, config_.pwm.right_command_offset, config_.pwm.max_pwm);
+        } else {
+            apply_start_motion_boost(
+                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
+                &last_command_.pwm_left, &last_command_.pwm_right);
+        }
         stall_boost_active_ = true;
     }
 
@@ -1716,8 +1760,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     if (forward_arc_command) {
         const double wheel_target_threshold = 0.010;
         const double wheel_motion_threshold = 0.008;
-        const bool left_requested = left_wheel_speed > wheel_target_threshold;
-        const bool right_requested = right_wheel_speed > wheel_target_threshold;
+        // While the body is not turning, kicking the inside wheel erases the
+        // requested curve (and can even produce an opposite recovery pulse).
+        const bool left_requested = left_wheel_speed > wheel_target_threshold &&
+            !hold_left_for_yaw && !(turn_needs_authority && requested_turn > 0.0);
+        const bool right_requested = right_wheel_speed > wheel_target_threshold &&
+            !hold_right_for_yaw && !(turn_needs_authority && requested_turn < 0.0);
 
         const bool have_individual_wheel_motion =
             measured_wheel_speeds_valid_ || raw_encoder_motion_available;
@@ -1768,7 +1816,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const bool right_breakaway_active =
             right_wheel_breakaway_hold_cycles_ > 0 && right_requested;
         if (left_breakaway_active) {
-            last_command_.pwm_left = std::max(last_command_.pwm_left, per_wheel_breakaway_pwm);
+            const int pulse_pwm = body_pwm_control ? apply_signed_pwm_calibration(per_wheel_breakaway_pwm,
+                config_.pwm.left_command_scale, config_.pwm.left_command_offset, config_.pwm.max_pwm)
+                : per_wheel_breakaway_pwm;
+            last_command_.pwm_left = std::max(last_command_.pwm_left, pulse_pwm);
             wheel_speed_error_integral_left_ = 0.0;
             stall_boost_active_ = true;
             --left_wheel_breakaway_hold_cycles_;
@@ -1776,7 +1827,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             left_wheel_breakaway_hold_cycles_ = 0;
         }
         if (right_breakaway_active) {
-            last_command_.pwm_right = std::max(last_command_.pwm_right, per_wheel_breakaway_pwm);
+            const int pulse_pwm = body_pwm_control ? apply_signed_pwm_calibration(per_wheel_breakaway_pwm,
+                config_.pwm.right_command_scale, config_.pwm.right_command_offset, config_.pwm.max_pwm)
+                : per_wheel_breakaway_pwm;
+            last_command_.pwm_right = std::max(last_command_.pwm_right, pulse_pwm);
             wheel_speed_error_integral_right_ = 0.0;
             stall_boost_active_ = true;
             --right_wheel_breakaway_hold_cycles_;
@@ -1980,6 +2034,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     } else if (hold_right_for_left_breakaway) {
         last_command_.pwm_right = 0;
     }
+    // A deliberate zero from inertial feedback must survive the legacy
+    // forward-only floors and slew limiter, just like the recovery hold.
+    if (hold_left_for_yaw) last_command_.pwm_left = 0;
+    if (hold_right_for_yaw) last_command_.pwm_right = 0;
     if (compact_unstructured_car && config_.pwm.overspeed_braking_enabled &&
         !config_.use_mcu_velocity_closed_loop && commanding_motion) {
         const double requested_speed = std::abs(last_command_.target_speed);

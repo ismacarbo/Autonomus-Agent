@@ -1,7 +1,7 @@
 {
   "schema": "thesis_robot_calibration_v1",
   "profile_name": "car_measured_2026_07",
-  "profile_version": "1.6.0",
+  "profile_version": "1.7.0",
   "vehicle_model": "car",
   "measurement_status": "geometry_encoder_mapping_and_70_130_pwm_side_sweep_measured_with_bno080_yaw_feedback",
   "calibration_source_report": "thesis_hardware_car_straight_calibration_20260726_193534_551",
@@ -16,6 +16,9 @@
   "wheel_radius_m": 0.0327,
   "wheel_radius_calibrated": true,
   "controller_motor_channels_swapped": false,
+  "lidar_yaw_offset_deg": -162.0,
+  "lidar_flip_left_right": false,
+  "lidar_orientation_source": "physical_right_gate_displayed_left_confirmed_20261009",
   "encoder_ticks_per_revolution": 38,
   "encoder_ticks_per_revolution_measured": 37.900842,
   "min_effective_pwm": 45,

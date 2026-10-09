@@ -22,6 +22,9 @@ struct RobotCalibrationProfile {
     double wheel_radius_m = 0.0;
     bool wheel_radius_calibrated = false;
     bool controller_motor_channels_swapped = false;
+    bool has_lidar_orientation = false;
+    double lidar_yaw_offset_deg = 0.0;
+    bool lidar_flip_left_right = false;
     std::int32_t encoder_ticks_per_revolution = 0;
 
     int min_effective_pwm = 0;

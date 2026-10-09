@@ -353,6 +353,8 @@ if(BUILD_TESTING)
   )
   add_test(NAME thesis_hardware_runtime_settings COMMAND thesis_hardware_runtime_settings_smoke)
   set_tests_properties(thesis_hardware_runtime_settings PROPERTIES TIMEOUT 60)
+  add_test(NAME thesis_loaded_gate_pwm_tracking COMMAND thesis_hardware_runtime_settings_smoke --loaded-gates)
+  set_tests_properties(thesis_loaded_gate_pwm_tracking PROPERTIES TIMEOUT 60)
 
   add_executable(thesis_structured_path_model_smoke
     src/tests/unit/structured_path_model_test.cpp

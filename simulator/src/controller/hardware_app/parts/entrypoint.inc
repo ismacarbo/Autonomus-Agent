@@ -75,6 +75,10 @@ int main(int argc, char** argv) {
                   << planner_config.pwm.yaw_rate_tracking_kp << ','
                   << planner_config.pwm.yaw_rate_tracking_ki << '\n';
         std::cout << "startup_min_effective_pwm=" << planner_config.pwm.min_effective_pwm << '\n';
+        std::cout << "startup_lidar_yaw_offset_deg=" << planner_config.localization.lidar_yaw_offset * 180.0 / kPi << '\n';
+        std::cout << "startup_lidar_flip_left_right=" << planner_config.localization.lidar_flip_left_right << '\n';
+        std::cout << "startup_body_yaw_pwm_pi=" << planner_config.pwm.body_yaw_pwm_kp << ','
+                  << planner_config.pwm.body_yaw_pwm_ki << '\n';
         std::cout << "startup_overspeed_braking_enabled=" << planner_config.pwm.overspeed_braking_enabled << '\n';
         std::cout << "startup_wheel_stall_timeout_s=" << planner_config.pwm.wheel_stall_timeout_s << '\n';
         std::cout << "startup_start_matching_enabled="

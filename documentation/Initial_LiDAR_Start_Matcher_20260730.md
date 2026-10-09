@@ -98,14 +98,15 @@ prove successive sono obbligatori sia hash integro sia seriale LiDAR uguale a
 quello della cattura. L'hash rileva modifiche accidentali o file incompleti;
 non è una firma crittografica.
 
-I valori predefiniti della car coincidono con la configurazione hardware:
+Dal profilo car 1.7.0 (9 ottobre 2026), lo script della car usa questa
+configurazione. Le reference catturate con il vecchio mirror vanno ricatturate:
 
 ```text
 body:       0.25 x 0.15 m
 lidar x:    0.075 m
 lidar y:    0.040 m
-lidar yaw:  162 deg
-mirror:     enabled
+lidar yaw:  -162 deg
+mirror:     disabled
 ```
 
 Se la posizione fisica del LiDAR è diversa, correggere i valori già durante la
@@ -114,11 +115,14 @@ cattura, per esempio:
 ```bash
 ./scripts/run_car_lidar_start_matcher.sh /dev/ttyUSB0 \
   --capture-reference datasets/localization/car_validation_start.csv \
-  --lidar-x 0.075 --lidar-y 0.040 --lidar-yaw-deg 162
+  --lidar-x 0.075 --lidar-y 0.040 --lidar-yaw-deg -162 --lidar-no-mirror
 ```
 
 La modalità match rilegge la geometria dal file reference, evitando che una run
 usi accidentalmente extrinsic differenti.
+Il runner verifica anche che questa geometria coincida con il proprio profilo;
+in caso contrario mantiene il blocco di start matching e riporta
+`reference_sensor_extrinsics_mismatch`.
 
 ## 2. Verifica di una nuova posa iniziale
 

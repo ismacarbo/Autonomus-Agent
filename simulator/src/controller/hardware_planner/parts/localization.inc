@@ -6,10 +6,9 @@ void HardwarePlannerRunner::mitigate_compact_unstructured_encoder_slip(
     double measured_yaw_rate,
     double left_wheel_speed,
     double right_wheel_speed,
-    double* odom_speed,
     double* odom_yaw_rate) {
     encoder_slip_guard_active_ = false;
-    if (odom_speed == nullptr || odom_yaw_rate == nullptr ||
+    if (odom_yaw_rate == nullptr ||
         config_.vehicle_model != VehicleModelKind::CarLikeBicycle ||
         !open_ended_unstructured_exploration(world_)) {
         return;
@@ -43,15 +42,10 @@ void HardwarePlannerRunner::mitigate_compact_unstructured_encoder_slip(
         return;
     }
 
-    // A spinning wheel does not provide trustworthy travelled distance. Keep
-    // a small conservative translation component, and let the independent IMU
-    // describe the body rotation until both encoders regain traction.
-    const double yaw_consistency =
-        std::abs(measured_yaw_rate) /
-        std::max(std::abs(encoder_yaw_rate), 0.10);
-    const double translation_scale =
-        clamp_value(0.10 + yaw_consistency, 0.15, 0.45);
-    *odom_speed *= translation_scale;
+    // Yaw disagreement establishes rotational scrub, not lost longitudinal
+    // travel. Multiplying translation by 0.15..0.45 made walls move towards
+    // the robot during intentional unequal-wheel motion. Keep encoder mean
+    // translation; only an independent position observation can correct it.
     *odom_yaw_rate = clamp_value(
         measured_yaw_rate,
         -config_.drive.max_yaw_rate,
@@ -237,7 +231,6 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
                 measured_yaw_rate,
                 measured_left_wheel_speed_,
                 measured_right_wheel_speed_,
-                &odom_speed,
                 &odom_yaw_rate);
         }
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);
@@ -549,7 +542,6 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
                 measured_yaw_rate,
                 measured_left_wheel_speed_,
                 measured_right_wheel_speed_,
-                &odom_speed,
                 &odom_yaw_rate);
         }
         odom_speed = clamp_value(odom_speed, -config_.drive.max_linear_speed, config_.drive.max_linear_speed);

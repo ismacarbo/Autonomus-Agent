@@ -154,6 +154,18 @@ bool load_robot_calibration_profile(const std::string& path,
     read_bool(json,
               "controller_motor_channels_swapped",
               &parsed.controller_motor_channels_swapped);
+    std::size_t orientation_value = 0;
+    const bool has_yaw = locate_value(json, "lidar_yaw_offset_deg", &orientation_value);
+    const bool has_flip = locate_value(json, "lidar_flip_left_right", &orientation_value);
+    if (has_yaw || has_flip) {
+        if (!read_number(json, "lidar_yaw_offset_deg", &parsed.lidar_yaw_offset_deg) ||
+            !read_bool(json, "lidar_flip_left_right", &parsed.lidar_flip_left_right) ||
+            std::abs(parsed.lidar_yaw_offset_deg) > 180.0) {
+            if (error) *error = "LiDAR orientation requires yaw in [-180,180] and a mirror boolean";
+            return false;
+        }
+        parsed.has_lidar_orientation = true;
+    }
     double encoder_ticks = 0.0;
     read_number(json, "encoder_ticks_per_revolution", &encoder_ticks);
     parsed.encoder_ticks_per_revolution = static_cast<std::int32_t>(std::llround(encoder_ticks));

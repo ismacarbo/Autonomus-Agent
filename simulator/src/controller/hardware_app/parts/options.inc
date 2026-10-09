@@ -266,6 +266,8 @@ void apply_unstructured_hardware_config(const WorldMap& world,
         // deliberately slow, bounded trim around the MPC request instead.
         config->pwm.yaw_rate_tracking_kp = 0.45;
         config->pwm.yaw_rate_tracking_ki = 0.15;
+        config->pwm.body_yaw_pwm_kp = 35.0;
+        config->pwm.body_yaw_pwm_ki = 40.0;
         config->pwm.yaw_rate_error_integral_limit = 0.25;
         config->pwm.yaw_rate_feedback_filter_tau_s = 1.00;
         config->pwm.yaw_rate_feedback_deadband_rad_s = 0.012;

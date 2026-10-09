@@ -86,6 +86,14 @@ void HardwarePlannerRunner::reset_start_matching() {
         start_matching_status_.status = "reference_integrity_failed";
         return;
     }
+    const auto& sensor = start_reference_.metadata;
+    if (sensor.lidar_flip_left_right != config_.localization.lidar_flip_left_right ||
+        std::abs(wrap_angle(sensor.lidar_yaw_offset_rad - config_.localization.lidar_yaw_offset)) > 1e-5 ||
+        std::abs(sensor.lidar_x_offset_m - config_.localization.lidar_x_offset) > 1e-5 ||
+        std::abs(sensor.lidar_y_offset_m - config_.localization.lidar_y_offset) > 1e-5) {
+        start_matching_status_.status = "reference_sensor_extrinsics_mismatch";
+        return;
+    }
     if (start_reference_.metadata.schema == "thesis_initial_lidar_reference_v2" &&
         !start_reference_.metadata.stability_valid) {
         start_matching_status_.status = "reference_capture_stability_failed";

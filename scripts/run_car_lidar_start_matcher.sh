@@ -24,4 +24,5 @@ if [ ! -x "$executable" ]; then
 fi
 
 cd "$repository_root"
-exec "$executable" --lidar-port "$lidar_port" --vehicle-model car "$@"
+exec "$executable" --lidar-port "$lidar_port" --vehicle-model car \
+  --lidar-yaw-deg -162 --lidar-no-mirror "$@"

@@ -65,6 +65,9 @@ struct MotorPwmMapperConfig {
     double yaw_rate_sign_preservation_threshold_rad_s = 0.020;
     double linear_feedback_gain = 75.0;
     double yaw_feedback_gain = 35.0;
+    double body_yaw_pwm_kp = 0.0;
+    double body_yaw_pwm_ki = 0.0;
+    double body_yaw_pwm_limit = 30.0;
     int start_motion_pwm = 110;
     double stall_speed_threshold_mps = 0.025;
     double stall_target_speed_threshold_mps = 0.08;
@@ -656,10 +659,9 @@ class HardwarePlannerRunner {
                                                           double measured_yaw_rate,
                                                           bool imu_feedback_fresh);
     void mitigate_compact_unstructured_encoder_slip(double measured_yaw_rate,
-                                                     double left_wheel_speed,
-                                                     double right_wheel_speed,
-                                                     double* odom_speed,
-                                                     double* odom_yaw_rate);
+                                                   double left_wheel_speed,
+                                                   double right_wheel_speed,
+                                                   double* odom_yaw_rate);
     bool controller_encoder_odometry_usable(const ControllerTelemetry& telemetry,
                                             std::int32_t left_delta_ticks,
                                             std::int32_t right_delta_ticks,

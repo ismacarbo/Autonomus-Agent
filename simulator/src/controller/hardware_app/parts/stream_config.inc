@@ -142,6 +142,10 @@ void apply_robot_calibration_profile(const AppOptions& options,
     config->wheel_radius_calibrated = profile.wheel_radius_calibrated;
     config->controller_motor_channels_swapped =
         profile.controller_motor_channels_swapped;
+    if (profile.has_lidar_orientation) {
+        config->localization.lidar_yaw_offset = profile.lidar_yaw_offset_deg * kPi / 180.0;
+        config->localization.lidar_flip_left_right = profile.lidar_flip_left_right;
+    }
     config->drive.body_length = profile.body_length_m;
     config->drive.body_width = profile.body_width_m;
     config->drive.wheel_or_belt_length = profile.wheel_or_belt_length_m;
