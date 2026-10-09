@@ -337,6 +337,8 @@ void render_hardware_thesis_metrics_panel(const HardwareViewerState& hardware) {
     char gates_buf[32];
     char switches_buf[32];
     char mode_time_buf[48];
+    char exploration_time_buf[48];
+    char recovery_time_buf[48];
     char clearance_buf[32];
     char tracking_buf[48];
     char odom_buf[48];
@@ -358,6 +360,10 @@ void render_hardware_thesis_metrics_panel(const HardwareViewerState& hardware) {
                   "%.1f / %.1f s",
                   metrics.structured_time_s,
                   metrics.gate_time_s);
+    std::snprintf(exploration_time_buf, sizeof(exploration_time_buf), "%.1f / %.1f s",
+                  metrics.exploration_time_s, metrics.hold_time_s);
+    std::snprintf(recovery_time_buf, sizeof(recovery_time_buf), "%.1f / %.1f s",
+                  metrics.recovery_time_s, metrics.safety_stop_time_s);
     if (std::isfinite(metrics.min_clearance_m)) {
         std::snprintf(clearance_buf, sizeof(clearance_buf), "%.2f m", metrics.min_clearance_m);
     } else {
@@ -408,6 +414,8 @@ void render_hardware_thesis_metrics_panel(const HardwareViewerState& hardware) {
         row("Passed gates", gates_buf, metrics.passed_gates > 0 ? ok : warn);
         row("Switches", switches_buf, metrics.switch_events > 0 ? ok : warn);
         row("Road / gate", mode_time_buf, ok);
+        row("Explore / hold", exploration_time_buf, ok);
+        row("Recover / stop", recovery_time_buf, ok);
         row("Clearance", clearance_buf, clearance_color);
         row("Max tracking", tracking_buf, tracking_color);
         row("Enc / est / delta", odom_buf, ok);

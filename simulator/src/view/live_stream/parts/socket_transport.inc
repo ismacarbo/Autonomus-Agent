@@ -38,7 +38,7 @@ std::string endpoint_to_string(const sockaddr_storage& addr) {
 bool send_all(int fd, const std::uint8_t* data, std::size_t size) {
     std::size_t sent = 0;
     while (sent < size) {
-        const ssize_t bytes = ::send(fd, data + sent, size - sent, 0);
+        const ssize_t bytes = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
         if (bytes <= 0) {
             if (errno == EINTR) {
                 continue;

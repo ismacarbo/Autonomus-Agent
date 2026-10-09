@@ -348,6 +348,8 @@ void HardwarePlannerRunner::reset() {
     no_motion_command_cycles_ = 0;
     left_wheel_stall_cycles_ = 0;
     right_wheel_stall_cycles_ = 0;
+    left_wheel_stall_elapsed_s_ = right_wheel_stall_elapsed_s_ = 0.0;
+    drivetrain_stall_stop_active_ = overspeed_braking_active_ = false;
     left_wheel_breakaway_hold_cycles_ = 0;
     right_wheel_breakaway_hold_cycles_ = 0;
     stuck_motion_elapsed_s_ = 0.0;
@@ -493,6 +495,8 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     no_motion_command_cycles_ = 0;
     left_wheel_stall_cycles_ = 0;
     right_wheel_stall_cycles_ = 0;
+    left_wheel_stall_elapsed_s_ = right_wheel_stall_elapsed_s_ = 0.0;
+    drivetrain_stall_stop_active_ = overspeed_braking_active_ = false;
     left_wheel_breakaway_hold_cycles_ = 0;
     right_wheel_breakaway_hold_cycles_ = 0;
     lidar_reverse_reposition_until_s_ = -1.0;

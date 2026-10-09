@@ -230,6 +230,10 @@ struct HardwareThesisMetrics {
     double odom_pose_delta_m = 0.0;
     double structured_time_s = 0.0;
     double gate_time_s = 0.0;
+    double exploration_time_s = 0.0;
+    double hold_time_s = 0.0;
+    double recovery_time_s = 0.0;
+    double safety_stop_time_s = 0.0;
     int passed_gates = 0;
     int switch_events = 0;
     int structured_to_gate_switches = 0;
@@ -1020,9 +1024,6 @@ HardwareThesisMetrics summarize_hardware_thesis_metrics(const HardwareViewerStat
             : 0.0;
 
     double speed_total = 0.0;
-    bool previous_gate_mode =
-        hardware.history.front().dynamic_gap_gates > 0.5 &&
-        hardware.history.front().chosen_gate_index >= 0.0;
     for (size_t i = 0; i < hardware.history.size(); ++i) {
         const HardwareTelemetrySample& sample = hardware.history[i];
         speed_total += sample.speed;
@@ -1051,22 +1052,31 @@ HardwareThesisMetrics summarize_hardware_thesis_metrics(const HardwareViewerStat
                 std::hypot(sample.position_x - prev.position_x,
                            sample.position_y - prev.position_y);
             const double dt = std::max(sample.time - prev.time, 0.0);
-            const bool gate_mode =
-                sample.dynamic_gap_gates > 0.5 &&
-                sample.chosen_gate_index >= 0.0;
-            if (gate_mode) {
-                metrics.gate_time_s += dt;
-            } else {
-                metrics.structured_time_s += dt;
+            // A visible/locked gate can coexist with HOLD or recovery. Count
+            // the controller actually active during the preceding interval;
+            // free exploration is not structured-road MPC.
+            const auto previous_source = static_cast<thesis_sim::HardwareControlSource>(
+                static_cast<int>(std::lround(prev.control_source)));
+            const auto source = static_cast<thesis_sim::HardwareControlSource>(
+                static_cast<int>(std::lround(sample.control_source)));
+            using Source = thesis_sim::HardwareControlSource;
+            switch (previous_source) {
+                case Source::StructuredMpc: metrics.structured_time_s += dt; break;
+                case Source::GateMpc: metrics.gate_time_s += dt; break;
+                case Source::FrontierMpc:
+                case Source::StraightExploration:
+                case Source::ForwardSearch: metrics.exploration_time_s += dt; break;
+                case Source::Recovery: metrics.recovery_time_s += dt; break;
+                case Source::SafetyStop: metrics.safety_stop_time_s += dt; break;
+                case Source::Hold: metrics.hold_time_s += dt; break;
             }
-            if (gate_mode != previous_gate_mode) {
+            if (source != previous_source) {
                 ++metrics.switch_events;
-                if (gate_mode) {
+                if (previous_source == Source::StructuredMpc && source == Source::GateMpc) {
                     ++metrics.structured_to_gate_switches;
-                } else {
+                } else if (previous_source == Source::GateMpc && source == Source::StructuredMpc) {
                     ++metrics.gate_to_structured_switches;
                 }
-                previous_gate_mode = gate_mode;
             }
         }
     }

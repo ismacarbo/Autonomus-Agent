@@ -46,12 +46,19 @@ bool LiveViewStreamClient::connect_to(const std::string& host, std::uint16_t por
         disconnect();
         return false;
     }
+    // Bound kernel backlog as well as the replaceable application queue.
+    const int send_buffer_bytes = 64 * 1024;
+    ::setsockopt(socket_fd_, SOL_SOCKET, SO_SNDBUF,
+                 &send_buffer_bytes, sizeof(send_buffer_bytes));
     return true;
 }
 
 void LiveViewStreamClient::disconnect() {
     close_socket(&socket_fd_);
     recv_buffer_.clear();
+    outgoing_.clear();
+    outgoing_offset_ = 0;
+    send_blocked_since_.reset();
 }
 
 bool LiveViewStreamClient::send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload) {
@@ -60,10 +67,53 @@ bool LiveViewStreamClient::send_packet(std::uint16_t type, const std::vector<std
         return false;
     }
 
-    const std::vector<std::uint8_t> packet = make_packet(type, payload);
+    if (!flush_outgoing()) return false;
+    if (type == kPacketFrame) {
+        // A partial TCP packet must finish. Replace other unsent telemetry
+        // with the newest frame, retaining scene/control packet ordering.
+        for (auto it = outgoing_.begin(); it != outgoing_.end();) {
+            if (it->frame && !(it == outgoing_.begin() && outgoing_offset_ > 0)) {
+                it = outgoing_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    if (outgoing_.size() >= 16) {
+        last_error_ = "live stream control queue overflow";
+        disconnect();
+        return false;
+    }
+    outgoing_.push_back({make_packet(type, payload), type == kPacketFrame});
+    return flush_outgoing();
+}
 
-    if (!send_all(socket_fd_, packet.data(), packet.size())) {
-        last_error_ = socket_error_message("send failed");
+bool LiveViewStreamClient::flush_outgoing() {
+    if (socket_fd_ < 0) return false;
+    std::size_t budget = 256 * 1024;
+    while (!outgoing_.empty() && budget > 0) {
+        auto& packet = outgoing_.front().bytes;
+        const auto count = ::send(socket_fd_, packet.data() + outgoing_offset_,
+                                  std::min(packet.size() - outgoing_offset_, budget), MSG_NOSIGNAL);
+        if (count > 0) {
+            outgoing_offset_ += static_cast<std::size_t>(count);
+            budget -= static_cast<std::size_t>(count);
+            send_blocked_since_.reset();
+            if (outgoing_offset_ == packet.size()) {
+                outgoing_.pop_front();
+                outgoing_offset_ = 0;
+            }
+            continue;
+        }
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            const auto now = std::chrono::steady_clock::now();
+            if (!send_blocked_since_) send_blocked_since_ = now;
+            if (now - *send_blocked_since_ < std::chrono::seconds(5)) return true;
+            last_error_ = "live stream stalled: no send progress for 5 seconds";
+        } else {
+            last_error_ = socket_error_message("send failed");
+        }
         disconnect();
         return false;
     }
@@ -197,6 +247,7 @@ bool LiveViewStreamClient::parse_next_packet(PollResult* result) {
 
 LiveViewStreamClient::PollResult LiveViewStreamClient::poll() {
     PollResult result;
+    if (!flush_outgoing()) return result;
     if (socket_fd_ < 0) {
         return result;
     }

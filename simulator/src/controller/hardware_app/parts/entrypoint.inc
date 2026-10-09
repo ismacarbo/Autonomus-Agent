@@ -74,6 +74,9 @@ int main(int argc, char** argv) {
         std::cout << "startup_yaw_rate_tracking_pi="
                   << planner_config.pwm.yaw_rate_tracking_kp << ','
                   << planner_config.pwm.yaw_rate_tracking_ki << '\n';
+        std::cout << "startup_min_effective_pwm=" << planner_config.pwm.min_effective_pwm << '\n';
+        std::cout << "startup_overspeed_braking_enabled=" << planner_config.pwm.overspeed_braking_enabled << '\n';
+        std::cout << "startup_wheel_stall_timeout_s=" << planner_config.pwm.wheel_stall_timeout_s << '\n';
         std::cout << "startup_start_matching_enabled="
                   << planner_config.start_matching.enabled << '\n';
         std::cout << "startup_slam_toolbox_enabled="

@@ -5,12 +5,24 @@ namespace thesis_sim {
 void HardwarePlannerRunner::compute_control_command(double dt) {
     const int previous_pwm_left = last_command_.pwm_left;
     const int previous_pwm_right = last_command_.pwm_right;
+    const bool previously_braking = overspeed_braking_active_;
+    overspeed_braking_active_ = false;
     last_command_ = {};
     safety_stop_active_ = false;
     stall_boost_active_ = false;
     tracker_cross_track_error_ = 0.0;
     tracker_heading_error_deg_ = 0.0;
     control_source_ = HardwareControlSource::Hold;
+
+    if (drivetrain_stall_stop_active_) {
+        commanded_speed_ = commanded_steer_angle_ = 0.0;
+        safety_stop_active_ = last_command_.safety_stop = true;
+        control_source_ = HardwareControlSource::SafetyStop;
+        last_mpc_command_.reset();
+        diagnostics_.reference_invalidation_reason = "drivetrain_stall_stop";
+        diagnostics_.stall_boost_active = false;
+        return;
+    }
 
     if (!motion_permitted_by_start_match()) {
         commanded_speed_ = 0.0;
@@ -1585,9 +1597,26 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         config_.pwm.right_command_offset,
         config_.pwm.max_pwm);
 
+    // Fresh raw deltas can already prove motion while odometry is still
+    // waiting for its three-sample readiness streak. Do not boost a moving
+    // drivetrain, or ignore overspeed, during that initialization window.
+    double left_speed_for_stall = std::abs(measured_left_wheel_speed);
+    double right_speed_for_stall = std::abs(measured_right_wheel_speed);
+    const double raw_encoder_dt_s = latest_controller_encoder_dt_ms_ * 0.001;
+    const bool raw_encoder_motion_available =
+        encoder_snapshot_valid_ && raw_encoder_dt_s > 1e-4;
+    if (raw_encoder_motion_available) {
+        const double meters_per_tick = (2.0 * kPi * geometry_.wheel_radius) /
+            static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
+        left_speed_for_stall = std::abs(static_cast<double>(latest_controller_left_encoder_delta_)) *
+            meters_per_tick / raw_encoder_dt_s;
+        right_speed_for_stall = std::abs(static_cast<double>(latest_controller_right_encoder_delta_)) *
+            meters_per_tick / raw_encoder_dt_s;
+    }
     const double max_target_wheel_speed = std::max(std::abs(left_wheel_speed), std::abs(right_wheel_speed));
     const double max_measured_wheel_speed =
-        std::max(std::abs(measured_left_wheel_speed), std::abs(measured_right_wheel_speed));
+        compact_unstructured_car ? std::max(left_speed_for_stall, right_speed_for_stall)
+                                : std::max(std::abs(measured_left_wheel_speed), std::abs(measured_right_wheel_speed));
     const bool demanding_motion =
         !safety_stop_active_ &&
         (max_target_wheel_speed >= std::max(config_.pwm.stall_target_speed_threshold_mps * 0.45, 0.03) ||
@@ -1652,15 +1681,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
     }
 
-    const int stall_boost_cycles_required =
-        use_dynamic_gap_gates_ ? std::max(1, config_.pwm.stall_boost_after_cycles - 1)
-                               : config_.pwm.stall_boost_after_cycles;
+    const int stall_boost_cycles_required = compact_unstructured_car
+        ? std::max(3, config_.pwm.stall_boost_after_cycles)
+        : (use_dynamic_gap_gates_ ? std::max(1, config_.pwm.stall_boost_after_cycles - 1)
+                                 : config_.pwm.stall_boost_after_cycles);
     // Retry quickly enough that one moving side cannot drag the chassis for a
     // full second while the other side remains stalled. The pulse itself is
     // still short and is removed as soon as encoder motion returns.
     const int compact_breakaway_retry_cycles = 4;
     const bool compact_breakaway_pulse =
         compact_unstructured_car &&
+        previous_pwm_left > 0 && previous_pwm_right > 0 &&
         no_motion_command_cycles_ >= stall_boost_cycles_required &&
         ((no_motion_command_cycles_ - stall_boost_cycles_required) %
              compact_breakaway_retry_cycles <
@@ -1688,35 +1719,23 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const bool left_requested = left_wheel_speed > wheel_target_threshold;
         const bool right_requested = right_wheel_speed > wheel_target_threshold;
 
-        // The old direct-PWM firmware can expose usable raw encoder deltas in
-        // a cycle where the higher-level odometry readiness streak is not yet
-        // valid. Use those deltas for per-wheel break-away detection instead
-        // of falling back to the aggregate robot speed, where one spinning
-        // wheel masks the stalled side.
-        double left_speed_for_stall = std::abs(measured_left_wheel_speed);
-        double right_speed_for_stall = std::abs(measured_right_wheel_speed);
-        const double raw_encoder_dt_s = latest_controller_encoder_dt_ms_ * 0.001;
-        const bool raw_encoder_motion_available =
-            encoder_snapshot_valid_ && raw_encoder_dt_s > 1e-4;
-        if (raw_encoder_motion_available) {
-            const double meters_per_tick =
-                (2.0 * kPi * geometry_.wheel_radius) /
-                static_cast<double>(
-                    std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
-            left_speed_for_stall =
-                std::abs(static_cast<double>(latest_controller_left_encoder_delta_)) *
-                meters_per_tick / raw_encoder_dt_s;
-            right_speed_for_stall =
-                std::abs(static_cast<double>(latest_controller_right_encoder_delta_)) *
-                meters_per_tick / raw_encoder_dt_s;
-        }
         const bool have_individual_wheel_motion =
             measured_wheel_speeds_valid_ || raw_encoder_motion_available;
         if (have_individual_wheel_motion) {
-            left_wheel_stall_cycles_ = left_requested && left_speed_for_stall < wheel_motion_threshold
+            // A wheel deliberately held during the opposite side's pulse is
+            // not stalled. Counting it caused alternating opposite-side boosts.
+            left_wheel_stall_cycles_ = left_requested && previous_pwm_left > 0 && left_speed_for_stall < wheel_motion_threshold
                 ? left_wheel_stall_cycles_ + 1 : 0;
-            right_wheel_stall_cycles_ = right_requested && right_speed_for_stall < wheel_motion_threshold
+            right_wheel_stall_cycles_ = right_requested && previous_pwm_right > 0 && right_speed_for_stall < wheel_motion_threshold
                 ? right_wheel_stall_cycles_ + 1 : 0;
+            if (raw_encoder_motion_available) {
+                left_wheel_stall_elapsed_s_ = left_wheel_stall_cycles_ > 0
+                    ? left_wheel_stall_elapsed_s_ + raw_encoder_dt_s : 0.0;
+                right_wheel_stall_elapsed_s_ = right_wheel_stall_cycles_ > 0
+                    ? right_wheel_stall_elapsed_s_ + raw_encoder_dt_s : 0.0;
+                if (left_speed_for_stall >= wheel_motion_threshold) left_wheel_breakaway_hold_cycles_ = 0;
+                if (right_speed_for_stall >= wheel_motion_threshold) right_wheel_breakaway_hold_cycles_ = 0;
+            }
         } else if (!encoder_ticks_initialized_ || encoder_snapshot_fresh_) {
             left_wheel_stall_cycles_ = 0;
             right_wheel_stall_cycles_ = 0;
@@ -1774,6 +1793,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     } else {
         left_wheel_stall_cycles_ = 0;
         right_wheel_stall_cycles_ = 0;
+        left_wheel_stall_elapsed_s_ = right_wheel_stall_elapsed_s_ = 0.0;
         left_wheel_breakaway_hold_cycles_ = 0;
         right_wheel_breakaway_hold_cycles_ = 0;
     }
@@ -1946,35 +1966,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.pwm_right = 0;
         }
     }
-    if (forward_arc_command) {
-        last_command_.pwm_left = std::max(last_command_.pwm_left, config_.pwm.min_effective_pwm);
-        last_command_.pwm_right = std::max(last_command_.pwm_right, config_.pwm.min_effective_pwm);
-        if (std::abs(last_command_.target_yaw_rate) > 0.015) {
-            const bool gate_tracking_turn =
-                control_source_ == HardwareControlSource::GateMpc;
-            const int gate_turn_max_delta =
-                last_command_.target_yaw_rate >= 0.0
-                    ? config_.pwm.gate_positive_turn_max_pwm_delta
-                    : config_.pwm.gate_negative_turn_max_pwm_delta;
-            const int minimum_turn_delta = gate_tracking_turn
-                ? std::clamp(
-                      static_cast<int>(std::lround(
-                          12.0 + 100.0 * std::abs(last_command_.target_yaw_rate))),
-                      14,
-                      std::max(14, gate_turn_max_delta))
-                : std::clamp(
-                      static_cast<int>(std::lround(
-                          6.0 + 55.0 * std::abs(last_command_.target_yaw_rate))),
-                      8,
-                      18);
-            enforce_forward_differential_pwm(
-                last_command_.target_yaw_rate,
-                minimum_turn_delta,
-                config_.pwm.max_pwm,
-                &last_command_.pwm_left,
-                &last_command_.pwm_right);
-        }
-    }
+    // Turn authority belongs to the wheel-speed and IMU feedback loops above.
+    // After asymmetric driver calibration, raw PWM ordering is not wheel-speed
+    // ordering. Forcing a raw delta here overwrote both loops and accelerated
+    // the outside wheel even when feedback was explicitly asking it to slow.
     // Apply the one-wheel hold after every calibration, minimum-PWM and slew
     // stage. Applying it earlier is ineffective because the forward-only
     // clamps restore the held side to min_effective_pwm. During the short
@@ -1984,6 +1979,40 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         last_command_.pwm_left = 0;
     } else if (hold_right_for_left_breakaway) {
         last_command_.pwm_right = 0;
+    }
+    if (compact_unstructured_car && config_.pwm.overspeed_braking_enabled &&
+        !config_.use_mcu_velocity_closed_loop && commanding_motion) {
+        const double requested_speed = std::abs(last_command_.target_speed);
+        const double margin = previously_braking
+            ? std::max(0.010, 0.15 * requested_speed)
+            : std::max(0.030, 0.50 * requested_speed);
+        const double measured_speed = raw_encoder_motion_available
+            ? 0.5 * (left_speed_for_stall + right_speed_for_stall)
+            : std::abs(estimate_.speed);
+        overspeed_braking_active_ = (raw_encoder_motion_available || measured_wheel_speeds_valid_)
+            ? measured_speed > requested_speed + margin
+            : previously_braking;
+        if (overspeed_braking_active_) {
+            last_command_.pwm_left = last_command_.pwm_right = 0;
+            wheel_speed_error_integral_left_ = wheel_speed_error_integral_right_ = 0.0;
+            left_wheel_stall_cycles_ = right_wheel_stall_cycles_ = 0;
+            left_wheel_stall_elapsed_s_ = right_wheel_stall_elapsed_s_ = 0.0;
+            left_wheel_breakaway_hold_cycles_ = right_wheel_breakaway_hold_cycles_ = 0;
+            stall_boost_active_ = false;
+        }
+    }
+    if (config_.pwm.wheel_stall_timeout_s > 0.0 &&
+        std::max(left_wheel_stall_elapsed_s_, right_wheel_stall_elapsed_s_) >=
+            config_.pwm.wheel_stall_timeout_s) {
+        drivetrain_stall_stop_active_ = true;
+        last_command_ = {};
+        commanded_speed_ = commanded_steer_angle_ = 0.0;
+        safety_stop_active_ = last_command_.safety_stop = true;
+        stall_boost_active_ = false;
+        yaw_rate_error_integral_ = 0.0;
+        wheel_speed_error_integral_left_ = wheel_speed_error_integral_right_ = 0.0;
+        last_mpc_command_.reset();
+        diagnostics_.reference_invalidation_reason = "drivetrain_stall_stop";
     }
     if (!commanding_motion && std::abs(last_command_.pwm_left) < 4) {
         last_command_.pwm_left = 0;

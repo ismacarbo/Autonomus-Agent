@@ -22,7 +22,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 15U;
+constexpr std::uint16_t kPacketVersion = 16U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 2U;
 constexpr std::uint16_t kPacketHello = 0U;
@@ -567,6 +567,9 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.locked_gate_heading_rad);
     write_pod(out, sample.locked_gate_crossing_x);
     write_pod(out, sample.locked_gate_crossing_y);
+    write_pod(out, sample.overspeed_braking_active);
+    write_pod(out, sample.drivetrain_stall_stop_active);
+    write_string(out, sample.reference_invalidation_reason);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
@@ -699,7 +702,10 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->controller_firmware_minor) &&
            read_pod(data, offset, &sample->locked_gate_heading_rad) &&
            read_pod(data, offset, &sample->locked_gate_crossing_x) &&
-           read_pod(data, offset, &sample->locked_gate_crossing_y);
+           read_pod(data, offset, &sample->locked_gate_crossing_y) &&
+           read_pod(data, offset, &sample->overspeed_braking_active) &&
+           read_pod(data, offset, &sample->drivetrain_stall_stop_active) &&
+           read_string(data, offset, &sample->reference_invalidation_reason);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {

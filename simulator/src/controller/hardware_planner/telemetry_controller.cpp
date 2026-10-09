@@ -223,6 +223,9 @@ void HardwarePlannerRunner::push_history(const RealRobotObservation& observation
         std::atan2(locked_gap_approach_direction_.y, locked_gap_approach_direction_.x),
         locked_gap_crossing_point_.x,
         locked_gap_crossing_point_.y,
+        overspeed_braking_active_ ? 1.0 : 0.0,
+        drivetrain_stall_stop_active_ ? 1.0 : 0.0,
+        diagnostics_.reference_invalidation_reason,
     });
 
     if (static_cast<int>(history_.size()) > config_.max_history) {

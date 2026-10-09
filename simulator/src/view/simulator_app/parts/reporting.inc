@@ -348,6 +348,9 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"locked_gate_heading_rad\":" << sample.locked_gate_heading_rad
         << ",\"locked_gate_crossing_x\":" << sample.locked_gate_crossing_x
         << ",\"locked_gate_crossing_y\":" << sample.locked_gate_crossing_y
+        << ",\"overspeed_braking_active\":" << sample.overspeed_braking_active
+        << ",\"drivetrain_stall_stop_active\":" << sample.drivetrain_stall_stop_active
+        << ",\"reference_invalidation_reason\":\"" << json_escape(sample.reference_invalidation_reason) << '"'
         << "}";
 }
 
@@ -650,6 +653,10 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "    \"gate_to_structured_switches\": " << thesis_metrics.gate_to_structured_switches << ",\n";
     out << "    \"structured_time_s\": " << thesis_metrics.structured_time_s << ",\n";
     out << "    \"gate_time_s\": " << thesis_metrics.gate_time_s << ",\n";
+    out << "    \"exploration_time_s\": " << thesis_metrics.exploration_time_s << ",\n";
+    out << "    \"hold_time_s\": " << thesis_metrics.hold_time_s << ",\n";
+    out << "    \"recovery_time_s\": " << thesis_metrics.recovery_time_s << ",\n";
+    out << "    \"safety_stop_time_s\": " << thesis_metrics.safety_stop_time_s << ",\n";
     out << "    \"encoder_distance_m\": " << thesis_metrics.encoder_distance_m << ",\n";
     out << "    \"estimated_path_length_m\": " << thesis_metrics.estimated_path_length_m << ",\n";
     out << "    \"odom_pose_delta_m\": " << thesis_metrics.odom_pose_delta_m << ",\n";
@@ -739,7 +746,7 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
            "imu_yaw_rate_from_yaw,imu_yaw_rate_consistency_error,imu_yaw_rate_fallback_active,raw_gate_candidates,"
            "candidate_gate_heading_error_deg,candidate_gate_track_score,candidate_gate_track_hits,candidate_gate_track_misses,"
            "candidate_gate_width_m,candidate_gate_status,candidate_gate_status_name,gate_acquisition_active,"
-           "controller_imu_yaw,controller_imu_yaw_rate,controller_imu_ms,controller_encoder_ms,controller_encoder_packet_dt_ms,body_yaw_rate_measurement,body_yaw_rate_source,imu_sample_new,encoder_sample_new,encoder_sample_valid,controller_firmware_major,controller_firmware_minor,locked_gate_heading_rad,locked_gate_crossing_x,locked_gate_crossing_y\n";
+           "controller_imu_yaw,controller_imu_yaw_rate,controller_imu_ms,controller_encoder_ms,controller_encoder_packet_dt_ms,body_yaw_rate_measurement,body_yaw_rate_source,imu_sample_new,encoder_sample_new,encoder_sample_valid,controller_firmware_major,controller_firmware_minor,locked_gate_heading_rad,locked_gate_crossing_x,locked_gate_crossing_y,overspeed_braking_active,drivetrain_stall_stop_active,reference_invalidation_reason\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
             << sample.position_x << ','
@@ -857,7 +864,10 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.controller_firmware_minor << ','
             << sample.locked_gate_heading_rad << ','
             << sample.locked_gate_crossing_x << ','
-            << sample.locked_gate_crossing_y << '\n';
+            << sample.locked_gate_crossing_y << ','
+            << sample.overspeed_braking_active << ','
+            << sample.drivetrain_stall_stop_active << ','
+            << std::quoted(sample.reference_invalidation_reason, '"', '"') << '\n';
     }
     return true;
 }
@@ -1099,6 +1109,8 @@ bool write_hardware_markdown_summary(const HardwareViewerState& hardware,
     out << "| Passed gates | " << thesis_metrics.passed_gates << " |\n";
     out << "| Mixed switch events | " << thesis_metrics.switch_events << " |\n";
     out << "| Structured / gate time | " << thesis_metrics.structured_time_s << " / " << thesis_metrics.gate_time_s << " s |\n";
+    out << "| Exploration / hold time | " << thesis_metrics.exploration_time_s << " / " << thesis_metrics.hold_time_s << " s |\n";
+    out << "| Recovery / safety-stop time | " << thesis_metrics.recovery_time_s << " / " << thesis_metrics.safety_stop_time_s << " s |\n";
     out << "| Encoder distance | " << thesis_metrics.encoder_distance_m << " m |\n";
     out << "| Estimated path length | " << thesis_metrics.estimated_path_length_m << " m |\n";
     out << "| Odom-pose delta | " << thesis_metrics.odom_pose_delta_m << " m |\n";

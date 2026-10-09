@@ -251,17 +251,14 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     config->gap_extraction.gap_track_max_misses = 18;
     config->gap_extraction.min_passed_gates_to_complete = 2;
 
-    // PWM 90 moved both unloaded wheels in the straight calibration, but the
-    // Manual Editor reports show one loaded/inner wheel still stationary at
-    // 90 while the other side advances. Normal motion can remain at 70; only
-    // a wheel whose encoder stays still receives the 110-PWM break-away pulse.
+    // Retain the measured running deadband (45 in car_calibrated.json).
+    // Raising it to 70 also shifted feed-forward by 25 PWM and prevented the
+    // speed loop from slowing a moving wheel. Starting torque is separate.
     if (config->vehicle_model == VehicleModelKind::CarLikeBicycle) {
-        config->pwm.min_effective_pwm = std::max(config->pwm.min_effective_pwm, 70);
         config->pwm.start_motion_pwm = 110;
-        // The BNO080-confirmed 2026-08-24 drivetrain sweep showed that a
-        // positive yaw request needs much more authority than a negative one.
-        // Close the body-yaw loop outside the per-wheel encoder loop and keep
-        // the measured direction-specific PWM limits explicit.
+        config->pwm.overspeed_braking_enabled = true;
+        config->pwm.wheel_stall_timeout_s = 1.5;
+        // Close the body-yaw loop outside the per-wheel encoder loop.
         // The planner is driven by fresh LiDAR frames (about 7 Hz on the
         // measured hardware) while the BNO080 and the motor command each have
         // their own latency. A unit-gain outer loop therefore chased the
@@ -275,8 +272,6 @@ void apply_unstructured_hardware_config(const WorldMap& world,
         config->pwm.yaw_rate_feedback_correction_limit_rad_s = 0.22;
         config->pwm.yaw_rate_target_slew_rate_rad_s2 = 1.80;
         config->pwm.yaw_rate_sign_preservation_threshold_rad_s = 0.020;
-        config->pwm.gate_positive_turn_max_pwm_delta = 70;
-        config->pwm.gate_negative_turn_max_pwm_delta = 40;
     }
     config->pwm.stall_target_speed_threshold_mps =
         std::min(config->pwm.stall_target_speed_threshold_mps, 0.018);

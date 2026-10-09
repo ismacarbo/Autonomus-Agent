@@ -57,8 +57,6 @@ thesis_sim::HardwarePlannerConfig make_config() {
     config.pwm.yaw_rate_feedback_correction_limit_rad_s = 0.22;
     config.pwm.yaw_rate_target_slew_rate_rad_s2 = 1.80;
     config.pwm.yaw_rate_sign_preservation_threshold_rad_s = 0.020;
-    config.pwm.gate_positive_turn_max_pwm_delta = 70;
-    config.pwm.gate_negative_turn_max_pwm_delta = 40;
     config.frontier_exploration.enabled = true;
     config.frontier_exploration.grid_resolution_m = 0.04;
     config.frontier_exploration.minimum_frontier_distance_m = 0.10;

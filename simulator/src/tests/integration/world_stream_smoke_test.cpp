@@ -80,6 +80,9 @@ int main() {
     live_frame.latest_sample.locked_gate_heading_rad = 0.35;
     live_frame.latest_sample.locked_gate_crossing_x = 0.5;
     live_frame.latest_sample.locked_gate_crossing_y = 0.61;
+    live_frame.latest_sample.overspeed_braking_active = 1.0;
+    live_frame.latest_sample.drivetrain_stall_stop_active = 1.0;
+    live_frame.latest_sample.reference_invalidation_reason = "drivetrain_stall_stop";
     const std::vector<std::uint8_t> frame_payload =
         thesis_sim::serialize_live_frame_blob(live_frame);
     thesis_sim::LiveFrameSnapshot decoded_frame;
@@ -95,6 +98,11 @@ int main() {
         !near(decoded_frame.latest_sample.global_occupied_cells, 17.0) ||
         !near(decoded_frame.latest_sample.slam_map_age_s, 0.04)) {
         return fail("live exploration frame changed during roundtrip");
+    }
+    if (decoded_frame.latest_sample.overspeed_braking_active != 1.0 ||
+        decoded_frame.latest_sample.drivetrain_stall_stop_active != 1.0 ||
+        decoded_frame.latest_sample.reference_invalidation_reason != "drivetrain_stall_stop") {
+        return fail("actuation guard diagnostics changed during stream roundtrip");
     }
 
     if (

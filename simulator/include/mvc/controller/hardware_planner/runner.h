@@ -65,12 +65,12 @@ struct MotorPwmMapperConfig {
     double yaw_rate_sign_preservation_threshold_rad_s = 0.020;
     double linear_feedback_gain = 75.0;
     double yaw_feedback_gain = 35.0;
-    int gate_positive_turn_max_pwm_delta = 38;
-    int gate_negative_turn_max_pwm_delta = 38;
     int start_motion_pwm = 110;
     double stall_speed_threshold_mps = 0.025;
     double stall_target_speed_threshold_mps = 0.08;
     int stall_boost_after_cycles = 3;
+    bool overspeed_braking_enabled = false;
+    double wheel_stall_timeout_s = 0.0;
 };
 
 struct LidarLocalizationConfig {
@@ -482,6 +482,9 @@ struct HardwareTelemetrySample {
     double locked_gate_heading_rad = 0.0;
     double locked_gate_crossing_x = 0.0;
     double locked_gate_crossing_y = 0.0;
+    double overspeed_braking_active = 0.0;
+    double drivetrain_stall_stop_active = 0.0;
+    std::string reference_invalidation_reason;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -872,6 +875,10 @@ class HardwarePlannerRunner {
     int no_motion_command_cycles_ = 0;
     int left_wheel_stall_cycles_ = 0;
     int right_wheel_stall_cycles_ = 0;
+    double left_wheel_stall_elapsed_s_ = 0.0;
+    double right_wheel_stall_elapsed_s_ = 0.0;
+    bool drivetrain_stall_stop_active_ = false;
+    bool overspeed_braking_active_ = false;
     int left_wheel_breakaway_hold_cycles_ = 0;
     int right_wheel_breakaway_hold_cycles_ = 0;
     double stuck_motion_elapsed_s_ = 0.0;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
+#include <deque>
 #include <optional>
 #include <string>
 #include <vector>
@@ -191,12 +193,20 @@ class LiveViewStreamClient {
 
   private:
     bool send_packet(std::uint16_t type, const std::vector<std::uint8_t>& payload);
+    bool flush_outgoing();
     void read_server_data();
     bool parse_next_packet(PollResult* result);
 
     int socket_fd_ = -1;
     std::string last_error_;
     std::vector<std::uint8_t> recv_buffer_;
+    struct PendingPacket {
+        std::vector<std::uint8_t> bytes;
+        bool frame = false;
+    };
+    std::deque<PendingPacket> outgoing_;
+    std::size_t outgoing_offset_ = 0;
+    std::optional<std::chrono::steady_clock::time_point> send_blocked_since_;
 };
 
 class LiveViewStreamServer {
