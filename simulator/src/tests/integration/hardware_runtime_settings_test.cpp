@@ -381,23 +381,27 @@ void check_car_lidar_sides() {
     HardwarePlannerRunner runner(make_world_from_options(options), RealRobotBridge::Options{}, config);
     auto observation = stationary_observation(10.0);
     observation.lidar_scan.clear();
-    // Independent mounting fixture: raw 162 deg is forward, 132 is right,
-    // 192 is left. Do not synthesize these angles from the config under test.
-    for (const auto [angle, range] : {std::pair{132.0, 0.6}, {162.0, 0.8}, {192.0, 0.7}}) {
+    // Measured on 2026-10-10, scan 1: front_check beam 4 and right_check
+    // beam 68 (serial C0F0EDF9C7E29BCEA7E39EF250234304). Front is raw ~0 deg,
+    // physical right is raw ~90 deg. Keep this independent of runner settings;
+    // the previous synthetic 132/162/192 fixture encoded an unmeasured mounting.
+    for (const auto [angle, range] : {std::pair{0.375, 0.447}, {89.953125, 0.3285}}) {
         observation.lidar_scan.push_back({15, angle, range * 1000, range, 0, 0});
     }
     runner.step_with_observation(observation, 0.1, false);
     const Vec2 origin = lidar_origin_world(runner.world().start(), 0.0, config.localization);
-    require(runner.lidar_hits().size() == 3, "missing independent LiDAR fixture returns");
+    require(runner.lidar_hits().size() == 2, "missing measured LiDAR fixture returns");
     for (const auto& hit : runner.lidar_hits()) {
         const double angle = std::atan2(hit.point.y - origin.y, hit.point.x - origin.x);
-        const double expected = hit.distance < .65 ? -kPi / 6 : hit.distance < .75 ? kPi / 6 : 0.0;
-        require(std::abs(angle - expected) < 1e-6,
-                "physical right/left LiDAR returns are mirrored or forward was rotated");
+        const double expected = hit.distance < .4 ? -kPi / 2 : 0.0;
+        require(std::abs(angle - expected) < kPi / 180.0,
+                "measured front/right LiDAR returns do not match the robot axes");
     }
     // A reference captured with the old mirror must not silently override the
     // corrected sensor frame during start matching.
     thesis_sim::mvc::model::InitialLidarReferenceCloud reference;
+    reference.metadata.lidar_yaw_offset_rad = -162.0 * kPi / 180.0;
+    reference.metadata.lidar_flip_left_right = false;
     reference.metadata.stability_valid = true;
     reference.points = {{.4, -.2}, {.4, .2}, {.8, .2}};
     const auto path = std::filesystem::temp_directory_path() /
@@ -467,9 +471,17 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
         auto sensor_config = config;
         // The physical sensor does not change handedness when runner settings
         // change. Keep the observation generator independent of those settings.
-        sensor_config.localization.lidar_yaw_offset = -162.0 * kPi / 180.0;
-        sensor_config.localization.lidar_flip_left_right = false;
+        // Static front/right captures on 2026-10-10 fix this convention.
+        sensor_config.localization.lidar_yaw_offset = 0.0;
+        sensor_config.localization.lidar_flip_left_right = true;
         observation.lidar_scan = make_lidar_scan(physical, plant, sensor_config);
+        // This raycast is instantaneous at the current plant pose. Inheriting
+        // the stationary fixture's 100 ms acquisition duration would deskew an
+        // already undistorted cloud and invent skew that depends on beam order.
+        observation.lidar_scan_duration_s = 0.0;
+        observation.lidar_scan_start_timestamp_s = observation.host_timestamp_s;
+        observation.lidar_scan_mid_timestamp_s = observation.host_timestamp_s;
+        observation.lidar_scan_end_timestamp_s = observation.host_timestamp_s;
         runner.step_with_observation(observation, period, false);
         const auto& command = runner.last_command();
         const bool tracking_gate = runner.diagnostics().control_source == thesis_sim::HardwareControlSource::GateMpc;
@@ -480,7 +492,16 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
                       << ',' << command.target_speed << ',' << command.planner_target_yaw_rate
                       << ',' << command.pwm_left << ',' << command.pwm_right
                       << ',' << static_cast<int>(runner.diagnostics().control_source)
-                      << ',' << runner.diagnostics().reference_invalidation_reason << '\n';
+                      << ',' << runner.diagnostics().reference_invalidation_reason;
+            const auto& sample = runner.history().back();
+            std::cout << ',' << sample.locked_gate_crossing_x
+                      << ',' << sample.locked_gate_crossing_y
+                      << ',' << sample.locked_gate_heading_rad
+                      << ',' << sample.chosen_gate_index
+                      << ',' << runner.passed_gate_count()
+                      << ',' << runner.safety_stop_active()
+                      << ',' << runner.estimate().front_lidar_distance
+                      << ',' << command.target_curvature << '\n';
         }
         gate_steps += tracking_gate;
         if (tracking_gate) gate_speed_sum += std::abs(plant.speed);
@@ -534,6 +555,10 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--angled-right-gate") {
+            check_lateral_gate_pwm_plant(-0.18, 0.15, 0.35);
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--loaded-gates") {
             check_lateral_gate_pwm_plant(0.18, 0.15, 0.0, true);
             check_lateral_gate_pwm_plant(-0.18, 0.15, 0.0, true);

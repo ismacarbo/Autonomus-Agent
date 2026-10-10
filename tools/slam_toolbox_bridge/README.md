@@ -83,9 +83,13 @@ counters. In JSON history, inspect `slam_pose_x/y/yaw`,
 `slam_correction_accepted` must stay zero. The reference PNG remains the local
 navigation grid, identified as such; the comparison poses are in the history.
 Scan matching still uses the same LiDAR and an odometry prior, so it is not
-independent ground truth. The October 9 22:02/22:05 recordings show opposite
-scan-derived and inertial rotation: validate sensor axes with physical
-landmarks before using those poses as feedback or claiming gate accuracy.
+independent ground truth. The October 10 stationary front/right captures
+identified the incorrect car LiDAR frame in profile 1.7.0. Profile 1.8.0 uses
+zero yaw offset and mirrored raw angles: raw 0 degrees is forward and raw
++90 degrees is physical right. Update the calibration file on both machines
+and restart the runner and GUI; recapture start references made with the old
+orientation. Validate the resulting live SLAM/odometry comparison before using
+those poses as feedback or claiming gate accuracy.
 
 Replies are paired with a bounded history of submitted scan poses. Unknown
 sessions, out-of-order sequences, nonfinite poses and responses older than two

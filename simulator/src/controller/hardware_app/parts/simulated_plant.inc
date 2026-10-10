@@ -81,13 +81,13 @@ int run_simulated(const AppOptions& options,
         if (runner.lidar_enabled_for_current_mode()) {
             observation.have_lidar_scan = true;
             observation.lidar_scan = make_lidar_scan(runner.world(), plant_state, planner_config);
-            observation.lidar_scan_duration_s = planner_config.nominal_dt;
-            observation.lidar_scan_start_timestamp_s =
-                host_time_s - observation.lidar_scan_duration_s;
+            // make_lidar_scan raycasts every beam at this one plant pose.
+            // A fictitious acquisition duration would deskew an instantaneous
+            // cloud and introduce motion distortion instead of removing it.
+            observation.lidar_scan_duration_s = 0.0;
+            observation.lidar_scan_start_timestamp_s = host_time_s;
             observation.lidar_scan_end_timestamp_s = host_time_s;
-            observation.lidar_scan_mid_timestamp_s =
-                0.5 * (observation.lidar_scan_start_timestamp_s +
-                       observation.lidar_scan_end_timestamp_s);
+            observation.lidar_scan_mid_timestamp_s = host_time_s;
             observation.lidar_scan_age_s = 0.0;
             observation.lidar_scan_reused = false;
             observation.min_lidar_range_m = observation.lidar_scan.empty()

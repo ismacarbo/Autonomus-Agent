@@ -29,9 +29,9 @@ int main() {
             break;
         }
     }
-    if (!profile_loaded || car_profile.version != "1.7.0" ||
-        !car_profile.has_lidar_orientation || car_profile.lidar_flip_left_right ||
-        !close(car_profile.lidar_yaw_offset_deg, -162.0) ||
+    if (!profile_loaded || car_profile.version != "1.8.0" ||
+        !car_profile.has_lidar_orientation || !car_profile.lidar_flip_left_right ||
+        !close(car_profile.lidar_yaw_offset_deg, 0.0) ||
         !close(car_profile.right_pwm_command_scale, 0.849462, 1e-6) ||
         !close(car_profile.right_pwm_command_offset, 26.021505, 1e-6)) {
         std::cerr << "car_calibration_profile_failed: " << profile_error << '\n';

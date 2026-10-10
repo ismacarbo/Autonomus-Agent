@@ -98,26 +98,27 @@ prove successive sono obbligatori sia hash integro sia seriale LiDAR uguale a
 quello della cattura. L'hash rileva modifiche accidentali o file incompleti;
 non è una firma crittografica.
 
-Dal profilo car 1.7.0 (9 ottobre 2026), lo script della car usa questa
-configurazione. Le reference catturate con il vecchio mirror vanno ricatturate:
+Dal profilo car 1.8.0 (10 ottobre 2026), lo script della car usa questa
+configurazione, verificata con bersagli fisici davanti e a destra. Le reference
+catturate con un orientamento diverso vanno ricatturate:
 
 ```text
 body:       0.25 x 0.15 m
 lidar x:    0.075 m
 lidar y:    0.040 m
-lidar yaw:  -162 deg
-mirror:     disabled
+lidar yaw:  0 deg
+mirror:     enabled (body_angle = -raw_angle)
 ```
 
-**Verifica del 9 ottobre, prove 22:02/22:05:** questi valori sono quelli del
-profilo 1.7.0, non una calibrazione fisica conclusa. La registrazione delle
-scansioni esportate produce rotazione opposta alla posa IMU e traslazione
-prevalentemente opposta agli encoder. Prima di ricatturare una reference da
-usare per il movimento, verificare con un bersaglio fermo davanti e a destra
-del robot il fronte e il verso angolare. I fixture sintetici frontale/destra/
-sinistra verificano una convenzione configurata, non la posizione reale del
-sensore. Non abilitare il feedback di localizzazione sulla sola base della
-corrispondenza visiva nella GUI.
+**Verifica fisica del 10 ottobre:** nelle catture `lidar_front_check` e
+`lidar_right_check`, il pannello davanti dista circa 44,6 cm ed è a raw 0°;
+quello a destra dista circa 32,8 cm ed è a raw +90°. Il precedente profilo
+1.7.0 (-162°, mirror disabilitato) rappresentava erroneamente entrambi.
+La nuova trasformazione conserva x avanti, y a sinistra e yaw antiorario;
+non cambia segni IMU o comandi motori. Il test usa ora raggi di queste catture
+fisiche. Lo zero è nominale: l'inclinazione manuale dei pannelli non consente
+una stima metrologica dell'offset residuo di pochi gradi. Le due catture di
+diagnosi conservano i vecchi metadati e non sono reference da installare.
 
 Se la posizione fisica del LiDAR è diversa, correggere i valori già durante la
 cattura, per esempio:
@@ -125,7 +126,7 @@ cattura, per esempio:
 ```bash
 ./scripts/run_car_lidar_start_matcher.sh /dev/ttyUSB0 \
   --capture-reference datasets/localization/car_validation_start.csv \
-  --lidar-x 0.075 --lidar-y 0.040 --lidar-yaw-deg -162 --lidar-no-mirror
+  --lidar-x 0.075 --lidar-y 0.040 --lidar-yaw-deg 0
 ```
 
 La modalità match rilegge la geometria dal file reference, evitando che una run

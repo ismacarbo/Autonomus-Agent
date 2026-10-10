@@ -24,5 +24,7 @@ if [ ! -x "$executable" ]; then
 fi
 
 cd "$repository_root"
+# Physical front/right captures, 2026-10-10: raw 0 is forward, raw +90 is
+# right. The matcher mirrors raw angles by default (body angle = -raw).
 exec "$executable" --lidar-port "$lidar_port" --vehicle-model car \
-  --lidar-yaw-deg -162 --lidar-no-mirror "$@"
+  --lidar-yaw-deg 0 "$@"

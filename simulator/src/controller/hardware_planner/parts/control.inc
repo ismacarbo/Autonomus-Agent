@@ -481,8 +481,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             apply_strict_scan_escape();
         }
     } else if (have_reference_trajectory) {
+        // On the hardware car, steering is virtual: v/omega are sent to two
+        // differential wheel motors, not to an Ackermann steering servo. The
+        // body velocity is along yaw. A bicycle CG offset would predict an
+        // immediate lateral velocity (beta) that these actuators cannot make,
+        // causing the MPC to under-turn on an oblique gate approach. Use the
+        // zero-offset bicycle kinematics for prediction only; retain the real
+        // body geometry and wheelbase everywhere else (footprint/curvature).
+        VehicleGeometry mpc_geometry = geometry_;
+        if (!tracked_vehicle) {
+            mpc_geometry.cg_to_rear = 0.0;
+        }
         const MpcCommand mpc_command = mpc_follower_.solve(
-            geometry_,
+            mpc_geometry,
             tracking_state,
             reference_trajectory_,
             planner_speed_ref_,
