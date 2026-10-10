@@ -254,6 +254,47 @@ void check_actuation_guards() {
     }
     require(saw_pulse, "fresh stationary encoder intervals never authorized a breakaway pulse");
 
+    // Physical run 122332: the global counter reached 3 one frame before
+    // the wheel counters, issuing two consecutive pulses (116/119, 110/119)
+    // before delayed encoder motion reported 0.346 m/s. Fresh zero deltas
+    // after a pulse must not extend it through a second recovery path.
+    HardwarePlannerRunner consecutive_guard(world, RealRobotBridge::Options{}, config);
+    bool previous_pulse = false;
+    int pulse_count = 0;
+    for (int step = 0; step < 10; ++step) {
+        auto observation = stationary_observation(28.0 + step * .15);
+        observation.controller.status_flags = 0x99;
+        // Prime overspeed braking, then fresh zero intervals: just as in the
+        // run, the global counter starts while the previous PWM is still zero.
+        observation.controller.ticks_left = observation.controller.ticks_right = step > 0 ? 6 : 0;
+        observation.controller.pwm_l = consecutive_guard.last_command().pwm_left;
+        observation.controller.pwm_r = consecutive_guard.last_command().pwm_right;
+        consecutive_guard.step_with_observation(observation, .15, false);
+        const bool pulse = consecutive_guard.diagnostics().stall_boost_active;
+        require(!(pulse && previous_pulse), "two recovery paths extended the breakaway pulse");
+        previous_pulse = pulse;
+        pulse_count += pulse;
+    }
+    require(pulse_count >= 2, "bounded breakaway retries stopped before the stall timeout");
+
+    auto strong_feedback = config;
+    // Stress saturation and the downward slew limiter before the pulse.
+    strong_feedback.pwm.wheel_speed_kp = 10000.0;
+    HardwarePlannerRunner pulse_ceiling(world, RealRobotBridge::Options{}, strong_feedback);
+    bool capped_pulse = false;
+    for (int step = 0; step < 8; ++step) {
+        auto observation = stationary_observation(32.0 + step * .15);
+        observation.controller.status_flags = 0x99;
+        observation.controller.ticks_left = observation.controller.ticks_right = std::min(step, 3);
+        pulse_ceiling.step_with_observation(observation, .15, false);
+        if (!pulse_ceiling.diagnostics().stall_boost_active) continue;
+        capped_pulse = true;
+        const auto& command = pulse_ceiling.last_command();
+        require(command.pwm_left <= 110 && command.pwm_right <= 119,
+                "wheel feedback exceeded the calibrated breakaway pulse ceiling");
+    }
+    require(capped_pulse, "pulse ceiling fixture did not exercise stalled-wheel recovery");
+
     HardwarePlannerRunner startup(world, RealRobotBridge::Options{}, config);
     bool startup_pulsed = false;
     for (int step = 0; step < 25; ++step) {
@@ -555,6 +596,10 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--actuation-guards") {
+            check_actuation_guards();
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--angled-right-gate") {
             check_lateral_gate_pwm_plant(-0.18, 0.15, 0.35);
             return 0;

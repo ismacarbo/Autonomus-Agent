@@ -1646,8 +1646,6 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
          requested_turn * body_yaw_rate_measurement_ < .70 * requested_turn * requested_turn);
     if (hold_left_for_yaw) last_command_.pwm_left = 0;
     if (hold_right_for_yaw) last_command_.pwm_right = 0;
-    const int canonical_command_left = last_command_.pwm_left;
-    const int canonical_command_right = last_command_.pwm_right;
 
     // The wheel controller works in a canonical PWM domain. Apply the
     // measured driver/side calibration only after feed-forward and feedback
@@ -1762,38 +1760,25 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     // full second while the other side remains stalled. The pulse itself is
     // still short and is removed as soon as encoder motion returns.
     const int compact_breakaway_retry_cycles = 4;
-    const bool compact_breakaway_pulse =
-        compact_unstructured_car &&
-        fresh_stall_observation &&
-        !turn_needs_authority &&
-        previous_pwm_left > 0 && previous_pwm_right > 0 &&
-        no_motion_command_cycles_ >= stall_boost_cycles_required &&
-        ((no_motion_command_cycles_ - stall_boost_cycles_required) %
-             compact_breakaway_retry_cycles == 0);
+    // The compact car uses the per-wheel scheduler below, including when
+    // both wheels are stopped. The global counter counts the first zero-PWM
+    // interval too, one frame before the wheel counters. Running both paths
+    // extended a one-frame pulse into two in physical run 20261010_122332.
     const bool continuous_breakaway_boost =
         !compact_unstructured_car &&
         no_motion_command_cycles_ >= stall_boost_cycles_required;
-    if (compact_breakaway_pulse ||
-        continuous_breakaway_boost ||
+    if (continuous_breakaway_boost ||
         (forward_only_tracked_tracks && commanding_motion && robot_is_still)) {
-        if (body_pwm_control) {
-            int left = canonical_command_left, right = canonical_command_right;
-            apply_start_motion_boost(
-                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm), &left, &right);
-            last_command_.pwm_left = apply_signed_pwm_calibration(left,
-                config_.pwm.left_command_scale, config_.pwm.left_command_offset, config_.pwm.max_pwm);
-            last_command_.pwm_right = apply_signed_pwm_calibration(right,
-                config_.pwm.right_command_scale, config_.pwm.right_command_offset, config_.pwm.max_pwm);
-        } else {
-            apply_start_motion_boost(
-                std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
-                &last_command_.pwm_left, &last_command_.pwm_right);
-        }
+        apply_start_motion_boost(
+            std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
+            &last_command_.pwm_left, &last_command_.pwm_right);
         stall_boost_active_ = true;
     }
 
     bool hold_left_for_right_breakaway = false;
     bool hold_right_for_left_breakaway = false;
+    int left_breakaway_pwm_ceiling = 0;
+    int right_breakaway_pwm_ceiling = 0;
     const bool forward_arc_command =
         compact_unstructured_car && last_command_.target_speed > 1e-4;
     if (forward_arc_command) {
@@ -1858,7 +1843,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             const int pulse_pwm = body_pwm_control ? apply_signed_pwm_calibration(per_wheel_breakaway_pwm,
                 config_.pwm.left_command_scale, config_.pwm.left_command_offset, config_.pwm.max_pwm)
                 : per_wheel_breakaway_pwm;
-            last_command_.pwm_left = std::max(last_command_.pwm_left, pulse_pwm);
+            // A recovery pulse has a bounded amplitude. Taking max with the
+            // stalled-wheel PI output made 110 canonical PWM grow to 134
+            // (140 on the calibrated right driver) in the physical reports.
+            last_command_.pwm_left = pulse_pwm;
+            left_breakaway_pwm_ceiling = pulse_pwm;
             wheel_speed_error_integral_left_ = 0.0;
             stall_boost_active_ = true;
             --left_wheel_breakaway_hold_cycles_;
@@ -1869,7 +1858,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             const int pulse_pwm = body_pwm_control ? apply_signed_pwm_calibration(per_wheel_breakaway_pwm,
                 config_.pwm.right_command_scale, config_.pwm.right_command_offset, config_.pwm.max_pwm)
                 : per_wheel_breakaway_pwm;
-            last_command_.pwm_right = std::max(last_command_.pwm_right, pulse_pwm);
+            last_command_.pwm_right = pulse_pwm;
+            right_breakaway_pwm_ceiling = pulse_pwm;
             wheel_speed_error_integral_right_ = 0.0;
             stall_boost_active_ = true;
             --right_wheel_breakaway_hold_cycles_;
@@ -2068,6 +2058,14 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     // clamps restore the held side to min_effective_pwm. During the short
     // break-away pulse this prevents the healthy wheel from dragging the car
     // into an unintended arc while the stalled side receives starting torque.
+    // Deceleration slew limiting must not hold a preceding large PI command
+    // above the recovery ceiling either.
+    if (left_breakaway_pwm_ceiling > 0) {
+        last_command_.pwm_left = std::min(last_command_.pwm_left, left_breakaway_pwm_ceiling);
+    }
+    if (right_breakaway_pwm_ceiling > 0) {
+        last_command_.pwm_right = std::min(last_command_.pwm_right, right_breakaway_pwm_ceiling);
+    }
     if (hold_left_for_right_breakaway) {
         last_command_.pwm_left = 0;
     } else if (hold_right_for_left_breakaway) {
