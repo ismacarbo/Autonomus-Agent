@@ -109,6 +109,16 @@ lidar yaw:  -162 deg
 mirror:     disabled
 ```
 
+**Verifica del 9 ottobre, prove 22:02/22:05:** questi valori sono quelli del
+profilo 1.7.0, non una calibrazione fisica conclusa. La registrazione delle
+scansioni esportate produce rotazione opposta alla posa IMU e traslazione
+prevalentemente opposta agli encoder. Prima di ricatturare una reference da
+usare per il movimento, verificare con un bersaglio fermo davanti e a destra
+del robot il fronte e il verso angolare. I fixture sintetici frontale/destra/
+sinistra verificano una convenzione configurata, non la posizione reale del
+sensore. Non abilitare il feedback di localizzazione sulla sola base della
+corrispondenza visiva nella GUI.
+
 Se la posizione fisica del LiDAR è diversa, correggere i valori già durante la
 cattura, per esempio:
 

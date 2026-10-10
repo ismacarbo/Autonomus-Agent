@@ -151,6 +151,8 @@ class UdpSlamBridge(Node):
                 self.loop_edges = 0
                 self.latest_map = None
                 self.latest_corrected_pose = None
+                self.latest_packet = None
+                self.tf_buffer.clear()
                 self.pending_reset_packet = packet
                 self.begin_reset_if_ready()
                 continue
@@ -236,7 +238,10 @@ class UdpSlamBridge(Node):
         scan.angle_increment = 2.0 * math.pi / beam_count
         scan.angle_max = scan.angle_min + (beam_count - 1) * scan.angle_increment
         scan.scan_time = 0.10
-        scan.time_increment = scan.scan_time / beam_count
+        # Bins are sorted geometrically, not in acquisition order. Inventing
+        # per-beam timestamps here would request TFs in the future and a false
+        # deskew. The packet contains an instantaneous projected scan.
+        scan.time_increment = 0.0
         ranges = [math.inf] * beam_count
         for world_angle, distance, hit in packet.beams:
             relative_angle = math.atan2(
@@ -244,7 +249,7 @@ class UdpSlamBridge(Node):
                 math.cos(world_angle - packet.yaw),
             )
             index = round((relative_angle - scan.angle_min) / scan.angle_increment)
-            index = min(max(index, 0), beam_count - 1)
+            index %= beam_count
             if hit and scan.range_min <= distance <= scan.range_max:
                 ranges[index] = min(ranges[index], distance)
         if sum(math.isfinite(distance) for distance in ranges) < MIN_SLAM_RETURNS:
@@ -287,6 +292,9 @@ class UdpSlamBridge(Node):
 
     def update_corrected_pose(self, packet: ScanPacket) -> None:
         """Compose slam_toolbox's map->odom transform with current odometry."""
+        if self.latest_map is None:
+            self.latest_corrected_pose = None
+            return
         try:
             transform = self.tf_buffer.lookup_transform("map", "odom", Time())
         except Exception:  # tf2 raises several lookup/connectivity subclasses

@@ -343,6 +343,12 @@ target_link_libraries(thesis_sim_lidar_start_matcher PRIVATE
 )
 
 if(BUILD_TESTING)
+  add_executable(thesis_slam_observation_smoke
+    src/tests/integration/slam_observation_test.cpp
+  )
+  target_link_libraries(thesis_slam_observation_smoke PRIVATE thesis_hardware_planner thesis_slam_bridge)
+  add_test(NAME thesis_slam_observation COMMAND thesis_slam_observation_smoke)
+  set_tests_properties(thesis_slam_observation PROPERTIES TIMEOUT 15)
   add_executable(thesis_hardware_runtime_settings_smoke
     src/tests/integration/hardware_runtime_settings_test.cpp
   )

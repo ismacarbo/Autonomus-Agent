@@ -52,6 +52,26 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         return;
     }
 
+    if (config_.vehicle_model == VehicleModelKind::CarLikeBicycle &&
+        open_ended_unstructured_exploration(world_) &&
+        config_.use_encoder_odometry && !actuator_feedback_fresh_) {
+        commanded_speed_ = commanded_steer_angle_ = 0.0;
+        safety_stop_active_ = last_command_.safety_stop = true;
+        control_source_ = HardwareControlSource::SafetyStop;
+        wheel_speed_error_integral_left_ = wheel_speed_error_integral_right_ = 0.0;
+        yaw_rate_error_integral_ = 0.0;
+        filtered_yaw_rate_feedback_valid_ = false;
+        no_motion_command_cycles_ = 0;
+        left_wheel_stall_cycles_ = right_wheel_stall_cycles_ = 0;
+        left_wheel_stall_elapsed_s_ = right_wheel_stall_elapsed_s_ = 0.0;
+        left_wheel_breakaway_hold_cycles_ = right_wheel_breakaway_hold_cycles_ = 0;
+        last_mpc_command_.reset();
+        diagnostics_.reference_invalidation_reason = "motion_feedback_stale";
+        diagnostics_.stall_boost_active = false;
+        diagnostics_.no_motion_command_cycles = 0;
+        return;
+    }
+
     const double safe_dt = std::max(dt, 1e-3);
     const double speed_limit =
         std::min(config_.cruise_speed_limit, geometry_.max_linear_speed);
@@ -445,6 +465,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 use_direct_yaw_rate_command = false;
                 last_mpc_command_.reset();
                 exploration_state_ = UnstructuredExplorationState::Hold;
+                diagnostics_.reference_invalidation_reason = "no_safe_lidar_forward_or_reverse_arc";
             }
         } else if (!apply_forward_gate_search()) {
             commanded_speed_ = 0.0;
@@ -807,6 +828,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 last_command_.target_curvature = 0.0;
                 last_mpc_command_.reset();
                 exploration_state_ = UnstructuredExplorationState::Hold;
+                diagnostics_.reference_invalidation_reason = "no_safe_lidar_forward_or_reverse_arc";
             }
         } else if (strict_locked_motion) {
             gap_recovery_turn_active_ = true;
@@ -1639,6 +1661,11 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const double raw_encoder_dt_s = latest_controller_encoder_dt_ms_ * 0.001;
     const bool raw_encoder_motion_available =
         encoder_snapshot_valid_ && raw_encoder_dt_s > 1e-4;
+    const bool fresh_stall_observation =
+        raw_encoder_motion_available || encoder_startup_zero_interval_;
+    if (encoder_startup_zero_interval_) {
+        left_speed_for_stall = right_speed_for_stall = 0.0;
+    }
     if (raw_encoder_motion_available) {
         const double meters_per_tick = (2.0 * kPi * geometry_.wheel_radius) /
             static_cast<double>(std::max<std::int32_t>(geometry_.encoder_ticks_per_revolution, 1));
@@ -1657,9 +1684,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
          (forward_only_tracked_tracks && last_command_.target_speed > 1e-4));
     const bool robot_is_still =
         max_measured_wheel_speed <= config_.pwm.stall_speed_threshold_mps;
-    if (demanding_motion && robot_is_still) {
+    if (demanding_motion && robot_is_still &&
+        (!compact_unstructured_car || fresh_stall_observation)) {
         ++no_motion_command_cycles_;
-    } else {
+    } else if (!compact_unstructured_car || fresh_stall_observation || !demanding_motion) {
         no_motion_command_cycles_ = 0;
     }
 
@@ -1725,12 +1753,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const int compact_breakaway_retry_cycles = 4;
     const bool compact_breakaway_pulse =
         compact_unstructured_car &&
+        fresh_stall_observation &&
         !turn_needs_authority &&
         previous_pwm_left > 0 && previous_pwm_right > 0 &&
         no_motion_command_cycles_ >= stall_boost_cycles_required &&
         ((no_motion_command_cycles_ - stall_boost_cycles_required) %
-             compact_breakaway_retry_cycles <
-         2);
+             compact_breakaway_retry_cycles == 0);
     const bool continuous_breakaway_boost =
         !compact_unstructured_car &&
         no_motion_command_cycles_ >= stall_boost_cycles_required;
@@ -1767,8 +1795,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         const bool right_requested = right_wheel_speed > wheel_target_threshold &&
             !hold_right_for_yaw && !(turn_needs_authority && requested_turn < 0.0);
 
-        const bool have_individual_wheel_motion =
-            measured_wheel_speeds_valid_ || raw_encoder_motion_available;
+        const bool have_individual_wheel_motion = fresh_stall_observation;
         if (have_individual_wheel_motion) {
             // A wheel deliberately held during the opposite side's pulse is
             // not stalled. Counting it caused alternating opposite-side boosts.
@@ -1776,7 +1803,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                 ? left_wheel_stall_cycles_ + 1 : 0;
             right_wheel_stall_cycles_ = right_requested && previous_pwm_right > 0 && right_speed_for_stall < wheel_motion_threshold
                 ? right_wheel_stall_cycles_ + 1 : 0;
-            if (raw_encoder_motion_available) {
+            if (fresh_stall_observation) {
                 left_wheel_stall_elapsed_s_ = left_wheel_stall_cycles_ > 0
                     ? left_wheel_stall_elapsed_s_ + raw_encoder_dt_s : 0.0;
                 right_wheel_stall_elapsed_s_ = right_wheel_stall_cycles_ > 0
@@ -1795,9 +1822,10 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             std::max(config_.pwm.start_motion_pwm, config_.pwm.min_effective_pwm),
             0,
             config_.pwm.max_pwm);
-        // Two 10 Hz control cycles are enough to cross static friction without
-        // turning the break-away level into the sustained cruise command.
-        constexpr int kBreakawayHoldCycles = 2;
+        // The real loop runs near 6.7 Hz. Two iterations held 110 PWM for
+        // roughly 300 ms and produced 0.31 m/s at a 0.06 m/s request. Pulse for
+        // one iteration, then require another fresh stall observation to retry.
+        constexpr int kBreakawayHoldCycles = 1;
         const auto wheel_breakaway_pulse_due = [&](int stall_cycles) {
             return have_individual_wheel_motion &&
                    stall_cycles >= stall_boost_cycles_required &&

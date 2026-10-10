@@ -250,6 +250,7 @@ bool process_stream_control(const AppOptions& options,
                 next_config.start_matching = active_config->start_matching;
                 next_config.slam_toolbox_enabled = active_config->slam_toolbox_enabled;
                 next_config.slam_pose_feedback_enabled = active_config->slam_pose_feedback_enabled;
+                next_config.slam_observe_only = active_config->slam_observe_only;
             }
             apply_vehicle_profile(profile_options, &next_config);
             apply_robot_calibration_profile(profile_options, &next_config);

@@ -58,6 +58,8 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     imu_sample_new_ = false;
     encoder_snapshot_fresh_ = false;
     encoder_snapshot_valid_ = false;
+    encoder_startup_zero_interval_ = false;
+    actuator_feedback_fresh_ = false;
     latest_controller_left_encoder_delta_ = 0;
     latest_controller_right_encoder_delta_ = 0;
     latest_controller_encoder_dt_ms_ = 0.0;
@@ -71,6 +73,14 @@ void HardwarePlannerRunner::update_estimate_from_observation(const RealRobotObse
     const ControllerTelemetry& telemetry = observation.controller;
     const double imu_yaw = static_cast<double>(telemetry.yaw_mrad) / 1000.0;
     const double imu_age = observation.host_timestamp_s - telemetry.imu_host_timestamp_s;
+    const double encoder_age = observation.host_timestamp_s - telemetry.encoder_host_timestamp_s;
+    // Heartbeats/motor packets can remain fresh while motion feedback stops.
+    // Do not infer a stationary drivetrain from missing encoder/IMU samples.
+    actuator_feedback_fresh_ = telemetry.have_imu && telemetry.have_encoder &&
+        telemetry.imu_host_timestamp_s > 0.0 && telemetry.encoder_host_timestamp_s > 0.0 &&
+        imu_age >= -0.02 && encoder_age >= -0.02 &&
+        imu_age <= config_.localization.max_controller_age_s &&
+        encoder_age <= config_.localization.max_controller_age_s;
     const bool imu_feedback_fresh =
         telemetry.have_imu && telemetry.imu_host_timestamp_s > 0.0 &&
         imu_age >= -0.02 &&
@@ -322,6 +332,18 @@ void HardwarePlannerRunner::update_controller_encoder_snapshot(const ControllerT
     last_right_encoder_ticks_ = telemetry.ticks_right;
     last_encoder_ms_ = telemetry.encoder_ms;
     encoder_ticks_initialized_ = true;
+    // Analog encoders only arm after the first physical motion. Fresh valid
+    // zero-count packets may authorize a bounded startup pulse, even though
+    // they cannot yet authorize odometry. Missing/overflowed packets cannot.
+    encoder_startup_zero_interval_ = continuous_sample && telemetry.enc_dt_ms > 0U &&
+        (telemetry.status_flags & static_cast<std::uint16_t>(StatusFlag::EncodersReady)) == 0U &&
+        encoder_flag_set(telemetry.enc_flags, EncoderFlag::LeftValid) &&
+        encoder_flag_set(telemetry.enc_flags, EncoderFlag::RightValid) &&
+        !encoder_flag_set(telemetry.enc_flags, EncoderFlag::OverflowWarn) &&
+        left_delta == 0 && right_delta == 0;
+    if (encoder_startup_zero_interval_) {
+        latest_controller_encoder_dt_ms_ = static_cast<double>(elapsed_ms);
+    }
     if (!continuous_sample || !controller_encoders_ready(telemetry) ||
         encoder_flag_set(telemetry.enc_flags, EncoderFlag::OverflowWarn) ||
         !controller_encoder_delta_plausible(left_delta, right_delta, elapsed_ms * 0.001)) {

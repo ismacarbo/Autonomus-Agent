@@ -35,6 +35,7 @@ int main(int argc, char** argv) {
         planner_config.slam_toolbox_enabled =
             options.slam_toolbox_enabled && !structured_mode;
         planner_config.slam_pose_feedback_enabled = options.slam_pose_feedback;
+        planner_config.slam_observe_only = options.slam_observe_only;
         planner_config.start_matching.enabled =
             options.start_matching_enabled && !options.simulate && !structured_mode;
         planner_config.start_matching.reference_path = options.start_reference_path;
@@ -85,6 +86,8 @@ int main(int argc, char** argv) {
                   << planner_config.start_matching.enabled << '\n';
         std::cout << "startup_slam_toolbox_enabled="
                   << planner_config.slam_toolbox_enabled << std::endl;
+        std::cout << "startup_slam_observe_only=" << planner_config.slam_observe_only << '\n';
+        std::cout << "startup_slam_pose_feedback=" << planner_config.slam_pose_feedback_enabled << std::endl;
 
         runner = std::make_unique<HardwarePlannerRunner>(
             world,
@@ -272,6 +275,14 @@ int main(int argc, char** argv) {
         std::cout << "start_matching_accepted=" << match.accepted << '\n';
         std::cout << "start_matching_status=" << match.status << '\n';
         std::cout << "slam_toolbox_enabled=" << runner->config().slam_toolbox_enabled << '\n';
+        const auto& slam = runner->slam_toolbox_snapshot();
+        std::cout << "slam_observe_only=" << runner->config().slam_observe_only << '\n';
+        std::cout << "slam_pose_feedback=" << runner->config().slam_pose_feedback_enabled << '\n';
+        std::cout << "slam_toolbox_connected=" << slam.connected << '\n';
+        std::cout << "slam_pose_valid=" << slam.pose_valid << '\n';
+        std::cout << "slam_graph_nodes=" << slam.graph_nodes << '\n';
+        std::cout << "slam_map_updates=" << slam.map_updates << '\n';
+        std::cout << "slam_status=" << slam.status << '\n';
         std::cout << "telemetry_ready=" << (report.telemetry_ready ? 1 : 0) << '\n';
         std::cout << "safety_stop_active=" << (report.safety_stop_active ? 1 : 0) << '\n';
         std::cout << "controller_front_alert=" << (report.controller_front_alert ? 1 : 0) << '\n';

@@ -63,6 +63,9 @@ bool SlamToolboxBridgeClient::open(const std::string& host, std::uint16_t port) 
     host_ = host;
     port_ = port;
     snapshot_ = {};
+    active_session_.clear();
+    submitted_poses_.clear();
+    map_alignment_valid_ = false;
     last_error_.clear();
     return true;
 }
@@ -175,6 +178,15 @@ bool SlamToolboxBridgeClient::submit_scan(const std::string& session,
         last_error_ = std::string("sendto: ") + std::strerror(errno);
         return false;
     }
+    if (session != active_session_) {
+        active_session_ = session;
+        submitted_poses_.clear();
+        snapshot_ = {};
+        map_alignment_valid_ = false;
+    }
+    submitted_poses_.push_back({sequence, odom_position, odom_yaw,
+                                std::chrono::steady_clock::now()});
+    while (submitted_poses_.size() > 128U) submitted_poses_.pop_front();
     last_error_.clear();
     return true;
 }
@@ -191,6 +203,17 @@ bool SlamToolboxBridgeClient::parse_response(const char* data, std::size_t size)
         SlamToolboxSnapshot parsed;
         parsed.session_id = fields[1];
         parsed.sequence = static_cast<std::uint64_t>(std::stoull(fields[2]));
+        if (parsed.session_id != active_session_ ||
+            (snapshot_.connected && parsed.sequence < snapshot_.sequence)) return false;
+        const auto submitted = std::find_if(submitted_poses_.begin(), submitted_poses_.end(),
+            [&](const SubmittedPose& pose) { return pose.sequence == parsed.sequence; });
+        if (submitted == submitted_poses_.end() ||
+            std::chrono::steady_clock::now() - submitted->sent_at > std::chrono::seconds(2)) {
+            return false;
+        }
+        parsed.odom_pose_valid = true;
+        parsed.odom_position = submitted->position;
+        parsed.odom_yaw = submitted->yaw;
         parsed.connected = true;
         parsed.pose_valid = std::stoi(fields[3]) != 0;
         parsed.corrected_position.x = std::stod(fields[4]);
@@ -204,7 +227,11 @@ bool SlamToolboxBridgeClient::parse_response(const char* data, std::size_t size)
         const double origin_y = std::stod(fields[12]);
         const int width = std::stoi(fields[13]);
         const int height = std::stoi(fields[14]);
-        if (!(parsed.map_resolution_m > 0.0) || width <= 0 || height <= 0 ||
+        if (!std::isfinite(parsed.corrected_position.x) ||
+            !std::isfinite(parsed.corrected_position.y) || !std::isfinite(parsed.corrected_yaw) ||
+            !std::isfinite(origin_x) || !std::isfinite(origin_y) ||
+            !std::isfinite(parsed.map_resolution_m) ||
+            !(parsed.map_resolution_m > 0.0) || width <= 0 || height <= 0 ||
             width > 4096 || height > 4096) {
             return false;
         }
@@ -243,6 +270,32 @@ bool SlamToolboxBridgeClient::parse_response(const char* data, std::size_t size)
         if (fields.size() >= 18U) {
             parsed.reset_reason = fields[17];
         }
+        // SLAM starts its own map frame. Align it once per session with the
+        // runner frame; keep subsequent drift visible in the comparison pose.
+        if (parsed.pose_valid && !map_alignment_valid_) {
+            map_alignment_yaw_ = parsed.odom_yaw - parsed.corrected_yaw;
+            const double c = std::cos(map_alignment_yaw_), s = std::sin(map_alignment_yaw_);
+            map_alignment_translation_ = {
+                parsed.odom_position.x - c * parsed.corrected_position.x + s * parsed.corrected_position.y,
+                parsed.odom_position.y - s * parsed.corrected_position.x - c * parsed.corrected_position.y};
+            map_alignment_valid_ = true;
+        }
+        if (map_alignment_valid_) {
+            const double c = std::cos(map_alignment_yaw_), s = std::sin(map_alignment_yaw_);
+            const auto align = [&](Vec2& p) {
+                p = {map_alignment_translation_.x + c * p.x - s * p.y,
+                     map_alignment_translation_.y + s * p.x + c * p.y};
+            };
+            align(parsed.corrected_position);
+            parsed.corrected_yaw = std::atan2(std::sin(parsed.corrected_yaw + map_alignment_yaw_),
+                                               std::cos(parsed.corrected_yaw + map_alignment_yaw_));
+            for (Vec2& p : parsed.free_points) align(p);
+            for (Vec2& p : parsed.occupied_points) align(p);
+        } else {
+            // An unregistered map cannot be overlaid on the navigation frame.
+            parsed.free_points.clear();
+            parsed.occupied_points.clear();
+        }
         parsed.status = "slam_toolbox: scan matching + pose graph optimization";
         snapshot_ = std::move(parsed);
         last_response_time_ = std::chrono::steady_clock::now();
@@ -272,6 +325,7 @@ bool SlamToolboxBridgeClient::poll() {
     if (snapshot_.connected &&
         std::chrono::steady_clock::now() - last_response_time_ > std::chrono::seconds(2)) {
         snapshot_.connected = false;
+        snapshot_.pose_valid = false;
         snapshot_.status = "SLAM bridge stale; LiDAR reconstruction fallback";
     }
     return updated;

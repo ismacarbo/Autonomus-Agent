@@ -125,6 +125,7 @@ struct AppOptions {
     int slam_bridge_port = 9760;
     bool slam_toolbox_enabled = true;
     bool slam_pose_feedback = false;
+    bool slam_observe_only = false;
     bool start_matching_enabled = true;
     std::string start_reference_path;
     std::string calibration_profile_path;
@@ -618,6 +619,7 @@ void print_usage(const char* argv0) {
         << "  --slam-bridge-port N      stream odometry + LiDAR to the SLAM Toolbox UDP bridge\n"
         << "  --slam-bridge-host HOST   bridge host (default 127.0.0.1)\n"
         << "  --slam-pose-feedback      enable bounded SLAM-to-EKF corrections\n"
+        << "  --slam-observe-only       record SLAM comparison poses without changing navigation/map\n"
         << "  --no-slam-toolbox         keep SLAM Toolbox disabled, including GUI requests\n"
         << "  --start-reference PATH    initial LiDAR reference used before motor enable\n"
         << "  --no-start-matching       bypass initial LiDAR start matching for this debug session (overrides GUI)\n"
@@ -739,6 +741,8 @@ AppOptions parse_args(int argc, char** argv) {
             options.slam_bridge_host = argv[++i];
         } else if (arg == "--slam-pose-feedback") {
             options.slam_pose_feedback = true;
+        } else if (arg == "--slam-observe-only") {
+            options.slam_observe_only = true;
         } else if (arg == "--no-slam-toolbox") {
             options.slam_toolbox_enabled = false;
         } else if (arg == "--start-reference" && i + 1 < argc) {
@@ -756,6 +760,9 @@ AppOptions parse_args(int argc, char** argv) {
     options.external_pose_udp_port = std::max(options.external_pose_udp_port, 0);
     options.external_pose_timeout_s = std::max(options.external_pose_timeout_s, 0.01);
     options.slam_bridge_port = std::max(options.slam_bridge_port, 0);
+    if (options.slam_observe_only && options.slam_pose_feedback) {
+        throw std::runtime_error("--slam-observe-only cannot be combined with --slam-pose-feedback");
+    }
     if (options.slam_pose_feedback && options.slam_bridge_port == 0) {
         throw std::runtime_error("--slam-pose-feedback requires --slam-bridge-port");
     }

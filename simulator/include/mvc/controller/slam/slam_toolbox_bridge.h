@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,10 @@ struct SlamToolboxSnapshot {
     bool pose_valid = false;
     Vec2 corrected_position{};
     double corrected_yaw = 0.0;
+    // Odometry of the exact submitted scan, not the pose at UDP receive time.
+    bool odom_pose_valid = false;
+    Vec2 odom_position{};
+    double odom_yaw = 0.0;
     int map_updates = 0;
     int graph_nodes = 0;
     int loop_edges = 0;
@@ -60,6 +65,17 @@ class SlamToolboxBridgeClient {
     std::string last_error_;
     SlamToolboxSnapshot snapshot_{};
     std::chrono::steady_clock::time_point last_response_time_{};
+    struct SubmittedPose {
+        std::uint64_t sequence;
+        Vec2 position;
+        double yaw;
+        std::chrono::steady_clock::time_point sent_at;
+    };
+    std::string active_session_;
+    std::deque<SubmittedPose> submitted_poses_;
+    bool map_alignment_valid_ = false;
+    Vec2 map_alignment_translation_{};
+    double map_alignment_yaw_ = 0.0;
 };
 
 }  // namespace thesis_sim

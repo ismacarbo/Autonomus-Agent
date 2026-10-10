@@ -219,6 +219,56 @@ void check_actuation_guards() {
     }
     require(resumed, "speed regulation did not release braking after slowing down");
 
+    HardwarePlannerRunner feedback_guard(world, RealRobotBridge::Options{}, config);
+    auto stale = stationary_observation(22.0);
+    stale.controller.imu_host_timestamp_s -= .65;
+    stale.controller.encoder_host_timestamp_s -= .65;
+    feedback_guard.step_with_observation(stale, .1, false);
+    require(feedback_guard.last_command().pwm_left == 0 &&
+            feedback_guard.last_command().pwm_right == 0 &&
+            feedback_guard.history().back().reference_invalidation_reason == "motion_feedback_stale",
+            "fresh heartbeat allowed motion with stale IMU/encoder feedback");
+    feedback_guard.step_with_observation(stationary_observation(22.1), .1, false);
+    require(!feedback_guard.last_command().safety_stop &&
+            feedback_guard.last_command().target_speed > 0.0,
+            "fresh motion telemetry did not release the temporary hold");
+
+    HardwarePlannerRunner pulse_guard(world, RealRobotBridge::Options{}, config);
+    bool saw_pulse = false;
+    for (int step = 0; step < 14; ++step) {
+        auto observation = stationary_observation(24.0 + step * .1);
+        observation.controller.status_flags = 0x99;
+        observation.controller.pwm_l = pulse_guard.last_command().pwm_left;
+        observation.controller.pwm_r = pulse_guard.last_command().pwm_right;
+        pulse_guard.step_with_observation(observation, .1, false);
+        if (!pulse_guard.diagnostics().stall_boost_active) continue;
+        saw_pulse = true;
+        const auto stalled_cycles = pulse_guard.history().back().no_motion_cycles;
+        // A cached zero-delta observation cannot authorize another spurt.
+        observation.host_timestamp_s += .02;
+        pulse_guard.step_with_observation(observation, .02, false);
+        require(!pulse_guard.diagnostics().stall_boost_active &&
+                pulse_guard.history().back().no_motion_cycles == stalled_cycles,
+                "cached feedback extended the breakaway pulse or counted another stall");
+        break;
+    }
+    require(saw_pulse, "fresh stationary encoder intervals never authorized a breakaway pulse");
+
+    HardwarePlannerRunner startup(world, RealRobotBridge::Options{}, config);
+    bool startup_pulsed = false;
+    for (int step = 0; step < 25; ++step) {
+        auto observation = stationary_observation(26.0 + step * .1);
+        // 0x91: analog inputs valid; encoders await first motion to arm.
+        observation.controller.pwm_l = startup.last_command().pwm_left;
+        observation.controller.pwm_r = startup.last_command().pwm_right;
+        startup.step_with_observation(observation, .1, false);
+        startup_pulsed = startup_pulsed || startup.diagnostics().stall_boost_active;
+    }
+    require(startup_pulsed, "encoder readiness created a startup breakaway deadlock");
+    require(startup.history().back().drivetrain_stall_stop_active > .5 &&
+            startup.last_command().pwm_left == 0 && startup.last_command().pwm_right == 0,
+            "unarmed encoders permitted unbounded startup pulses");
+
     HardwarePlannerRunner scrub(world, RealRobotBridge::Options{}, config);
     for (int step = 0; step < 8; ++step) {
         auto observation = stationary_observation(25.0 + step * .1);
@@ -490,6 +540,17 @@ int main(int argc, char** argv) {
             return 0;
         }
         check_car_lidar_sides();
+        {
+            const char* args[] = {"runner", "--slam-observe-only"};
+            auto options = parse_args(2, const_cast<char**>(args));
+            require(options.slam_observe_only && !options.slam_pose_feedback,
+                    "SLAM observation mode did not preserve disabled EKF feedback");
+            const char* conflicting[] = {"runner", "--slam-observe-only", "--slam-pose-feedback"};
+            bool rejected = false;
+            try { parse_args(3, const_cast<char**>(conflicting)); }
+            catch (const std::runtime_error&) { rejected = true; }
+            require(rejected, "contradictory SLAM observation/feedback flags were accepted");
+        }
         for (int mask = 0; mask < 4; ++mask) check_settings(mask);
         check_settings(0, true);
         check_actuation_guards();

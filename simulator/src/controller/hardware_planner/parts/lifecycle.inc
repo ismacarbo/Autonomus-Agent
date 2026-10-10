@@ -317,6 +317,8 @@ void HardwarePlannerRunner::reset() {
     imu_sample_new_ = false;
     encoder_snapshot_fresh_ = false;
     encoder_snapshot_valid_ = false;
+    encoder_startup_zero_interval_ = false;
+    actuator_feedback_fresh_ = false;
     encoder_ticks_initialized_ = false;
     last_encoder_ms_ = 0;
     last_observation_time_ = 0.0;
@@ -488,6 +490,8 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     imu_sample_new_ = false;
     encoder_snapshot_fresh_ = false;
     encoder_snapshot_valid_ = false;
+    encoder_startup_zero_interval_ = false;
+    actuator_feedback_fresh_ = false;
     encoder_ticks_initialized_ = false;
     last_encoder_ms_ = 0;
     encoder_ready_streak_ = 0;

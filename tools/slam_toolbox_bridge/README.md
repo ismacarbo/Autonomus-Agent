@@ -57,6 +57,47 @@ a non-decaying local free/occupied grid for the current run. Do not enable
 `--slam-pose-feedback` until the map pose has been checked against independent
 external ground truth.
 
+## Comparing SLAM before enabling feedback
+
+Use `--slam-observe-only` on the runner for a first comparison. This records
+the scan-matched pose and its innovation against the odometry of the same
+scan, while keeping both EKF feedback and the navigation map unchanged.
+It is **not** a stationary robot mode: normal navigation still runs.
+The flag is incompatible with `--slam-pose-feedback` and survives GUI profile
+and map changes. Keep the GUI's SLAM Toolbox checkbox enabled and remove
+`--no-slam-toolbox` from the runner command.
+
+```sh
+./build-ninja/simulator/thesis_robot_runner \
+  --controller-port /dev/ttyACM0 --lidar-port /dev/ttyUSB0 \
+  --scenario unstructured --unstructured-map hardware_lab --vehicle-model car \
+  --pose-fusion auto --no-start-matching \
+  --slam-observe-only --slam-bridge-host 100.66.27.57 --slam-bridge-port 9760 \
+  --stream-host 100.66.27.57 --stream-port 9559 \
+  --stop-on-stream-loss --max-steps 200
+```
+
+Check `slam_toolbox_connected=1`, `slam_pose_valid=1` and increasing graph/map
+counters. In JSON history, inspect `slam_pose_x/y/yaw`,
+`slam_position_innovation_m`, `slam_yaw_innovation_deg`; in this mode
+`slam_correction_accepted` must stay zero. The reference PNG remains the local
+navigation grid, identified as such; the comparison poses are in the history.
+Scan matching still uses the same LiDAR and an odometry prior, so it is not
+independent ground truth. The October 9 22:02/22:05 recordings show opposite
+scan-derived and inertial rotation: validate sensor axes with physical
+landmarks before using those poses as feedback or claiming gate accuracy.
+
+Replies are paired with a bounded history of submitted scan poses. Unknown
+sessions, out-of-order sequences, nonfinite poses and responses older than two
+seconds are discarded. The SLAM frame is aligned once at session start; drift
+is retained in the comparison. When normal map use is enabled, occupied/free
+cells are additionally transformed into the runner frame before collision
+checks. SLAM poses are logged even when EKF feedback is off, and disconnects
+invalidate them.
+
+After updating the adapter, restart the sidecar so it loads the rebuilt image.
+`run.sh` attaches to a container already running; it does not replace its code.
+
 ## Input and Karto grid constraints
 
 The bridge rejects malformed metadata, non-finite beams and scans with fewer

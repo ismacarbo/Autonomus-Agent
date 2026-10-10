@@ -216,9 +216,44 @@ void HardwarePlannerRunner::update_start_matching(
 
 void HardwarePlannerRunner::apply_slam_toolbox_snapshot(
     const SlamToolboxSnapshot& snapshot) {
+    const bool new_pose = !slam_toolbox_snapshot_.pose_valid ||
+        snapshot.session_id != slam_toolbox_snapshot_.session_id ||
+        snapshot.sequence != slam_toolbox_snapshot_.sequence;
     slam_toolbox_snapshot_ = snapshot;
     slam_snapshot_received_sim_time_s_ = sim_time_;
+    slam_pose_valid_ = config_.slam_toolbox_enabled && snapshot.connected && snapshot.pose_valid;
+    last_slam_correction_accepted_ = false;
+    Vec2 corrected_current_position = snapshot.corrected_position;
+    double corrected_current_yaw = snapshot.corrected_yaw;
+    if (slam_pose_valid_) {
+        // Logging a comparison must not require enabling EKF feedback. Compare
+        // against odometry from the same scan, not the later UDP receive pose.
+        last_slam_position_ = snapshot.corrected_position;
+        last_slam_yaw_ = snapshot.corrected_yaw;
+        const Vec2 odom = snapshot.odom_pose_valid ? snapshot.odom_position : estimate_.position;
+        const double odom_yaw = snapshot.odom_pose_valid ? snapshot.odom_yaw : estimate_.yaw;
+        last_slam_position_innovation_m_ = distance(odom, snapshot.corrected_position);
+        last_slam_yaw_innovation_rad_ = std::abs(wrap_angle(snapshot.corrected_yaw - odom_yaw));
+        if (snapshot.odom_pose_valid) {
+            const double angle = snapshot.corrected_yaw - odom_yaw;
+            const double c = std::cos(angle), s = std::sin(angle);
+            const Vec2 delta{estimate_.position.x - odom.x, estimate_.position.y - odom.y};
+            corrected_current_position = {
+                snapshot.corrected_position.x + c * delta.x - s * delta.y,
+                snapshot.corrected_position.y + s * delta.x + c * delta.y};
+            corrected_current_yaw = wrap_angle(estimate_.yaw + angle);
+        }
+        if (config_.slam_pose_feedback_enabled && !config_.slam_observe_only && new_pose) {
+            apply_slam_pose_correction(corrected_current_position, corrected_current_yaw);
+        }
+    }
+    if (config_.slam_observe_only) {
+        slam_toolbox_snapshot_.status = snapshot.connected
+            ? "slam_toolbox: observe_only (no navigation/map feedback)"
+            : snapshot.status;
+    }
     if (!config_.slam_toolbox_enabled || !snapshot.connected ||
+        config_.slam_observe_only || !snapshot.pose_valid ||
         snapshot.occupied_points.empty() || snapshot.free_points.empty()) {
         exploration_map_source_ = ExplorationMapSource::LocalPersistentGrid;
         rebuild_global_map_vectors();
@@ -231,14 +266,26 @@ void HardwarePlannerRunner::apply_slam_toolbox_snapshot(
     exploration_map_source_ = ExplorationMapSource::SlamToolbox;
     global_free_points_ = snapshot.free_points;
     global_occupied_points_ = snapshot.occupied_points;
+    if (snapshot.odom_pose_valid) {
+        // The optimized map and odometry generally differ. Navigation/gate
+        // locks are in the runner frame, even when EKF feedback is disabled.
+        // Register the grid using the paired scan pose before collision tests.
+        const double angle = estimate_.yaw - corrected_current_yaw;
+        const double c = std::cos(angle), s = std::sin(angle);
+        const auto to_navigation = [&](Vec2& point) {
+            const Vec2 delta{point.x - corrected_current_position.x,
+                             point.y - corrected_current_position.y};
+            point = {estimate_.position.x + c * delta.x - s * delta.y,
+                     estimate_.position.y + s * delta.x + c * delta.y};
+        };
+        for (Vec2& point : global_free_points_) to_navigation(point);
+        for (Vec2& point : global_occupied_points_) to_navigation(point);
+    }
     diagnostics_.map_source = exploration_map_source_;
     diagnostics_.global_free_cells = static_cast<int>(global_free_points_.size());
     diagnostics_.global_occupied_cells =
         static_cast<int>(global_occupied_points_.size());
     diagnostics_.slam_map_age_s = 0.0;
-    if (config_.slam_pose_feedback_enabled && snapshot.pose_valid) {
-        apply_slam_pose_correction(snapshot.corrected_position, snapshot.corrected_yaw);
-    }
 }
 
 void HardwarePlannerRunner::update_global_exploration_map(

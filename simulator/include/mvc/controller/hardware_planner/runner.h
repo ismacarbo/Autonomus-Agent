@@ -301,6 +301,7 @@ struct HardwarePlannerConfig {
     bool mapping_lidar_enabled = false;
     bool slam_toolbox_enabled = true;
     bool slam_pose_feedback_enabled = false;
+    bool slam_observe_only = false;
     // Opt-in until firmware 1.3 (car) / 1.11 (tank) has been flashed.
     bool use_mcu_velocity_closed_loop = false;
     // Electrical controller channel order. Encoder/localization sides remain physical.
@@ -847,6 +848,8 @@ class HardwarePlannerRunner {
     std::uint32_t last_encoder_ms_ = 0;
     bool encoder_snapshot_fresh_ = false;
     bool encoder_snapshot_valid_ = false;
+    bool encoder_startup_zero_interval_ = false;
+    bool actuator_feedback_fresh_ = false;
     int chosen_gate_index_ = -1;
     double structured_goal_progress_target_ = 0.0;
     double structured_progress_s_ = 0.0;

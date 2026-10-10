@@ -225,6 +225,10 @@ void RealRobotBridge::pump(double controller_timeout_s, int lidar_min_points, bo
     poll_controller(controller_timeout_s);
     if (fetch_lidar) {
         read_lidar_scan(lidar_min_points);
+        // Scan acquisition can block for ~100 ms. Encoder/IMU packets arriving
+        // meanwhile must reach the speed/braking loop in this iteration, not
+        // the next one. Drain available bytes without adding another wait.
+        poll_controller(0.0);
     }
 }
 

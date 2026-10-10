@@ -230,6 +230,7 @@ int main() {
     thesis_sim::SlamToolboxSnapshot bootstrap_slam;
     bootstrap_slam.session_id = "bootstrap";
     bootstrap_slam.connected = true;
+    bootstrap_slam.pose_valid = true;
     bootstrap_slam.map_updates = 1;
     for (double x = 0.18; x <= 0.62; x += 0.04) {
         for (double y = 0.48; y <= 0.72; y += 0.04) {
@@ -883,6 +884,7 @@ int main() {
     thesis_sim::SlamToolboxSnapshot slam_snapshot;
     slam_snapshot.session_id = "smoke_session";
     slam_snapshot.connected = true;
+    slam_snapshot.pose_valid = true;
     slam_snapshot.map_updates = 3;
     slam_snapshot.free_points = {{0.30, 0.30}, {0.34, 0.30}};
     slam_snapshot.occupied_points = {{0.42, 0.42}};
