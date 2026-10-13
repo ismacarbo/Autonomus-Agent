@@ -1,8 +1,8 @@
 int main(int argc, char** argv) {
     install_shutdown_signal_handlers();
-    const AppOptions options = parse_args(argc, argv);
     std::unique_ptr<HardwarePlannerRunner> runner;
     try {
+        const AppOptions options = parse_args(argc, argv);
         const WorldMap world = make_world_from_options(options);
         const bool structured_mode = world.environment_mode() == EnvironmentMode::StructuredRoad;
         if (!options.simulate && options.controller_port.empty()) {
@@ -58,6 +58,17 @@ int main(int argc, char** argv) {
             // left/right ordering; wiring compensation is real-hardware only.
             planner_config.controller_motor_channels_swapped = false;
             return run_simulated(options, world, std::move(bridge_options), base_planner_config, planner_config);
+        }
+
+        // Open before connecting the controller. An invalid/unwritable output
+        // must never start a run whose requested recording cannot be saved.
+        HardwareTrialRecorder recorder(options);
+        std::cout << "acquisition_mode="
+                  << (options.validation_trial.empty() ? "dummy" : "validation") << '\n';
+        std::cout << "validation_trial="
+                  << (options.validation_trial.empty() ? "none" : options.validation_trial) << '\n';
+        if (!options.telemetry_csv_path.empty()) {
+            std::cout << "telemetry_csv=" << options.telemetry_csv_path << '\n';
         }
 
         std::cout << "startup_calibration_profile_version="
@@ -222,6 +233,10 @@ int main(int argc, char** argv) {
             }
             poll_external_pose(options, &external_pose_receiver, runner.get());
             runner->step();
+            if (!runner->history().empty()) {
+                recorder.append(slam_session_epoch, runner->step_count(),
+                                runner->config(), runner->history().back());
+            }
             log_start_matching();
             if (slam_bridge.active() &&
                 runner->config().slam_toolbox_enabled &&

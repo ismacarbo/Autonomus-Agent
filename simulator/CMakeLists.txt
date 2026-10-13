@@ -358,6 +358,7 @@ if(BUILD_TESTING)
     thesis_slam_bridge
   )
   add_test(NAME thesis_hardware_runtime_settings COMMAND thesis_hardware_runtime_settings_smoke)
+  add_test(NAME thesis_trial_recording COMMAND thesis_hardware_runtime_settings_smoke --trial-recording)
   set_tests_properties(thesis_hardware_runtime_settings PROPERTIES TIMEOUT 60)
   add_test(NAME thesis_loaded_gate_pwm_tracking COMMAND thesis_hardware_runtime_settings_smoke --loaded-gates)
   set_tests_properties(thesis_loaded_gate_pwm_tracking PROPERTIES TIMEOUT 60)

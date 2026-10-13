@@ -4,6 +4,7 @@
 
 // Exercise the runner's actual CLI and TCP control path, without serial devices.
 #include "../../controller/hardware_app/parts/options.inc"
+#include "../../controller/hardware_app/parts/trial_recording.inc"
 #include "../../controller/hardware_app/parts/stream_config.inc"
 }  // namespace
 
@@ -11,6 +12,78 @@ namespace {
 
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+void check_trial_recording() {
+    auto parse = [](std::vector<std::string> args) {
+        std::vector<char*> argv;
+        for (auto& arg : args) argv.push_back(arg.data());
+        return parse_args(static_cast<int>(argv.size()), argv.data());
+    };
+    require(parse({"runner"}).validation_trial.empty(), "default acquisition is not dummy");
+    for (const auto& args : std::vector<std::vector<std::string>>{
+             {"runner", "--validation-trial"},
+             {"runner", "--validation-trial", "--telemetry-csv", "x.csv"},
+             {"runner", "--validation-trial", "T01"},
+             {"runner", "--validation-trial", "T06", "--telemetry-csv", "x.csv"},
+             {"runner", "--validation-trial", "../T01", "--telemetry-csv", "x.csv"},
+             {"runner", "--telemetry-csv", ""},
+             {"runner", "--simulate", "--telemetry-csv", "x.csv"}}) {
+        bool rejected = false;
+        try { parse(args); } catch (const std::runtime_error&) { rejected = true; }
+        require(rejected, "invalid/incomplete acquisition options accepted");
+    }
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("thesis_trial_recording_" + std::to_string(getpid()));
+    std::filesystem::create_directory(dir);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+    } cleanup{dir};
+    const auto path = dir / "trial.csv";
+    auto options = parse({"runner", "--validation-trial", "T01", "--telemetry-csv", path.string()});
+    HardwarePlannerConfig config;
+    config.calibration_profile_version = "1.8.0";
+    config.calibration_profile_hash = "hash,\"quoted\"";
+    config.slam_observe_only = true;
+    thesis_sim::HardwareTelemetrySample sample;
+    sample.time = 0.123456789;
+    sample.reference_invalidation_reason = "reason,\"quoted\"\nsecond line";
+    HardwareTrialRecorder recorder(options);
+    recorder.append(1, 1, config, sample);
+    recorder.append(1, 1, config, sample); // A pump without new telemetry is not a new step.
+    recorder.append(1, 2, config, sample);
+    recorder.append(2, 1, config, sample); // GUI reset is a new configuration epoch.
+    std::ifstream in(path);
+    const std::string content((std::istreambuf_iterator<char>(in)), {});
+    require(content.find("schema_version,trial_id,row_index,configuration_epoch,control_step") == 0,
+            "local recorder did not write its schema header");
+    require(content.find("1,\"T01\",1,1,1,") != std::string::npos &&
+            content.find("1,\"T01\",2,1,2,") != std::string::npos &&
+            content.find("1,\"T01\",3,2,1,") != std::string::npos &&
+            content.find("1,\"T01\",4,") == std::string::npos,
+            "recorder lost/reset/duplicated control samples or failed to flush live rows");
+    require(content.find("\"hash,\"\"quoted\"\"\"") != std::string::npos &&
+            content.find("\"reason,\"\"quoted\"\"\nsecond line\"") != std::string::npos,
+            "CSV strings are not quoted correctly");
+    bool rejected = false;
+    try { HardwareTrialRecorder duplicate(options); }
+    catch (const std::runtime_error&) { rejected = true; }
+    require(rejected && std::filesystem::file_size(path) == content.size(),
+            "recorder overwrote an existing acquisition");
+    options.validation_trial.clear();
+    options.telemetry_csv_path = (dir / "dummy.csv").string();
+    HardwareTrialRecorder dummy(options);
+    dummy.append(1, 1, config, sample);
+    std::ifstream dummy_in(options.telemetry_csv_path);
+    const std::string dummy_content((std::istreambuf_iterator<char>(dummy_in)), {});
+    require(dummy_content.find("1,\"dummy\",1,1,1,") != std::string::npos,
+            "unlabelled physical acquisition was promoted to validation");
+    options.telemetry_csv_path = (path / "unwritable.csv").string();
+    rejected = false;
+    try { HardwareTrialRecorder invalid_path(options); }
+    catch (const std::exception&) { rejected = true; }
+    require(rejected, "invalid recording path did not fail before hardware startup");
 }
 
 class ViewerConnection {
@@ -596,6 +669,10 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--trial-recording") {
+            check_trial_recording();
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--actuation-guards") {
             check_actuation_guards();
             return 0;

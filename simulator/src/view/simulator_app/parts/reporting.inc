@@ -590,15 +590,19 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     }
     out << "    ]\n";
     out << "  },\n";
-    const bool slam_toolbox_connected =
+    const bool displayed_slam_map =
         slam_snapshot != nullptr && slam_snapshot->connected;
+    // In observe-only mode the displayed snapshot deliberately contains the
+    // navigation grid. Its connected flag describes that map, not the remote
+    // SLAM observer, whose connection/pose/graph are carried in the live frame.
+    const bool slam_toolbox_connected = hardware.frame.slam_connected;
     const bool persistent_grid_active =
         slam_snapshot != nullptr &&
         !slam_snapshot->connected &&
         slam_snapshot->status == "persistent_local_grid" &&
         !slam_snapshot->occupied_points.empty();
     const bool occupancy_map_available =
-        slam_toolbox_connected || persistent_grid_active;
+        displayed_slam_map || persistent_grid_active;
     out << "  \"slam_backend\": {\n";
     out << "    \"backend\": \""
         << (slam_toolbox_connected
@@ -608,14 +612,19 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
                        : "passive_lidar_reconstruction"))
         << "\",\n";
     out << "    \"connected\": " << (slam_toolbox_connected ? "true" : "false") << ",\n";
+    out << "    \"displayed_map_source\": \""
+        << (displayed_slam_map ? "slam_toolbox" :
+            (persistent_grid_active ? "persistent_local_grid" : "passive_lidar_reconstruction"))
+        << "\",\n";
+    out << "    \"occupancy_fields_refer_to\": \"displayed_map\",\n";
     out << "    \"pose_valid\": "
-        << (slam_toolbox_connected && slam_snapshot->pose_valid ? "true" : "false") << ",\n";
+        << (slam_toolbox_connected && hardware.frame.slam_pose_valid ? "true" : "false") << ",\n";
     out << "    \"map_updates\": "
-        << (slam_toolbox_connected ? slam_snapshot->map_updates : 0) << ",\n";
+        << hardware.frame.slam_map_updates << ",\n";
     out << "    \"graph_nodes\": "
-        << (slam_toolbox_connected ? slam_snapshot->graph_nodes : 0) << ",\n";
+        << hardware.frame.slam_graph_nodes << ",\n";
     out << "    \"loop_edges\": "
-        << (slam_toolbox_connected ? slam_snapshot->loop_edges : 0) << ",\n";
+        << hardware.frame.slam_loop_edges << ",\n";
     out << "    \"map_resolution_m\": "
         << (occupancy_map_available ? slam_snapshot->map_resolution_m : 0.0) << ",\n";
     out << "    \"free_cells\": "
@@ -625,7 +634,9 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "    \"status\": \""
         << json_escape(
                slam_toolbox_connected
-                   ? slam_snapshot->status
+                   ? hardware.frame.slam_status +
+                         (displayed_slam_map ? "; displayed_map=slam_toolbox"
+                                             : "; displayed_map=local_navigation_grid")
                    : (persistent_grid_active
                           ? "SLAM Toolbox unavailable; non-decaying local exploration grid"
                           : "No SLAM Toolbox response; passive endpoint accumulation only"))

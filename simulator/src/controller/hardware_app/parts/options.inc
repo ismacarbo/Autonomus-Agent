@@ -9,12 +9,16 @@
 #include <cstring>
 #include <exception>
 #include <fstream>
+#include <fcntl.h>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "mvc/controller/hardware_io/external_pose_receiver.h"
@@ -129,6 +133,9 @@ struct AppOptions {
     bool start_matching_enabled = true;
     std::string start_reference_path;
     std::string calibration_profile_path;
+    // An explicit label for acquisition, not an automatic success certificate.
+    std::string validation_trial;
+    std::string telemetry_csv_path;
 };
 
 bool parse_external_pose_transform(const std::string& value,
@@ -624,6 +631,10 @@ void print_usage(const char* argv0) {
         << "  --start-reference PATH    initial LiDAR reference used before motor enable\n"
         << "  --no-start-matching       bypass initial LiDAR start matching for this debug session (overrides GUI)\n"
         << "  --calibration-profile P   override the versioned robot calibration JSON\n";
+    std::cout
+        << "  --telemetry-csv PATH      record every hardware control sample locally; refuses overwrite\n"
+        << "  --validation-trial ID     label acquisition T01..T05 (default dummy); requires --telemetry-csv\n"
+        << "                           labels only: does not change navigation or validate the experiment\n";
 }
 
 AppOptions parse_args(int argc, char** argv) {
@@ -751,6 +762,14 @@ AppOptions parse_args(int argc, char** argv) {
             options.start_matching_enabled = false;
         } else if (arg == "--calibration-profile" && i + 1 < argc) {
             options.calibration_profile_path = argv[++i];
+        } else if (arg == "--validation-trial" || arg == "--telemetry-csv") {
+            if (i + 1 >= argc || std::string(argv[i + 1]).rfind("--", 0) == 0) {
+                throw std::runtime_error(arg + " requires a value");
+            }
+            const std::string value = argv[++i];
+            if (value.empty()) throw std::runtime_error(arg + " requires a non-empty value");
+            if (arg == "--validation-trial") options.validation_trial = value;
+            else options.telemetry_csv_path = value;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -760,6 +779,18 @@ AppOptions parse_args(int argc, char** argv) {
     options.external_pose_udp_port = std::max(options.external_pose_udp_port, 0);
     options.external_pose_timeout_s = std::max(options.external_pose_timeout_s, 0.01);
     options.slam_bridge_port = std::max(options.slam_bridge_port, 0);
+    if (!options.validation_trial.empty()) {
+        const auto& id = options.validation_trial;
+        if (id.size() != 3 || id[0] != 'T' || id[1] != '0' || id[2] < '1' || id[2] > '5') {
+            throw std::runtime_error("--validation-trial must be T01, T02, T03, T04 or T05");
+        }
+        if (options.telemetry_csv_path.empty()) {
+            throw std::runtime_error("--validation-trial requires --telemetry-csv PATH");
+        }
+    }
+    if (options.simulate && !options.telemetry_csv_path.empty()) {
+        throw std::runtime_error("--telemetry-csv is a physical hardware recorder; omit --simulate");
+    }
     if (options.slam_observe_only && options.slam_pose_feedback) {
         throw std::runtime_error("--slam-observe-only cannot be combined with --slam-pose-feedback");
     }
