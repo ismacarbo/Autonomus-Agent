@@ -59,7 +59,7 @@ void HardwarePlannerRunner::reset_start_matching() {
     start_matching_status_ = {};
     start_matching_status_.enabled =
         config_.start_matching.enabled &&
-        world_.environment_mode() == EnvironmentMode::UnstructuredGates &&
+        (world_.environment_mode() == EnvironmentMode::UnstructuredGates || config_.mixed_dynamic.enabled) &&
         lidar_enabled_for_current_mode();
     start_match_group_points_.clear();
     start_match_results_.clear();

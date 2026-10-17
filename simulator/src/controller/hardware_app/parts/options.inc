@@ -23,6 +23,7 @@
 
 #include "mvc/controller/hardware_io/external_pose_receiver.h"
 #include "mvc/controller/hardware_planner/runner.h"
+#include "mvc/controller/hardware_planner/mixed_mission.h"
 #include "mvc/controller/slam/slam_toolbox_bridge.h"
 #include "mvc/model/navigation/robot_calibration_profile.h"
 #include "mvc/model/world/scenario_model.h"
@@ -118,6 +119,8 @@ struct AppOptions {
     UnstructuredMapPreset unstructured_preset = UnstructuredMapPreset::HardwareLab;
     StructuredMapPreset structured_preset = StructuredMapPreset::ValidationRoad;
     int mixed_preset = 1;
+    std::string mixed_config_path;
+    bool check_mixed_config = false;
     std::string world_file;
     std::string stream_host;
     int stream_port = 0;
@@ -456,6 +459,7 @@ EnvironmentMode parse_environment_mode(const std::string& value) {
 }
 
 int parse_mixed_preset(const std::string& value) {
+    if (value == "goal_directed_dynamic" || value == "MixedGoalDirectedDynamic" || value == "dynamic_rejoin") return 6;
     if (value == "dynamic" || value == "dynamic_obstacle" ||
         value == "dynamic-obstacle" || value == "dynamic_obstacle_road" ||
         value == "dynamic-obstacle-road") {
@@ -483,6 +487,7 @@ int parse_mixed_preset(const std::string& value) {
 }
 
 WorldMap mixed_hardware_world_from_preset(int preset) {
+    if (preset == 6) return thesis_sim::hardware_mixed::mission("");
     if (preset == 5) {
         return WorldMap::mixed_tank_hardware_demo();
     }
@@ -555,6 +560,11 @@ HardwareLocalizationPolicy parse_localization_policy(const std::string& value) {
 }
 
 WorldMap make_world_from_options(const AppOptions& options) {
+    if (options.mixed_preset == 6) {
+        if (options.environment_mode != EnvironmentMode::MixedRoadGates || !options.world_file.empty())
+            throw std::invalid_argument("dynamic Mixed requires --scenario mixed and its mission config, not --world-file");
+        return thesis_sim::hardware_mixed::mission(options.mixed_config_path);
+    }
     if (!options.world_file.empty()) {
         std::ifstream in(options.world_file, std::ios::binary);
         if (!in.is_open()) {
@@ -603,6 +613,10 @@ void print_usage(const char* argv0) {
         << "  --lidar-baudrate N        default 115200\n"
         << "  --max-steps N             default 1500\n"
         << "  --dt SEC                  default 0.10\n"
+        << "  --mixed-map goal_directed_dynamic  hardware-only adaptive Mixed mission\n"
+        << "  --mixed-config PATH       mission road, bounds and rejoin/safety parameters\n"
+        << "  --check-mixed-config      validate configuration without opening hardware\n"
+        << "                            dynamic Mixed requires start matching; capture its dedicated reference first\n"
         << "  --simulate                run the selected hardware scenario against synthetic sensors\n"
         << "  --scenario MODE           structured | unstructured | mixed\n"
         << "  --structured-map NAME     validation | circle | zigzag | hardware_track | figure_eight | tank_circuit\n"
@@ -660,6 +674,10 @@ AppOptions parse_args(int argc, char** argv) {
             options.max_steps = std::atoi(argv[++i]);
         } else if (arg == "--dt" && i + 1 < argc) {
             options.dt = std::atof(argv[++i]);
+        } else if (arg == "--mixed-config" && i + 1 < argc) {
+            options.mixed_config_path = argv[++i];
+        } else if (arg == "--check-mixed-config") {
+            options.check_mixed_config = true;
         } else if (arg == "--simulate") {
             options.simulate = true;
         } else if (arg == "--scenario" && i + 1 < argc) {
@@ -786,6 +804,14 @@ AppOptions parse_args(int argc, char** argv) {
     options.external_pose_udp_port = std::max(options.external_pose_udp_port, 0);
     options.external_pose_timeout_s = std::max(options.external_pose_timeout_s, 0.01);
     options.slam_bridge_port = std::max(options.slam_bridge_port, 0);
+    if (options.mixed_preset == 6 && options.simulate)
+        throw std::invalid_argument("MixedGoalDirectedDynamic is hardware-only; --simulate is forbidden");
+    if (options.mixed_preset == 6 && !options.start_matching_enabled)
+        throw std::invalid_argument("MixedGoalDirectedDynamic requires LiDAR start matching; --no-start-matching is forbidden");
+    if (options.mixed_preset == 6 && (!std::isfinite(options.cruise_speed_limit_mps) || options.cruise_speed_limit_mps < 0))
+        throw std::invalid_argument("invalid dynamic Mixed cruise speed");
+    if ((!options.mixed_config_path.empty() || options.check_mixed_config) && options.mixed_preset != 6)
+        throw std::invalid_argument("mixed config/check requires --mixed-map goal_directed_dynamic");
     if (!options.validation_trial.empty()) {
         const auto& id = options.validation_trial;
         if (id.size() != 3 || id[0] != 'T' || id[1] != '0' || id[2] < '1' || id[2] > '5') {
@@ -806,7 +832,11 @@ AppOptions parse_args(int argc, char** argv) {
     }
     if (options.start_reference_path.empty()) {
         options.start_reference_path =
-            options.vehicle_profile == VehicleProfile::Tank
+            options.mixed_preset == 6
+                ? (options.vehicle_profile == VehicleProfile::Tank
+                    ? "datasets/localization/tank_mixed_local_start.csv"
+                    : "datasets/localization/car_mixed_local_start.csv")
+                : options.vehicle_profile == VehicleProfile::Tank
                 ? "datasets/localization/tank_validation_start.csv"
                 : "datasets/localization/car_unstructured_hardware_lab_start.csv";
     }

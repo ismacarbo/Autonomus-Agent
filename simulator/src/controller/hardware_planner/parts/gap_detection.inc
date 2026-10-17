@@ -13,7 +13,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         dynamic_gap_tracks_.clear();
         return;
     }
-    if (compact_mixed_open_road(world_) &&
+    if (!config_.mixed_dynamic.enabled && compact_mixed_open_road(world_) &&
         passed_unstructured_gap_count_ >= required_unstructured_gap_pass_count()) {
         clear_locked_gap_goal();
         dynamic_gap_tracks_.clear();
@@ -92,14 +92,14 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         return;
     }
 
-    const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
+    const bool micro_hardware_lab = !config_.mixed_dynamic.enabled && compact_hardware_mixed_lab_world(world_);
     const bool compact_unstructured_hardware =
         hardware_unstructured_exploration_world(world_);
     const bool manual_exploration =
         open_ended_unstructured_exploration(world_);
     const double current_world_span = world_span_m(world_);
     const bool compact_mixed_reference =
-        world_is_mixed(world_) &&
+        !config_.mixed_dynamic.enabled && world_is_mixed(world_) &&
         world_has_structured_reference(world_) &&
         current_world_span <= 2.50 &&
         !world_.road_centerline().empty();
@@ -1336,7 +1336,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             : (estimate_.front_lidar_distance > 0.0 &&
                estimate_.front_lidar_distance <
                    config_.localization.obstacle_stop_distance_m + 0.04);
-    if (world_is_mixed(world_) &&
+    if (!config_.mixed_dynamic.enabled && world_is_mixed(world_) &&
         compute_mixed_road_block_score(mixed_road_gate_lookahead_m()) >= 0.12 &&
         (!lab_scale_mixed_world_for_candidates || lab_scale_front_pressure_for_candidates)) {
         const Vec2 forward{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
@@ -1644,6 +1644,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                       << " confirmed=" << (candidate.temporally_confirmed ? 1 : 0)
                       << '\n';
         }
+        if (config_.mixed_dynamic.enabled && !candidate.crossing_point_valid) continue;
         if (!candidate.temporally_confirmed) {
             continue;
         }

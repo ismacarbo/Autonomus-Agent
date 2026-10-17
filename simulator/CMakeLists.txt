@@ -209,6 +209,7 @@ target_link_libraries(thesis_planner_stack PUBLIC
 )
 
 add_library(thesis_hardware_planner STATIC
+  src/controller/hardware_planner/mixed_navigation.cpp
   src/controller/hardware_planner/runner.cpp
   src/controller/hardware_planner/telemetry_controller.cpp
 )
@@ -285,6 +286,14 @@ endif()
 add_executable(thesis_robot_runner
   src/controller/hardware_app/main.cpp
 )
+
+if(BUILD_TESTING)
+  add_executable(thesis_hardware_mixed_navigation_test
+    src/tests/integration/hardware_mixed_navigation_test.cpp)
+  target_link_libraries(thesis_hardware_mixed_navigation_test PRIVATE thesis_hardware_planner)
+  add_test(NAME thesis_hardware_mixed_navigation_offline COMMAND thesis_hardware_mixed_navigation_test)
+  set_tests_properties(thesis_hardware_mixed_navigation_offline PROPERTIES TIMEOUT 60 LABELS "hardware;offline")
+endif()
 
 target_include_directories(thesis_robot_runner PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include

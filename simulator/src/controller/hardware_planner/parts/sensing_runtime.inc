@@ -263,7 +263,14 @@ void HardwarePlannerRunner::step() {
 
     if (bridge_.controller_connected()) {
         const RealRobotObservation& previous_observation = bridge_.observation();
-        if (previous_observation.have_controller_telemetry) {
+        if (config_.mixed_dynamic.enabled) {
+            const double now = monotonic_seconds();
+            if (!previous_observation.have_controller_telemetry ||
+                now - previous_observation.controller.rx_timestamp_s > config_.localization.max_controller_age_s ||
+                !previous_observation.have_lidar_scan ||
+                now - previous_observation.lidar_scan_end_timestamp_s > config_.localization.max_lidar_age_s)
+                mixed_stop("sensor_stale_before_transmit");
+        } else if (previous_observation.have_controller_telemetry) {
             rearm_controller_if_needed(previous_observation.controller);
         }
         send_last_control_command(true);
@@ -277,11 +284,15 @@ void HardwarePlannerRunner::step() {
         lidar_enabled_for_current_mode());
     telemetry_ready_ = bridge_.observation().have_controller_telemetry;
     if (!telemetry_ready_) {
+        if (config_.mixed_dynamic.enabled) {
+            mixed_stop("controller_communication_lost");
+            if (bridge_.controller_connected()) send_last_control_command(true);
+        }
         return;
     }
 
     const RealRobotObservation& observation = bridge_.observation();
-    rearm_controller_if_needed(observation.controller);
+    if (!config_.mixed_dynamic.enabled) rearm_controller_if_needed(observation.controller);
     const double now = observation.host_timestamp_s;
     const double dt = last_observation_time_ > 0.0
                           ? std::max(0.0, now - last_observation_time_)
@@ -297,6 +308,13 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     const double bounded_dt = clamp_value(elapsed_dt, 0.01, 0.25);
     const bool lidar_enabled = lidar_enabled_for_current_mode();
     RealRobotObservation synchronized_observation = observation;
+    if (config_.mixed_dynamic.enabled) {
+        auto& scan = synchronized_observation.lidar_scan;
+        scan.erase(std::remove_if(scan.begin(), scan.end(), [](const RPLidarA1::ScanPoint& p) {
+            return !p.quality || !std::isfinite(p.angle_deg) || !std::isfinite(p.distance_m) || p.distance_m <= 0.0;
+        }), scan.end());
+        if (scan.empty()) synchronized_observation.have_lidar_scan = false;
+    }
     const double observation_now = observation.host_timestamp_s;
     const double controller_age =
         observation.have_controller_telemetry &&
@@ -335,7 +353,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
 
     const auto step_start = std::chrono::steady_clock::now();
 
-    world_.update_gate_layout(sim_time_);
+    if (!config_.mixed_dynamic.enabled) world_.update_gate_layout(sim_time_);
     if (!dynamic_gap_mode_enabled()) {
         sync_gate_specs_from_world(false);
     }
@@ -355,7 +373,9 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         correct_pose_with_lidar(synchronized_observation.lidar_scan);
         update_lidar_hits_world(synchronized_observation.lidar_scan);
         update_global_exploration_map(synchronized_observation.lidar_scan);
-        if (dynamic_gap_mode_enabled() && motion_permitted_by_start_match()) {
+        if (config_.mixed_dynamic.enabled) {
+            // Dedicated state machine below consumes only fresh measured scans.
+        } else if (dynamic_gap_mode_enabled() && motion_permitted_by_start_match()) {
             // Validate the currently locked gate before rebuilding candidates.
             // Once the aperture is behind the robot it may legitimately lose
             // scan support; rebuilding first used to discard that gate before
@@ -376,7 +396,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         estimate_.min_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
         estimate_.front_lidar_distance = lidar_enabled ? config_.localization.max_range_m : -1.0;
         lidar_hits_.clear();
-        if (dynamic_gap_mode_enabled()) {
+        if (dynamic_gap_mode_enabled() && !config_.mixed_dynamic.enabled) {
             restart_unstructured_scan();
         }
         if (!lidar_enabled) {
@@ -397,13 +417,18 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     refresh_gate_diagnostics();
 
     const auto planning_start = std::chrono::steady_clock::now();
-    plan_if_needed();
-    update_planner_references(bounded_dt);
-    update_selected_trajectory();
+    if (config_.mixed_dynamic.enabled) {
+        update_mixed_navigation(synchronized_observation, elapsed_dt);
+    } else {
+        plan_if_needed();
+        update_planner_references(bounded_dt);
+        update_selected_trajectory();
+    }
     planning_compute_ms_ = elapsed_ms(planning_start, std::chrono::steady_clock::now());
 
     const auto tracking_start = std::chrono::steady_clock::now();
     compute_control_command(bounded_dt);
+    if (config_.mixed_dynamic.enabled) mixed_command_guard(bounded_dt);
     tracking_compute_ms_ = elapsed_ms(tracking_start, std::chrono::steady_clock::now());
 
     // Bound numerical integration, never the clock used for reports/timeouts.
@@ -411,7 +436,10 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     ++step_count_;
     count_unstructured_gate_crossing_if_needed();
     count_mixed_gate_crossing_if_needed();
-    if (structured_road_is_closed_loop(world_)) {
+    if (config_.mixed_dynamic.enabled) {
+        distance_to_goal_ = distance(estimate_.position, world_.goal());
+        goal_reached_ = mixed_state_ == hardware_mixed::State::GoalReached;
+    } else if (structured_road_is_closed_loop(world_)) {
         const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
         const bool compact_mixed_loop = compact_mixed_structured_loop(world_);
         const bool free_hardware_mixed_loop =
@@ -630,6 +658,10 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     diagnostics_.slam_session_id = slam_toolbox_snapshot_.session_id;
     diagnostics_.slam_reset_reason = slam_toolbox_snapshot_.reset_reason;
     step_compute_ms_ = elapsed_ms(step_start, std::chrono::steady_clock::now());
+    if (config_.mixed_dynamic.enabled &&
+        (controller_age + step_compute_ms_ / 1000.0 > config_.localization.max_controller_age_s ||
+         lidar_age + step_compute_ms_ / 1000.0 > config_.localization.max_lidar_age_s))
+        mixed_stop("planning_latency_exceeded_sensor_freshness");
     push_history(observation);
 
     if (send_pwm && connected_ && bridge_.controller_connected()) {

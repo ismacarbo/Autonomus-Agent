@@ -14,6 +14,17 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     tracker_heading_error_deg_ = 0.0;
     control_source_ = HardwareControlSource::Hold;
 
+    if (config_.mixed_dynamic.enabled &&
+        (mixed_state_ == hardware_mixed::State::SafeStop ||
+         mixed_state_ == hardware_mixed::State::GateAcquisition ||
+         reference_trajectory_.size() < 2)) {
+        commanded_speed_ = commanded_steer_angle_ = 0.0;
+        safety_stop_active_ = last_command_.safety_stop = true;
+        control_source_ = HardwareControlSource::SafetyStop;
+        last_mpc_command_.reset();
+        return;
+    }
+
     if (drivetrain_stall_stop_active_) {
         commanded_speed_ = commanded_steer_angle_ = 0.0;
         safety_stop_active_ = last_command_.safety_stop = true;
@@ -94,7 +105,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     double direct_yaw_rate_command = 0.0;
     const bool scanning_startup = startup_scan_active();
     const bool strict_locked_motion = strict_locked_gate_motion_enabled();
-    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    const bool mixed_gate_active = world_is_mixed(world_) &&
+        (locked_gap_goal_.has_value() || (config_.mixed_dynamic.enabled &&
+         mixed_state_ == hardware_mixed::State::RoadRejoining));
     const bool compact_mixed_gate_active =
         mixed_gate_active && world_span_m(world_) <= 2.50;
     const bool following_dynamic_gate =
@@ -524,7 +537,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                     geometry_.max_yaw_rate);
                 const double pivot_heading_threshold =
                     following_dynamic_gate ? 0.48 : 0.72;
-                if (std::abs(mpc_command.heading_error) >= pivot_heading_threshold) {
+                if (!config_.mixed_dynamic.enabled && std::abs(mpc_command.heading_error) >= pivot_heading_threshold) {
                     const double pivot_direction =
                         std::abs(direct_yaw_rate_command) > 1e-4
                             ? direct_yaw_rate_command
@@ -609,11 +622,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         config_.localization.min_valid_range_m + 0.02,
         config_.localization.obstacle_stop_distance_m - 0.07);
     const bool authoritative_clothoid_mpc_active =
-        !tracked_vehicle &&
         have_reference_trajectory &&
         last_mpc_command_.has_value() &&
-        (open_ended_unstructured_exploration(world_) ||
-         navigation_target_kind_ == NavigationTargetKind::PhysicalGate);
+        (config_.mixed_dynamic.enabled ||
+         (!tracked_vehicle &&
+          (open_ended_unstructured_exploration(world_) ||
+           navigation_target_kind_ == NavigationTargetKind::PhysicalGate)));
     double motion_heading_local = 0.0;
     bool have_motion_heading = false;
     if (authoritative_clothoid_mpc_active) {
@@ -1035,7 +1049,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     } else if (!handled_gap_priority_tracking) {
         gap_recovery_turn_active_ = false;
     }
-    if (!use_gap_recovery_turn &&
+    if (!config_.mixed_dynamic.enabled && !use_gap_recovery_turn &&
         mixed_gate_active &&
         tracked_vehicle &&
         locked_gap_goal_.has_value() &&
@@ -1575,6 +1589,32 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             previous_planner_yaw_rate_target_ = 0.0;
             filtered_yaw_rate_feedback_valid_ = false;
         }
+    }
+
+    if (config_.mixed_dynamic.enabled && !safety_stop_active_) {
+        const auto& cfg=config_.mixed_dynamic;
+        const double accel=std::min(geometry_.max_accel,cfg.braking_decel_mps2);
+        last_command_.target_speed=clamp_value(std::min(last_command_.target_speed,planner_speed_ref_),
+            std::max(0.0,mixed_last_command_speed_-cfg.braking_decel_mps2*safe_dt),
+            std::min(config_.cruise_speed_limit,mixed_last_command_speed_+accel*safe_dt));
+        const double curvature_limit=config_.vehicle_model==VehicleModelKind::CarLikeBicycle
+            ? std::min(geometry_.max_curvature,std::tan(geometry_.max_steer_angle)/geometry_.wheelbase)
+            : geometry_.max_curvature;
+        const double yaw_limit=std::min(geometry_.max_yaw_rate,curvature_limit*last_command_.target_speed);
+        double w=clamp_value(last_command_.target_yaw_rate,
+            mixed_last_command_yaw_rate_-cfg.max_yaw_accel_rad_s2*safe_dt,
+            mixed_last_command_yaw_rate_+cfg.max_yaw_accel_rad_s2*safe_dt);
+        w=clamp_value(w,-yaw_limit,yaw_limit);
+        if(config_.vehicle_model==VehicleModelKind::CarLikeBicycle && last_command_.target_speed>1e-4) {
+            const double previous_steer=std::abs(mixed_last_command_speed_)>1e-4
+                ? std::atan(geometry_.wheelbase*mixed_last_command_yaw_rate_/mixed_last_command_speed_) : 0.0;
+            const double steer=clamp_value(std::atan(geometry_.wheelbase*w/last_command_.target_speed),
+                previous_steer-geometry_.max_steer_rate*safe_dt,previous_steer+geometry_.max_steer_rate*safe_dt);
+            w=last_command_.target_speed*std::tan(steer)/geometry_.wheelbase;
+        }
+        last_command_.target_yaw_rate=w;
+        last_command_.target_curvature=last_command_.target_speed>1e-4?w/last_command_.target_speed:0;
+        commanded_speed_=last_command_.target_speed;
     }
 
     const auto [left_wheel_speed, right_wheel_speed] =

@@ -5,11 +5,11 @@ int main(int argc, char** argv) {
         const AppOptions options = parse_args(argc, argv);
         const WorldMap world = make_world_from_options(options);
         const bool structured_mode = world.environment_mode() == EnvironmentMode::StructuredRoad;
-        if (!options.simulate && options.controller_port.empty()) {
+        if (!options.simulate && !options.check_mixed_config && options.controller_port.empty()) {
             print_usage(argv[0]);
             return 2;
         }
-        if (!options.simulate && !structured_mode && options.lidar_port.empty()) {
+        if (!options.simulate && !options.check_mixed_config && !structured_mode && options.lidar_port.empty()) {
             print_usage(argv[0]);
             return 2;
         }
@@ -52,6 +52,53 @@ int main(int argc, char** argv) {
         apply_structured_hardware_config(world, &planner_config);
         apply_mixed_hardware_config(world, &planner_config);
         apply_tracked_mixed_hardware_config(world, &planner_config);
+        if (options.mixed_preset == 6) {
+            thesis_sim::hardware_mixed::mission(options.mixed_config_path, &planner_config.mixed_dynamic);
+            // Do not inherit permissive aperture confirmation/recovery settings
+            // from compact car/tank presets configured above.
+            planner_config.gap_extraction = thesis_sim::GapExtractionConfig{};
+            planner_config.gap_extraction.gap_track_min_hits = 3;
+            planner_config.mapping_lidar_enabled = true;
+            planner_config.planner_safety_stop_enabled = true;
+            planner_config.start_matching.enabled = true;
+            planner_config.gap_extraction.enabled = true;
+            planner_config.gap_extraction.strict_locked_gate_motion = true;
+            planner_config.gap_extraction.min_passed_gates_to_complete = 0;
+            planner_config.gap_extraction.max_target_distance_m = 1.50;
+            planner_config.gap_extraction.planning_max_range_m = 2.50;
+            planner_config.gap_extraction.min_gap_width_m = planner_config.drive.body_width + 0.18;
+            planner_config.gap_extraction.path_clearance_radius_m = 0.06;
+            planner_config.gap_extraction.dynamic_bounds_margin_m = 0.0;
+            planner_config.localization.max_range_m = 2.50;
+            planner_config.localization.obstacle_stop_distance_m = 0.22;
+            planner_config.cruise_speed_limit = options.cruise_speed_limit_mps > 0 ? options.cruise_speed_limit_mps : 0.06;
+            planner_config.goal_tolerance_m = 0.06;
+            planner_config.goal_stop_speed_mps = 0.025;
+            planner_config.drive.max_accel = std::min(planner_config.drive.max_accel, 0.20);
+            planner_config.drive.max_decel = std::min(planner_config.drive.max_decel, 0.25);
+            planner_config.pwm.yaw_rate_target_slew_rate_rad_s2 = planner_config.mixed_dynamic.max_yaw_accel_rad_s2;
+            if (options.check_mixed_config) {
+                HardwarePlannerRunner check(world, bridge_options, planner_config);
+                std::cout << "MixedGoalDirectedDynamic configuration valid; hardware not connected\n";
+                const auto& bounds = world.bounds();
+                std::cout << "mixed_frame=" << (planner_config.mixed_dynamic.start_reference_frame ? "start_reference" : "arena") << '\n'
+                          << "mixed_bounds_kind=" << (planner_config.mixed_dynamic.start_reference_frame ? "unregistered_local_envelope" : "registered_arena") << '\n'
+                          << "mixed_arena_size_m=" << planner_config.mixed_dynamic.arena_size_m.x << ',' << planner_config.mixed_dynamic.arena_size_m.y << '\n'
+                          << "mixed_bounds_m=" << bounds.min_x << ',' << bounds.min_y << ','
+                          << bounds.max_x << ',' << bounds.max_y << '\n'
+                          << "mixed_start_m=" << world.start().x << ',' << world.start().y << '\n'
+                          << "mixed_start_yaw_rad=" << world.start_heading() << '\n'
+                          << "mixed_goal_m=" << world.goal().x << ',' << world.goal().y << '\n'
+                          << "mixed_body_m=" << check.geometry().body_length << ',' << check.geometry().body_width << '\n'
+                          << "mixed_max_curvature=" << check.geometry().max_curvature << '\n'
+                          << "start_reference=" << planner_config.start_matching.reference_path << '\n'
+                          << "start_reference_loaded=" << check.start_matching_status().reference_loaded << '\n'
+                          << "start_matching_status=" << check.start_matching_status().status << '\n'
+                          << "start_live_match_required=1\n";
+                return 0;
+            }
+        }
+
 
         if (options.simulate) {
             // The synthetic controller already follows canonical physical

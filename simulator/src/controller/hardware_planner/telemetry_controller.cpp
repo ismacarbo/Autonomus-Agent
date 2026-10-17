@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <iostream>
 
 namespace thesis_sim {
 namespace {
@@ -238,6 +239,28 @@ void HardwarePlannerRunner::push_history(const RealRobotObservation& observation
         start_matching_status_.last_inlier_ratio,
         start_matching_status_.reference_hash,
     });
+
+    if (config_.mixed_dynamic.enabled) {
+        auto& sample=history_.back();
+        sample.mixed_state=hardware_mixed::state_name(mixed_state_);
+        sample.mixed_reason=mixed_reason_;
+        sample.mixed_s=mixed_projection_.s; sample.mixed_n=mixed_projection_.n;
+        sample.mixed_heading_error=mixed_projection_.heading_error;
+        sample.mixed_goal_x=world_.goal().x;sample.mixed_goal_y=world_.goal().y;
+        sample.mixed_target_s=mixed_target_s_;
+        if(mixed_target_s_>=0) {
+            const auto target=mixed_road_.sample(mixed_target_s_);
+            sample.mixed_rejoin_x=target.position.x;sample.mixed_rejoin_y=target.position.y;
+        }
+        sample.mixed_candidates=mixed_candidates_;sample.mixed_replans=mixed_replans_;
+        sample.mixed_rejoins=mixed_rejoins_;sample.mixed_safe_stops=mixed_safe_stops_;
+        sample.mixed_gate_id=mixed_last_gate_id_;
+        if(step_count_%10==0) std::cerr << "mixed_status time=" << sim_time_
+            << " state=" << sample.mixed_state << " x=" << estimate_.position.x << " y=" << estimate_.position.y
+            << " s=" << sample.mixed_s << " n=" << sample.mixed_n << " heading_error=" << sample.mixed_heading_error
+            << " s_target=" << mixed_target_s_ << " gates=" << passed_unstructured_gap_count_
+            << " rejoins=" << mixed_rejoins_ << " remaining=" << distance_to_goal_ << " reason=" << mixed_reason_ << '\n';
+    }
 
     if (static_cast<int>(history_.size()) > config_.max_history) {
         history_.erase(history_.begin());

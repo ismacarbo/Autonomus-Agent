@@ -88,6 +88,8 @@ struct DynamicObstacleSpec {
 
 class WorldMap {
   public:
+    // Implemented in thesis_hardware_planner, never registered as a simulated preset.
+    static WorldMap hardware_mixed_mission(const std::vector<Vec2>& road, const Rect& bounds);
     static WorldMap unstructured_demo(UnstructuredMapPreset preset = UnstructuredMapPreset::RobotValidation,
                                       GateBehaviorMode gate_behavior = GateBehaviorMode::Static,
                                       std::uint32_t gate_seed = 0);

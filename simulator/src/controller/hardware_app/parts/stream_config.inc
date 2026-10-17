@@ -241,6 +241,11 @@ bool process_stream_control(const AppOptions& options,
         }
         return true;
     }
+    if (runner->config().mixed_dynamic.enabled &&
+        (poll_result.robot_profile_received || poll_result.runtime_settings_received || poll_result.world_received)) {
+        streamer->send_control_ack(false, "MixedGoalDirectedDynamic mission/settings are fixed by the hardware CLI; stop and restart to change them");
+        return true;
+    }
     if (poll_result.robot_profile_received && poll_result.robot_profile.has_value()) {
         try {
             AppOptions profile_options = options;

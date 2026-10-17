@@ -12,6 +12,7 @@ bool HardwarePlannerRunner::startup_scan_active() const {
 }
 
 void HardwarePlannerRunner::clear_locked_gap_goal() {
+    if (config_.mixed_dynamic.enabled) mixed_gate_plane_crossed_ = false;
     locked_gap_goal_.reset();
     locked_gap_name_ = "locked_gap_goal";
     locked_gap_crossing_point_ = {};
@@ -311,7 +312,7 @@ void HardwarePlannerRunner::set_locked_gap_goal(
     const Vec2& target,
     const std::string& persistent_name,
     const std::optional<Vec2>& crossing_point) {
-    if (compact_hardware_mixed_lab_world(world_)) {
+    if (!config_.mixed_dynamic.enabled && compact_hardware_mixed_lab_world(world_)) {
         const double progress_target =
             structured_goal_progress_target_ > 0.0
                 ? structured_goal_progress_target_
@@ -347,6 +348,10 @@ void HardwarePlannerRunner::set_locked_gap_goal(
     locked_gap_name_ = persistent_name.empty() ? "locked_gap_goal" : persistent_name;
     locked_gap_crossing_point_ = crossing_point.value_or(target);
     locked_gap_start_position_ = estimate_.position;
+    if (config_.mixed_dynamic.enabled) {
+        mixed_gate_plane_crossed_ = false;
+        mixed_gate_previous_pose_ = {estimate_.position, estimate_.yaw, estimate_.curvature, estimate_.speed};
+    }
     locked_gap_set_time_s_ = sim_time_;
 
     const Vec2 fallback_direction{std::cos(estimate_.yaw), std::sin(estimate_.yaw)};
@@ -501,6 +506,7 @@ void HardwarePlannerRunner::publish_locked_gap_goal() {
 }
 
 void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
+    if (config_.mixed_dynamic.enabled) return; // Full-body crossing is owned by the explicit state machine.
     if (!world_is_mixed(world_) || !locked_gap_goal_.has_value()) {
         return;
     }

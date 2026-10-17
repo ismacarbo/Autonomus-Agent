@@ -1,5 +1,6 @@
 #include "parts/support.inc"
 #include "parts/lifecycle.inc"
+#include "parts/mixed_navigation.inc"
 #include "parts/planning.inc"
 #include "parts/localization.inc"
 #include "parts/exploration.inc"

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "action_selection.h"
+#include "mvc/controller/hardware_planner/mixed_navigation.h"
 #include "mvc/controller/hardware_io/real_robot_bridge.h"
 #include "mvc/controller/slam/slam_toolbox_bridge.h"
 #include "mvc/model/navigation/initial_lidar_matcher.h"
@@ -324,6 +325,7 @@ struct HardwarePlannerConfig {
     GapExtractionConfig gap_extraction{};
     InitialStartMatchingConfig start_matching{};
     FrontierExplorationConfig frontier_exploration{};
+    hardware_mixed::Config mixed_dynamic{};
 };
 
 struct HardwarePlannerEstimate {
@@ -505,6 +507,13 @@ struct HardwareTelemetrySample {
     double start_matching_rmse_m = 0.0;
     double start_matching_inlier_ratio = 0.0;
     std::string start_matching_reference_hash;
+    std::string mixed_state;
+    std::string mixed_reason;
+    double mixed_s = 0.0, mixed_n = 0.0, mixed_heading_error = 0.0;
+    double mixed_goal_x = 0.0, mixed_goal_y = 0.0;
+    double mixed_rejoin_x = 0.0, mixed_rejoin_y = 0.0, mixed_target_s = -1.0;
+    int mixed_candidates = 0, mixed_replans = 0, mixed_rejoins = 0, mixed_safe_stops = 0;
+    std::string mixed_gate_id;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -659,9 +668,16 @@ class HardwarePlannerRunner {
     }
 
   private:
+    friend struct HardwareMixedTestAccess; // Offline observation/state injection, never connected IO.
     void initialize_planner_state();
     void initialize_gates();
     void sync_road_from_world();
+    void reset_mixed_navigation();
+    void update_mixed_navigation(const RealRobotObservation& observation, double dt);
+    void mixed_set_state(hardware_mixed::State state, const std::string& reason);
+    void mixed_stop(const std::string& reason);
+    void mixed_command_guard(double dt);
+    hardware_mixed::PathResult mixed_validate(const std::vector<ReferenceWaypoint>& path) const;
     void sync_gate_specs_from_world(bool reset_flags);
     void sync_planner_from_estimate(bool reset_relative_state);
     void sync_estimate_from_ekf_state();
@@ -773,6 +789,24 @@ class HardwarePlannerRunner {
     KinematicBicycleEkf estimator_{};
     ModelPredictivePathFollower mpc_follower_{};
     std::unique_ptr<road_info> road_;
+    hardware_mixed::ReferenceRoad mixed_road_;
+    hardware_mixed::ObservedSpace mixed_space_;
+    hardware_mixed::State mixed_state_ = hardware_mixed::State::RoadFollowing;
+    hardware_mixed::State mixed_resume_state_ = hardware_mixed::State::RoadFollowing;
+    hardware_mixed::Projection mixed_projection_;
+    std::vector<ReferenceWaypoint> mixed_path_;
+    std::string mixed_reason_;
+    std::string mixed_last_gate_id_;
+    Vec2 mixed_previous_position_{};
+    double mixed_previous_yaw_ = 0.0;
+    double mixed_target_s_ = -1.0, mixed_entry_s_ = 0.0;
+    double mixed_last_plan_s_ = -1.0, mixed_last_scan_timestamp_ = -1.0;
+    double mixed_last_command_speed_ = 0.0, mixed_last_command_yaw_rate_ = 0.0;
+    int mixed_candidates_ = 0, mixed_replans_ = 0, mixed_rejoins_ = 0, mixed_safe_stops_ = 0;
+    int mixed_complete_frames_ = 0;
+    bool mixed_pose_fault_ = false;
+    bool mixed_gate_plane_crossed_ = false;
+    ReferenceWaypoint mixed_gate_previous_pose_{};
 
     std::vector<gate> gates_;
     std::vector<GateSpec> gate_specs_;

@@ -14,6 +14,39 @@ void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
+void check_dynamic_mixed_options() {
+    const auto parse=[](std::vector<std::string> args) {
+        std::vector<char*> argv;
+        for(auto& arg:args)argv.push_back(arg.data());
+        return parse_args(static_cast<int>(argv.size()),argv.data());
+    };
+    const auto options=parse({"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--check-mixed-config"});
+    auto world=make_world_from_options(options);
+    world.reset_gate_layout(123);
+    require(world.gates().empty() && world.obstacles().empty() && world.perception_obstacles().empty() &&
+            world.dynamic_obstacles().empty(),"hardware dynamic mission inherited scenario objects");
+    require(thesis_sim::distance(world.start(),world.goal())>0.1,"dynamic mission is not open");
+    require(options.start_matching_enabled &&
+            options.start_reference_path=="datasets/localization/car_mixed_local_start.csv",
+            "dynamic Mixed inherited a legacy start reference");
+    require(parse({"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic",
+                   "--start-reference","custom_start.csv"}).start_reference_path=="custom_start.csv",
+            "explicit start reference was ignored");
+    require(parse({"runner","--scenario","unstructured","--no-start-matching"}).start_matching_enabled==false,
+            "legacy hardware start-matching setting changed");
+    for(const auto& args:std::vector<std::vector<std::string>>{
+        {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--simulate"},
+        {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--no-start-matching"},
+        {"runner","--check-mixed-config"},
+        {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--cruise-speed","nan"},
+        {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--cruise-speed","-1"}}) {
+        bool rejected=false;
+        try{parse(args);}catch(const std::exception&){rejected=true;}
+        require(rejected,"invalid dynamic Mixed CLI accepted");
+    }
+    std::cout<<"hardware_dynamic_mixed_options: ok\n";
+}
+
 void check_trial_recording() {
     auto parse = [](std::vector<std::string> args) {
         std::vector<char*> argv;
@@ -750,6 +783,10 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
 }  // namespace
 
 int main(int argc, char** argv) {
+    if(argc==2 && std::string(argv[1])=="--mixed-options") {
+        try {check_dynamic_mixed_options();return 0;}
+        catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
+    }
     try {
         if (argc == 2 && std::string(argv[1]) == "--road-pwm") {
             check_road_pwm_plant(false);

@@ -19,6 +19,13 @@ void HardwarePlannerRunner::connect() {
     if (connected_) {
         return;
     }
+    // Hardware-only mission: reject a missing/incompatible reference before
+    // opening either serial device, even when connect() bypasses the CLI.
+    if (config_.mixed_dynamic.enabled &&
+        (!start_matching_status_.enabled || !start_matching_status_.reference_loaded)) {
+        throw std::runtime_error("MixedGoalDirectedDynamic needs a valid LiDAR start reference before connecting: " +
+                                 start_matching_status_.status);
+    }
 
     const auto reconnect_bridge = [&]() {
         bridge_.disconnect();
@@ -198,7 +205,7 @@ void HardwarePlannerRunner::reset() {
     const bool calibrated_car_controller = open_ended_unstructured_car ||
         (world_has_structured_reference(world_) && !micro_structured_world(world_) &&
          config_.vehicle_model == VehicleModelKind::CarLikeBicycle);
-    if (calibrated_car_controller) {
+    if (calibrated_car_controller && !config_.mixed_dynamic.enabled) {
         // The physical car is actuated by independent left/right motor groups.
         // A 1.8 1/m bicycle limit gives a 0.56 m minimum radius and cannot
         // follow the few-decimetre gate clothoids produced from local LiDAR.
@@ -206,10 +213,10 @@ void HardwarePlannerRunner::reset() {
         // differential authority that the drivetrain can actually execute.
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.10);
         geometry_.max_curvature = std::max(geometry_.max_curvature, 6.0);
-    } else if (micro_structured_world(world_)) {
+    } else if (!config_.mixed_dynamic.enabled && micro_structured_world(world_)) {
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.35);
         geometry_.max_curvature = std::max(geometry_.max_curvature, 14.0);
-    } else if (compact_structured_world(world_)) {
+    } else if (!config_.mixed_dynamic.enabled && compact_structured_world(world_)) {
         geometry_.max_steer_angle = std::max(geometry_.max_steer_angle, 1.10);
         geometry_.max_curvature = std::max(geometry_.max_curvature, 5.50);
     }
@@ -273,6 +280,14 @@ void HardwarePlannerRunner::reset() {
         mpc_config.w_speed = 0.9;
         mpc_config.w_steer_rate = 0.040;
         mpc_config.w_terminal = 10.0;
+    }
+    if (config_.mixed_dynamic.enabled) {
+        mpc_config.preview_distance = 0.10;
+        mpc_config.min_lookahead_distance = 0.04;
+        mpc_config.max_accel = geometry_.max_accel;
+        mpc_config.min_accel = -geometry_.max_decel;
+        mpc_config.max_steer_rate = geometry_.max_steer_rate;
+        mpc_config.max_yaw_accel = config_.mixed_dynamic.max_yaw_accel_rad_s2;
     }
     mpc_follower_ = ModelPredictivePathFollower(mpc_config);
 
@@ -430,6 +445,7 @@ void HardwarePlannerRunner::reset() {
     estimator_.reset(world_.start(), world_.start_heading());
     reset_pose(world_.start(), world_.start_heading());
     reset_start_matching();
+    if (config_.mixed_dynamic.enabled) reset_mixed_navigation();
 }
 
 void HardwarePlannerRunner::set_external_pose_reference(
@@ -464,6 +480,11 @@ void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
     last_slam_correction_accepted_ = false;
     slam_snapshot_received_sim_time_s_ = -1.0;
     // Points accumulated in the previous pose frame must not survive a reset.
+    if (config_.mixed_dynamic.enabled) {
+        mixed_space_.clear();
+        mixed_path_.clear();
+        mixed_last_scan_timestamp_ = -1.0;
+    }
     lidar_hits_.clear();
     lidar_map_points_.clear();
     lidar_occupancy_cells_.clear();
@@ -828,7 +849,7 @@ int HardwarePlannerRunner::required_unstructured_gap_pass_count() const {
     // A perception-only open-ended hardware scene has no authoritative number of
     // physical LiDAR apertures. Keep exploring until the operator stops the
     // run instead of turning an arbitrary local count into a false mission end.
-    if (open_ended_unstructured_exploration(world_)) {
+    if (config_.mixed_dynamic.enabled || open_ended_unstructured_exploration(world_)) {
         return std::numeric_limits<int>::max();
     }
     return std::max(config_.gap_extraction.min_passed_gates_to_complete, 1);
@@ -993,10 +1014,11 @@ bool HardwarePlannerRunner::perception_map_ready() const {
 }
 
 bool HardwarePlannerRunner::unstructured_perception_only_mode() const {
-    return world_.environment_mode() == EnvironmentMode::UnstructuredGates;
+    return config_.mixed_dynamic.enabled || world_.environment_mode() == EnvironmentMode::UnstructuredGates;
 }
 
 bool HardwarePlannerRunner::dynamic_gap_point_allowed(const Vec2& position) const {
+    if (config_.mixed_dynamic.enabled) return is_inside_bounds(world_, position);
     if (open_ended_unstructured_exploration(world_)) {
         return true;
     }
