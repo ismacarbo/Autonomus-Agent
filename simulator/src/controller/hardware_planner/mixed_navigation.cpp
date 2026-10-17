@@ -222,7 +222,9 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
             if(now-scan.timestamp>cfg.observation_memory_s) continue;
             for(const Vec2& hit:scan.occupied_points) {
                 result.clearance=std::min(result.clearance,distance(hit,q.position));
-                if(inside(hit,q,hl,hw)) {result.reason="occupied_footprint";return result;}
+                if(inside(hit,q,hl,hw)) {
+                    result.reason="occupied_footprint";result.witness=hit;result.has_witness=true;return result;
+                }
             }
         }
     }
@@ -237,16 +239,94 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
             const double x=-hl+2*hl*ix/nx,y=-hw+2*hw*iy/ny;
             const Vec2 p{q.position.x+std::cos(q.yaw)*x-std::sin(q.yaw)*y,
                          q.position.y+std::sin(q.yaw)*x+std::cos(q.yaw)*y};
-            if(p.x<bounds.min_x||p.x>bounds.max_x||p.y<bounds.min_y||p.y>bounds.max_y) {result.reason="geofence";return result;}
+            if(p.x<bounds.min_x||p.x>bounds.max_x||p.y<bounds.min_y||p.y>bounds.max_y) {
+                result.reason="geofence";result.witness=p;result.has_witness=true;return result;
+            }
             // The physical body at the current pose is occupied by the robot,
             // not an inference that its unobserved surroundings are free.
             if(!inside(p,current,g.body_length/2,g.body_width/2) && !known_free(p,now,cfg)) {
-                result.reason="unknown_footprint";return result;
+                result.reason="unknown_footprint";result.witness=p;result.has_witness=true;return result;
             }
         }
         if(i) result.length+=distance(path[i-1].position,q.position);
     }
     result.path=path; result.reason="accepted";
+    return result;
+}
+
+GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
+                   double normal_yaw, double width, bool plane_already_crossed,
+                   const Vec2& goal, const VehicleGeometry& g,
+                   VehicleModelKind model, const Config& cfg, double speed,
+                   double current_speed, const ObservedSpace& space,
+                   const Rect& bounds, double now) {
+    GatePlan result;
+    result.selected.reason="no_verified_gate";
+    const double pad=cfg.obstacle_margin_m+cfg.pose_margin_m+1.5*cfg.sample_spacing_m;
+    if(!finite(center) || !std::isfinite(normal_yaw) || !std::isfinite(width) ||
+       width<=g.body_width+2*pad) {
+        result.outcomes["aperture_too_narrow"]=1;return result;
+    }
+    const Vec2 normal{std::cos(normal_yaw),std::sin(normal_yaw)};
+    const Vec2 lateral{-normal.y,normal.x};
+    const auto longitudinal=[&](Vec2 p){return (p.x-center.x)*normal.x+(p.y-center.y)*normal.y;};
+    const auto lateral_offset=[&](Vec2 p){return (p.x-center.x)*lateral.x+(p.y-center.y)*lateral.y;};
+    const auto fits=[&](const ReferenceWaypoint& p) {
+        const double a=angle(p.yaw-normal_yaw);
+        const double side=.5*(g.body_width*std::abs(std::cos(a))+g.body_length*std::abs(std::sin(a)));
+        return std::cos(a)>0.7 && std::abs(lateral_offset(p.position))+side+pad<=width/2;
+    };
+    const auto crosses=[&](const std::vector<ReferenceWaypoint>& path) {
+        bool crossed=plane_already_crossed;
+        for(size_t i=1;i<path.size();++i) {
+            const double before=longitudinal(path[i-1].position),after=longitudinal(path[i].position);
+            if(before>0 && after<=0) return false;
+            if(before<=0 && after>0) {
+                const double f=-before/(after-before);
+                ReferenceWaypoint crossing;
+                crossing.position={path[i-1].position.x+f*(path[i].position.x-path[i-1].position.x),
+                                   path[i-1].position.y+f*(path[i].position.y-path[i-1].position.y)};
+                crossing.yaw=path[i-1].yaw+f*angle(path[i].yaw-path[i-1].yaw);
+                if(crossed || !fits(crossing)) return false;
+                crossed=true;
+            }
+        }
+        const auto& end=path.back();
+        const double a=angle(end.yaw-normal_yaw);
+        const double rear=.5*(g.body_length*std::abs(std::cos(a))+g.body_width*std::abs(std::sin(a)));
+        return crossed && fits(end) && longitudinal(end.position)>rear+pad;
+    };
+    double best=std::numeric_limits<double>::infinity();
+    // Keep the historical centred normal-tangent candidate first, then sample
+    // deterministic alternatives within this measured aperture. No map goals,
+    // obstacle coordinates or intermediate checkpoints are introduced.
+    const double side_room=width/2-g.body_width/2-pad;
+    for(double extension:{0.0,0.5*cfg.gate_exit_search_m,cfg.gate_exit_search_m}) {
+        for(double offset:{0.0,-0.5*side_room,0.5*side_room}) {
+            for(double fraction:{0.0,-1.0/3,1.0/3,-2.0/3,2.0/3,-1.0,1.0}) {
+                ++result.candidates;
+                const double yaw=normal_yaw+fraction*cfg.gate_heading_search_rad;
+                const double a=yaw-normal_yaw;
+                const double rear=.5*(g.body_length*std::abs(std::cos(a))+g.body_width*std::abs(std::sin(a)));
+                const double advance=std::max(.5*g.body_length+cfg.obstacle_margin_m+cfg.pose_margin_m+.10,
+                                              rear+pad+.05)+extension;
+                const ReferenceWaypoint target{{center.x+advance*normal.x+offset*lateral.x,
+                                                center.y+advance*normal.y+offset*lateral.y},yaw,0,speed};
+                auto candidate=connect(current,target,g,model,cfg,speed,current_speed);
+                if(candidate.valid() && !crosses(candidate.path)) {
+                    candidate.path.clear();candidate.reason="aperture_crossing_rejected";
+                }
+                const double bending=candidate.bending;
+                if(candidate.valid()) candidate=space.validate(candidate.path,current,g,bounds,now,cfg);
+                ++result.outcomes[candidate.reason];
+                if(!candidate.valid()) continue;
+                candidate.bending=bending;
+                const double score=candidate.length+.08*bending+.5*distance(target.position,goal)-
+                                   .15*std::min(candidate.clearance,1.0);
+                if(score<best) {best=score;result.selected=std::move(candidate);}
+            }
+        }
+    }
     return result;
 }
 

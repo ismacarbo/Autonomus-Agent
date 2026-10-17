@@ -4,6 +4,7 @@
 #include "Clothoids.hh"
 #include "mvc/model/navigation/mpc_path_follower.h"
 #include <deque>
+#include <map>
 #include <string>
 
 namespace thesis_sim::hardware_mixed {
@@ -38,6 +39,8 @@ struct Config {
     double sample_spacing_m = 0.02;
     double gate_timeout_s = 30.0;
     double gate_reject_radius_m = 0.22;
+    double gate_heading_search_rad = 0.60;
+    double gate_exit_search_m = 0.30;
     int completion_frames = 3;
 };
 
@@ -63,6 +66,9 @@ struct PathResult {
     std::vector<ReferenceWaypoint> path;
     std::string reason;
     double length = 0.0, bending = 0.0, clearance = 0.0;
+    // First failing point for hardware diagnostics, never a navigation target.
+    Vec2 witness{};
+    bool has_witness = false;
     bool valid() const { return path.size() >= 2 && reason == "accepted"; }
 };
 
@@ -90,6 +96,22 @@ public:
 private:
     std::deque<Scan> scans_;
 };
+
+struct GatePlan {
+    PathResult selected;
+    int candidates = 0;
+    std::map<std::string, int> outcomes;
+};
+
+// Local G2 alternatives through one measured aperture. Every returned solution
+// crosses the aperture with the entire body and is observed/collision checked.
+// The gate normal stays fixed; a terminal tangent need not equal that normal.
+GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
+                   double normal_yaw, double width, bool plane_already_crossed,
+                   const Vec2& goal, const VehicleGeometry& geometry,
+                   VehicleModelKind model, const Config& config, double speed,
+                   double current_speed, const ObservedSpace& space,
+                   const Rect& bounds, double now);
 
 bool gate_cleared(const Vec2& position, double yaw, const Vec2& entry,
                   const Vec2& center, double normal_yaw, double width,

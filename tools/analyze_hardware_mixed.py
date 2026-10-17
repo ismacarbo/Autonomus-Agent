@@ -4,6 +4,7 @@ import argparse
 import collections
 import csv
 import json
+import math
 import pathlib
 
 
@@ -65,12 +66,52 @@ def export_geometry(log_path, output_dir):
             stream.close()
 
 
+def summarize_raw_scan(path, sector):
+    """Inspect capture exports only; raw angles are not mission/body angles."""
+    start, end = sector
+    if not all(math.isfinite(v) for v in sector) or not 0 < (end - start) % 360 < 360:
+        raise ValueError("Raw sector must have distinct finite angular endpoints")
+    width = (end - start) % 360
+    with path.open(newline="") as stream:
+        reader = csv.DictReader(stream)
+        required = {"scan_index", "angle_deg", "range_m", "quality", "accepted", "rejection_reason"}
+        if not required.issubset(reader.fieldnames or []):
+            raise ValueError("Expected a *_raw_scans.csv export from thesis_lidar_start_matcher")
+        rows = list(reader)
+    selected = [row for row in rows if (float(row["angle_deg"]) - start) % 360 <= width]
+    ranges = [float(row["range_m"]) for row in selected
+              if math.isfinite(float(row["range_m"])) and float(row["range_m"]) > 0]
+    counts = collections.Counter((row.get("acquisition_index", "0"), row["scan_index"]) for row in selected)
+    scans = sorted({(row.get("acquisition_index", "0"), row["scan_index"]) for row in rows})
+    return {
+        "recording": str(path), "raw_sector_deg": list(sector),
+        "angle_convention": "sensor raw degrees; car profile 1.8.0 mirrors these into body angles",
+        "exported_points": len(rows), "points_in_sector": len(selected),
+        "zero_quality_in_sector": sum(float(row["quality"]) == 0 for row in selected),
+        "capture_accepted_in_sector": sum(row["accepted"].lower() in ("1", "true") for row in selected),
+        "capture_rejection_reasons": dict(collections.Counter(row["rejection_reason"] for row in selected)),
+        "range_min_m": min(ranges) if ranges else None,
+        "range_max_m": max(ranges) if ranges else None,
+        "per_scan": [{"acquisition": a, "scan": s, "sector_points": counts[a, s]} for a, s in scans],
+        "limitation": "Capture filters differ from navigation filters; missing exported returns do not distinguish sensor occlusion from acquisition loss. This is not motion authorization.",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv", type=pathlib.Path)
+    parser.add_argument("csv", type=pathlib.Path, nargs="?")
     parser.add_argument("--log", type=pathlib.Path)
     parser.add_argument("--geometry-dir", type=pathlib.Path)
+    parser.add_argument("--raw-start-scan", type=pathlib.Path)
+    parser.add_argument("--raw-sector-deg", nargs=2, type=float, metavar=("START", "END"))
     args = parser.parse_args()
+    if args.raw_start_scan:
+        if args.csv or args.log or args.geometry_dir or args.raw_sector_deg is None:
+            parser.error("--raw-start-scan requires --raw-sector-deg START END and no telemetry/geometry arguments")
+        print(json.dumps(summarize_raw_scan(args.raw_start_scan, args.raw_sector_deg), indent=2))
+        return
+    if args.csv is None or args.raw_sector_deg is not None:
+        parser.error("provide a telemetry CSV, or --raw-start-scan with --raw-sector-deg")
     if bool(args.log) != bool(args.geometry_dir):
         parser.error("--log and --geometry-dir must be specified together")
     print(json.dumps(summarize(args.csv), indent=2))

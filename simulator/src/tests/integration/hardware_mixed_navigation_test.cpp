@@ -69,6 +69,33 @@ void math_and_perception() {
     world.reset_gate_layout(123);world.update_gate_layout(100);
     require(world.gates().empty() && world.obstacles().empty() && world.dynamic_obstacles().empty() && world.perception_obstacles().empty(),"mission inherited authored gates or obstacles");
 }
+
+void gate_alternatives() {
+    hm::Config cfg;VehicleGeometry g;
+    g.body_length=.25;g.body_width=.15;g.wheelbase=.18;g.max_curvature=1.8;
+    g.max_steer_angle=.52;g.max_yaw_rate=3;g.max_accel=.2;
+    const ReferenceWaypoint from{{0,0},0,0,0};
+    const Vec2 center{.91,-.375},goal{1.3,0};const double normal=.098;
+    const Vec2 old_end{center.x+.285*std::cos(normal),center.y+.285*std::sin(normal)};
+    require(!hm::connect(from,{old_end,normal,0,.04},g,VehicleModelKind::CarLikeBicycle,cfg,.04,0).valid(),
+            "gate alternative fixture must exercise rejection of the original connection");
+    hm::ObservedSpace space;space.add(circle({0,0},2.5),cfg.observation_memory_s);
+    const Rect bounds{-3,-3,3,3};
+    auto plan=hm::plan_gate(from,center,normal,.6,false,goal,g,VehicleModelKind::CarLikeBicycle,cfg,.04,0,space,bounds,0);
+    require(plan.candidates>1 && plan.selected.valid(),"alternate gate tangent did not recover a feasible connection");
+    for(const auto& p:plan.selected.path)require(std::abs(p.curvature)<=1.800001,"gate search relaxed car curvature");
+    require(hm::gate_cleared(plan.selected.path.back().position,plan.selected.path.back().yaw,
+            from.position,center,normal,.6,g,.09),"selected alternative does not clear measured aperture");
+    require(space.validate(plan.selected.path,from,g,bounds,0,cfg).valid(),"gate search returned unverified footprint");
+    auto narrow=hm::plan_gate(from,center,normal,.30,false,goal,g,VehicleModelKind::CarLikeBicycle,cfg,.04,0,space,bounds,0);
+    require(!narrow.selected.valid() && narrow.outcomes.count("aperture_too_narrow"),"narrow gate authorized motion");
+    hm::ObservedSpace unknown;
+    auto unseen=hm::plan_gate(from,center,normal,.6,false,goal,g,VehicleModelKind::CarLikeBicycle,cfg,.04,0,unknown,bounds,0);
+    require(!unseen.selected.valid() && unseen.outcomes.count("unknown_footprint"),"alternative trajectory treated unknown space as free");
+    auto blocked_scan=circle({0,0},.30);hm::ObservedSpace blocked;blocked.add(blocked_scan,cfg.observation_memory_s);
+    auto collision=hm::plan_gate(from,center,normal,.6,false,goal,g,VehicleModelKind::CarLikeBicycle,cfg,.04,0,blocked,bounds,0);
+    require(!collision.selected.valid() && collision.outcomes.count("occupied_footprint"),"gate score overrode collision rejection");
+}
 }
 
 namespace thesis_sim {
@@ -79,9 +106,9 @@ struct HardwareMixedTestAccess {
         r.mixed_previous_position_=p;r.mixed_previous_yaw_=yaw;
         r.estimator_.override_pose(p,yaw);
     }
-    static void gate(HardwarePlannerRunner& r,Vec2 center,const std::string& id) {
-        r.set_locked_gap_goal({center.x+.30,center.y},id,center);
-        r.locked_gap_width_m_=.8;r.locked_gap_approach_direction_={1,0};
+    static void gate(HardwarePlannerRunner& r,Vec2 center,const std::string& id,double normal=0,double width=.8) {
+        r.set_locked_gap_goal({center.x+.30*std::cos(normal),center.y+.30*std::sin(normal)},id,center);
+        r.locked_gap_width_m_=width;r.locked_gap_approach_direction_={std::cos(normal),std::sin(normal)};
         r.mixed_last_gate_id_=id;
         r.mixed_set_state(hm::State::GateFollowing,"offline_measured_gate_fixture");
     }
@@ -96,6 +123,8 @@ struct HardwareMixedTestAccess {
     static int passes(const HardwarePlannerRunner&r){return r.passed_unstructured_gap_count_;}
     static int rejoins(const HardwarePlannerRunner&r){return r.mixed_rejoins_;}
     static double target(const HardwarePlannerRunner&r){return r.mixed_target_s_;}
+    static double normal(const HardwarePlannerRunner&r){return std::atan2(r.locked_gap_approach_direction_.y,r.locked_gap_approach_direction_.x);}
+    static std::string gate_id(const HardwarePlannerRunner&r){return r.locked_gap_name_;}
     static void progress(HardwarePlannerRunner&r,double s){r.mixed_projection_.s=s;}
     static void finish_rejoin_pose(HardwarePlannerRunner&r) {
         const auto q=r.mixed_road_.sample(r.mixed_target_s_);
@@ -144,6 +173,67 @@ HardwarePlannerConfig config() {
     c.gap_extraction.gap_track_min_hits=3;
     c.goal_tolerance_m=.06;c.goal_stop_speed_mps=.025;
     return c;
+}
+void recorded_start_visibility() {
+    auto cfg=config();cfg.cruise_speed_limit=.04;
+    cfg.localization.lidar_x_offset=.075;cfg.localization.lidar_y_offset=.04;
+    const auto path=std::filesystem::path(__FILE__).parent_path()/"data/mixed_20261017_160347_observed_scans.txt";
+    std::ifstream file(path);require(file.good(),"recorded hardware scan fixture missing");
+    hm::Config mission_cfg;auto world=hm::mission("",&mission_cfg);
+    cfg.mixed_dynamic=mission_cfg;HardwarePlannerRunner r(world,{},cfg);
+    HardwareMixedTestAccess::pose(r,{0,0},.000480);
+    hm::ObservedSpace space;hm::Scan scan;size_t count=0,scans=0;
+    while(file>>scan.timestamp>>scan.origin.x>>scan.origin.y>>count) {
+        scan.rays.clear();auto obs=observation({0,0},10+scan.timestamp);obs.lidar_scan.clear();
+        for(size_t i=0;i<count;++i) {
+            Vec2 hit;require(bool(file>>hit.x>>hit.y),"truncated hardware scan fixture");
+            const double a=std::atan2(hit.y-scan.origin.y,hit.x-scan.origin.x);
+            const double range=distance(scan.origin,hit);
+            scan.rays.push_back({a,range,true});
+            const double body_angle=a-.000480;
+            obs.lidar_scan.push_back({15,body_angle*180/pi,range*1000,range,
+                                     range*std::cos(body_angle),range*std::sin(body_angle)});
+        }
+        space.add(scan,cfg.mixed_dynamic.observation_memory_s);
+        HardwareMixedTestAccess::update(r,obs);HardwareMixedTestAccess::control(r);++scans;
+        require(r.last_command().safety_stop && r.last_command().pwm_left==0 && r.last_command().pwm_right==0,
+                "recorded missing visibility authorized motor command");
+    }
+    require(scans==5,"wrong hardware scan history length");
+    VehicleGeometry g;g.body_length=.25;g.body_width=.15;
+    const ReferenceWaypoint current{{0,0},.000480,0,0};
+    const auto check=space.validate({current,current},current,g,world.bounds(),0,cfg.mixed_dynamic);
+    require(check.reason=="unknown_footprint" && check.has_witness && check.witness.y<0,
+            "real blind sector disappeared or lacks diagnostic coordinates");
+    require(r.diagnostics().reference_invalidation_reason=="current_unknown_footprint",
+            "initial visibility failure still hidden behind generic gate error");
+    // The same stop is recoverable only after fresh measurements actually cover
+    // the footprint. Inject a fully observed mathematical scan, not free cells
+    // inferred from the missing sector of the recording.
+    auto clear=observation({0,0},10.2);
+    HardwareMixedTestAccess::update(r,clear);
+    require(HardwareMixedTestAccess::state(r)==hm::State::GateAcquisition,
+            "fresh observed space did not release visibility stop while retaining the observed road obstacle");
+}
+void alternative_gate_replanning() {
+    auto cfg=config();cfg.cruise_speed_limit=.04;
+    auto world=hm::mission("",&cfg.mixed_dynamic);
+    HardwarePlannerRunner r(world,{},cfg);
+    HardwareMixedTestAccess::gate(r,{.91,-.375},"measured_alternative",.098,.6);
+    HardwareMixedTestAccess::update(r,observation({0,0},20));
+    require(HardwareMixedTestAccess::state(r)==hm::State::GateFollowing && !r.reference_trajectory().empty(),
+            "locked gate replan did not use alternative G2 connections");
+    const auto target=r.reference_trajectory().back();
+    require(std::abs(target.yaw-.098)>.01,"locked gate replan reverted to infeasible normal tangent");
+    HardwareMixedTestAccess::control(r);
+    require(r.last_command().target_speed>0 && !r.last_command().safety_stop,"alternative gate reference not followed by MPC");
+    HardwareMixedTestAccess::update(r,observation({0,0},20.1));
+    require(distance(r.reference_trajectory().back().position,target.position)<1e-9 &&
+            std::abs(r.reference_trajectory().back().yaw-target.yaw)<1e-9 &&
+            std::abs(HardwareMixedTestAccess::normal(r)-.098)<1e-9 &&
+            HardwareMixedTestAccess::gate_id(r)=="measured_alternative" &&
+            !r.goal_reached() && HardwareMixedTestAccess::passes(r)==0,
+            "stable alternate path changed gate identity/normal or completed the mission");
 }
 void runtime_states() {
     using Access=HardwareMixedTestAccess;
@@ -319,6 +409,6 @@ void mission_frame_parser() {
 }
 }
 int main() {
-    try {math_and_perception();runtime_states();reference_frame_and_start_guard();mission_frame_parser();std::cout<<"hardware Mixed mathematical, perception and state checks passed\n";return 0;}
+    try {math_and_perception();gate_alternatives();recorded_start_visibility();alternative_gate_replanning();runtime_states();reference_frame_and_start_guard();mission_frame_parser();std::cout<<"hardware Mixed mathematical, perception and state checks passed\n";return 0;}
     catch(const std::exception& e){std::cerr<<"FAILED: "<<e.what()<<'\n';return 1;}
 }

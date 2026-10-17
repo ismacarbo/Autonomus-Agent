@@ -78,6 +78,8 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
                 MIXED_PARAMETER(sample_spacing_m);
                 MIXED_PARAMETER(gate_timeout_s);
                 MIXED_PARAMETER(gate_reject_radius_m);
+                MIXED_PARAMETER(gate_heading_search_rad);
+                MIXED_PARAMETER(gate_exit_search_m);
 #undef MIXED_PARAMETER
                 if(!field || !(in>>*field) || !std::isfinite(*field) || *field<=0)
                     throw std::invalid_argument("invalid mixed parameter: "+key);
