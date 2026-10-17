@@ -351,6 +351,17 @@ void write_hardware_sample_json(std::ostream& out, const HardwareTelemetrySample
         << ",\"overspeed_braking_active\":" << sample.overspeed_braking_active
         << ",\"drivetrain_stall_stop_active\":" << sample.drivetrain_stall_stop_active
         << ",\"reference_invalidation_reason\":\"" << json_escape(sample.reference_invalidation_reason) << '"'
+        << ",\"pose_epoch\":" << sample.pose_epoch
+        << ",\"mission_goal_reached\":" << sample.mission_goal_reached
+        << ",\"start_matching_offset_x_m\":" << sample.start_matching_offset_x_m
+        << ",\"start_matching_offset_y_m\":" << sample.start_matching_offset_y_m
+        << ",\"start_matching_offset_yaw_deg\":" << sample.start_matching_offset_yaw_deg
+        << ",\"start_matching_collected_scans\":" << sample.start_matching_collected_scans
+        << ",\"start_matching_completed_matches\":" << sample.start_matching_completed_matches
+        << ",\"start_matching_compute_ms\":" << sample.start_matching_compute_ms
+        << ",\"start_matching_rmse_m\":" << sample.start_matching_rmse_m
+        << ",\"start_matching_inlier_ratio\":" << sample.start_matching_inlier_ratio
+        << ",\"start_matching_reference_hash\":\"" << json_escape(sample.start_matching_reference_hash) << '"'
         << "}";
 }
 
@@ -672,6 +683,8 @@ bool write_hardware_json_report(const HardwareViewerState& hardware,
     out << "    \"estimated_path_length_m\": " << thesis_metrics.estimated_path_length_m << ",\n";
     out << "    \"odom_pose_delta_m\": " << thesis_metrics.odom_pose_delta_m << ",\n";
     out << "    \"min_clearance_m\": " << thesis_metrics.min_clearance_m << ",\n";
+    out << "    \"min_lidar_range_m\": " << thesis_metrics.min_clearance_m << ",\n";
+    out << "    \"min_clearance_definition\": \"legacy alias: minimum LiDAR range, not body clearance\",\n";
     out << "    \"max_cross_track_m\": " << thesis_metrics.max_cross_track_m << ",\n";
     out << "    \"max_heading_error_deg\": " << thesis_metrics.max_heading_error_deg << ",\n";
     out << "    \"avg_speed_mps\": " << thesis_metrics.avg_speed_mps << ",\n";
@@ -757,7 +770,7 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
            "imu_yaw_rate_from_yaw,imu_yaw_rate_consistency_error,imu_yaw_rate_fallback_active,raw_gate_candidates,"
            "candidate_gate_heading_error_deg,candidate_gate_track_score,candidate_gate_track_hits,candidate_gate_track_misses,"
            "candidate_gate_width_m,candidate_gate_status,candidate_gate_status_name,gate_acquisition_active,"
-           "controller_imu_yaw,controller_imu_yaw_rate,controller_imu_ms,controller_encoder_ms,controller_encoder_packet_dt_ms,body_yaw_rate_measurement,body_yaw_rate_source,imu_sample_new,encoder_sample_new,encoder_sample_valid,controller_firmware_major,controller_firmware_minor,locked_gate_heading_rad,locked_gate_crossing_x,locked_gate_crossing_y,overspeed_braking_active,drivetrain_stall_stop_active,reference_invalidation_reason\n";
+           "controller_imu_yaw,controller_imu_yaw_rate,controller_imu_ms,controller_encoder_ms,controller_encoder_packet_dt_ms,body_yaw_rate_measurement,body_yaw_rate_source,imu_sample_new,encoder_sample_new,encoder_sample_valid,controller_firmware_major,controller_firmware_minor,locked_gate_heading_rad,locked_gate_crossing_x,locked_gate_crossing_y,overspeed_braking_active,drivetrain_stall_stop_active,reference_invalidation_reason,pose_epoch,mission_goal_reached,start_matching_offset_x_m,start_matching_offset_y_m,start_matching_offset_yaw_deg,start_matching_collected_scans,start_matching_completed_matches,start_matching_compute_ms,start_matching_rmse_m,start_matching_inlier_ratio,start_matching_reference_hash\n";
     for (const HardwareTelemetrySample& sample : hardware.history) {
         out << sample.time << ','
             << sample.position_x << ','
@@ -878,7 +891,18 @@ bool write_hardware_csv_report(const HardwareViewerState& hardware, const std::s
             << sample.locked_gate_crossing_y << ','
             << sample.overspeed_braking_active << ','
             << sample.drivetrain_stall_stop_active << ','
-            << std::quoted(sample.reference_invalidation_reason, '"', '"') << '\n';
+            << std::quoted(sample.reference_invalidation_reason, '"', '"') << ','
+            << sample.pose_epoch << ','
+            << sample.mission_goal_reached << ','
+            << sample.start_matching_offset_x_m << ','
+            << sample.start_matching_offset_y_m << ','
+            << sample.start_matching_offset_yaw_deg << ','
+            << sample.start_matching_collected_scans << ','
+            << sample.start_matching_completed_matches << ','
+            << sample.start_matching_compute_ms << ','
+            << sample.start_matching_rmse_m << ','
+            << sample.start_matching_inlier_ratio << ','
+            << std::quoted(sample.start_matching_reference_hash, '"', '"') << '\n';
     }
     return true;
 }

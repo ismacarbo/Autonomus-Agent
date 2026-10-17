@@ -226,6 +226,17 @@ void HardwarePlannerRunner::push_history(const RealRobotObservation& observation
         overspeed_braking_active_ ? 1.0 : 0.0,
         drivetrain_stall_stop_active_ ? 1.0 : 0.0,
         diagnostics_.reference_invalidation_reason,
+        static_cast<double>(pose_epoch_),
+        goal_reached_ ? 1.0 : 0.0,
+        start_matching_status_.position_offset_m.x,
+        start_matching_status_.position_offset_m.y,
+        start_matching_status_.yaw_offset_rad * 180.0 / kPi,
+        static_cast<double>(start_matching_status_.collected_scans),
+        static_cast<double>(start_matching_status_.completed_matches),
+        start_matching_status_.last_compute_ms,
+        start_matching_status_.last_rmse_m,
+        start_matching_status_.last_inlier_ratio,
+        start_matching_status_.reference_hash,
     });
 
     if (static_cast<int>(history_.size()) > config_.max_history) {

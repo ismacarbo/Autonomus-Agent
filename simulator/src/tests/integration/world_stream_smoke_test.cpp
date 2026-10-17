@@ -83,6 +83,17 @@ int main() {
     live_frame.latest_sample.overspeed_braking_active = 1.0;
     live_frame.latest_sample.drivetrain_stall_stop_active = 1.0;
     live_frame.latest_sample.reference_invalidation_reason = "drivetrain_stall_stop";
+    live_frame.latest_sample.pose_epoch = 3;
+    live_frame.latest_sample.mission_goal_reached = 1;
+    live_frame.latest_sample.start_matching_offset_x_m = .03;
+    live_frame.latest_sample.start_matching_offset_y_m = -.02;
+    live_frame.latest_sample.start_matching_offset_yaw_deg = 1.9;
+    live_frame.latest_sample.start_matching_collected_scans = 6;
+    live_frame.latest_sample.start_matching_completed_matches = 3;
+    live_frame.latest_sample.start_matching_compute_ms = 2150;
+    live_frame.latest_sample.start_matching_rmse_m = .012;
+    live_frame.latest_sample.start_matching_inlier_ratio = .98;
+    live_frame.latest_sample.start_matching_reference_hash = "reference_hash";
     const std::vector<std::uint8_t> frame_payload =
         thesis_sim::serialize_live_frame_blob(live_frame);
     thesis_sim::LiveFrameSnapshot decoded_frame;
@@ -103,6 +114,20 @@ int main() {
         decoded_frame.latest_sample.drivetrain_stall_stop_active != 1.0 ||
         decoded_frame.latest_sample.reference_invalidation_reason != "drivetrain_stall_stop") {
         return fail("actuation guard diagnostics changed during stream roundtrip");
+    }
+
+    if (decoded_frame.latest_sample.pose_epoch != 3 ||
+        decoded_frame.latest_sample.mission_goal_reached != 1 ||
+        !near(decoded_frame.latest_sample.start_matching_offset_x_m, .03) ||
+        !near(decoded_frame.latest_sample.start_matching_offset_y_m, -.02) ||
+        !near(decoded_frame.latest_sample.start_matching_offset_yaw_deg, 1.9) ||
+        decoded_frame.latest_sample.start_matching_collected_scans != 6 ||
+        decoded_frame.latest_sample.start_matching_completed_matches != 3 ||
+        decoded_frame.latest_sample.start_matching_compute_ms != 2150 ||
+        !near(decoded_frame.latest_sample.start_matching_rmse_m, .012) ||
+        !near(decoded_frame.latest_sample.start_matching_inlier_ratio, .98) ||
+        decoded_frame.latest_sample.start_matching_reference_hash != "reference_hash") {
+        return fail("start matching audit changed during stream roundtrip");
     }
 
     if (

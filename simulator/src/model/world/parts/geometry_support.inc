@@ -790,6 +790,14 @@ std::vector<Vec2> sanitize_structured_centerline(const Rect& bounds,
         point = clamp_to_bounds(bounds, point);
     }
 
+    // A road with distinct endpoints remains open after an editor/GUI update.
+    // Closing every input with Chaikin turned a straight mixed route into a
+    // return loop and silently moved its goal to the start.
+    if (raw_points.size() >= 2 && distance(start, goal) > loop_threshold &&
+        !points_form_closed_loop(raw_points, loop_threshold)) {
+        return deduplicate_polyline(sanitized, std::clamp(.02*min_span, .005, .10));
+    }
+
     const bool already_closed_loop = raw_points.size() >= 6 &&
                                      points_form_closed_loop(raw_points, loop_threshold);
     if (already_closed_loop) {

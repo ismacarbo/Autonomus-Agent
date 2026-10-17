@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
         }
         LiveViewStreamClient streamer;
         SlamToolboxBridgeClient slam_bridge;
-        std::uint64_t slam_sequence = 0;
+        HardwareSlamSession slam_session;
         int slam_session_epoch = 1;
         const std::string slam_run_id =
             "hardware_" +
@@ -238,38 +238,8 @@ int main(int argc, char** argv) {
                                 runner->config(), runner->history().back());
             }
             log_start_matching();
-            if (slam_bridge.active() &&
-                runner->config().slam_toolbox_enabled &&
-                !runner->lidar_hits().empty()) {
-                const RealRobotObservation& slam_observation =
-                    runner->bridge().observation();
-                const double scan_timestamp =
-                    slam_observation.lidar_scan_mid_timestamp_s > 0.0
-                        ? slam_observation.lidar_scan_mid_timestamp_s
-                        : slam_observation.host_timestamp_s;
-                slam_bridge.submit_scan(
-                    slam_run_id +
-                        (runner->config().vehicle_model == VehicleModelKind::TrackedVehicle
-                             ? "_tank_"
-                             : "_car_") +
-                        std::to_string(slam_session_epoch),
-                    ++slam_sequence,
-                    scan_timestamp,
-                    runner->estimate().position,
-                    runner->estimate().yaw,
-                    runner->lidar_hits(),
-                    planner_config.localization.min_valid_range_m,
-                    planner_config.localization.max_range_m);
-            }
-            if (slam_bridge.active()) {
-                const bool slam_updated = slam_bridge.poll();
-                const auto& snapshot = slam_bridge.snapshot();
-                const bool connection_state_changed =
-                    runner->slam_toolbox_snapshot().connected != snapshot.connected;
-                if (slam_updated || connection_state_changed) {
-                    runner->apply_slam_toolbox_snapshot(snapshot);
-                }
-            }
+            slam_session.update(*runner, slam_bridge, runner->bridge().observation(),
+                                slam_run_id, slam_session_epoch);
             stream_frame_if_due(options, *runner, &streamer);
             if (stop_if_stream_lost()) {
                 return 1;

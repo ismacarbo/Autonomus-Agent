@@ -4,89 +4,10 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         return;
     }
 
-    const char* status = sim.goal_reached() ? "Goal reached" : (sim.collision() ? "Collision" : (ui_state->paused ? "Paused" : "Running"));
-    const ImVec4 status_color = sim.goal_reached() ? ImVec4(0.45f, 0.86f, 0.53f, 1.0f)
-                                                   : (sim.collision() ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
-                                                                      : (ui_state->paused ? ImVec4(0.74f, 0.79f, 0.84f, 1.0f)
-                                                                                          : ImVec4(0.87f, 0.79f, 0.39f, 1.0f)));
-    const auto& vehicle = sim.vehicle();
-    const std::string chosen_name = simulation_gate_label(sim, sim.chosen_gate_index());
-    ImGui::TextUnformatted("Run Control");
-    ImGui::TextColored(status_color, "%s", status);
-    ImGui::TextDisabled("Playback, live state and scenario controls");
-
-
-    if (ImGui::BeginTabBar("SimulationDeskTabs")) {
-        if (ImGui::BeginTabItem("Run", nullptr, requested_tab_flags(ui_state->requested_simulation_panel_tab, 0))) {
-            activate_simulation_panel_tab(ui_state, 0, kWorkspaceViewMission, false);
-            consume_requested_tab(&ui_state->requested_simulation_panel_tab, 0);
-            ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-            if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PushStyleColor(ImGuiCol_Button,
-                              ui_state->paused ? ImVec4(0.15f, 0.43f, 0.52f, 1.0f) : ImVec4(0.66f, 0.47f, 0.16f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                              ui_state->paused ? ImVec4(0.22f, 0.56f, 0.66f, 1.0f) : ImVec4(0.80f, 0.58f, 0.22f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                              ui_state->paused ? ImVec4(0.11f, 0.33f, 0.40f, 1.0f) : ImVec4(0.51f, 0.35f, 0.10f, 1.0f));
-        if (ImGui::Button(ui_state->paused ? "Run Engine" : "Pause Engine", ImVec2(-1.0f, 0.0f))) {
-            ui_state->paused = !ui_state->paused;
-        }
-        ImGui::PopStyleColor(3);
-
-        if (ImGui::BeginTable("PlaybackButtons", 2, ImGuiTableFlags_SizingStretchSame)) {
-            ImGui::TableNextColumn();
-            if (ImGui::Button("Step Once", ImVec2(-1.0f, 0.0f))) {
-                ui_state->single_step = true;
-            }
-            ImGui::TableNextColumn();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.43f, 0.17f, 0.17f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.58f, 0.23f, 0.23f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.34f, 0.13f, 0.13f, 1.0f));
-            if (ImGui::Button("Reset", ImVec2(-1.0f, 0.0f))) {
-                sim.reset();
-                ui_state->paused = true;
-                ui_state->report_written = false;
-                ui_state->last_report_path.clear();
-            }
-            ImGui::PopStyleColor(3);
-            ImGui::EndTable();
-        }
-        ImGui::SliderInt("Steps / frame", &ui_state->steps_per_frame, 1, 8);
-        ImGui::TextDisabled("Higher values speed up playback but make collisions and gate transitions harder to inspect.");
-    }
-
-            ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-            if (ImGui::CollapsingHeader("Live Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::Text("t = %.2f s   step = %d", sim.sim_time(), sim.step_count());
-                ImGui::Text("pos = (%.2f, %.2f) m", vehicle.position.x, vehicle.position.y);
-                ImGui::Text("yaw = %.1f deg   v = %.2f m/s", vehicle.yaw * 180.0 / 3.14159265358979323846, vehicle.speed);
-                ImGui::Text("goal distance = %.2f m", sim.distance_to_goal());
-                ImGui::Text("tracking: cte %.2f m   hdg %.2f deg", sim.tracker_cross_track_error(), sim.tracker_heading_error_deg());
-                if (sim.last_mpc_command().has_value()) {
-                    ImGui::Text("MPC: accel %.2f   steer rate %.2f deg/s",
-                                sim.last_mpc_command()->accel_cmd,
-                                sim.last_mpc_command()->steer_rate_cmd * 180.0 / 3.14159265358979323846);
-                }
-                if (sim.environment_mode() == EnvironmentMode::UnstructuredGates ||
-                    sim.environment_mode() == EnvironmentMode::MixedRoadGates) {
-                    ImGui::Text("chosen gate = %s   visible = %d", chosen_name.c_str(), static_cast<int>(sim.visible_gate_indices().size()));
-                    if (sim.environment_mode() == EnvironmentMode::MixedRoadGates) {
-                        const TelemetrySample* latest = sim.history().empty() ? nullptr : &sim.history().back();
-                        ImGui::Text("mixed: mode %.0f   gate score %.2f   road score %.2f",
-                                    latest != nullptr ? latest->mixed_mode : 0.0,
-                                    latest != nullptr ? latest->mixed_gate_score : 0.0,
-                                    latest != nullptr ? latest->mixed_structured_score : 0.0);
-                    }
-                } else {
-                    ImGui::Text("road points = %d", static_cast<int>(sim.world().road_centerline().size()));
-                }
-            }
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Scenario", nullptr, requested_tab_flags(ui_state->requested_simulation_panel_tab, 1))) {
-            activate_simulation_panel_tab(ui_state, 1, kWorkspaceViewMission, false);
-            consume_requested_tab(&ui_state->requested_simulation_panel_tab, 1);
+    ImGui::PushTextWrapPos(0);
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
+     {
+        if (ui_state->workspace_view == kWorkspaceViewSetup) {
             ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
             if (ImGui::CollapsingHeader("Scenario & Planner", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SameLine();
@@ -100,8 +21,8 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             "Sim-Calibrated",
             "Sim-Reference",
         };
-        ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::Combo(
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
+        if (ui_labeled_combo(
                 "Validation Fidelity",
                 &fidelity_selection,
                 fidelity_items,
@@ -124,7 +45,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             thesis_sim::environment_mode_name(EnvironmentMode::StructuredRoad),
             thesis_sim::environment_mode_name(EnvironmentMode::MixedRoadGates),
         };
-        if (ImGui::Combo("Environment", &ui_state->environment_mode, environment_items, IM_ARRAYSIZE(environment_items))) {
+        if (ui_labeled_combo("Environment", &ui_state->environment_mode, environment_items, IM_ARRAYSIZE(environment_items))) {
             sim.load_world(world_from_ui_selection(sim, *ui_state));
             apply_gui_stack_for_selected_map(sim, ui_state);
         }
@@ -134,7 +55,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
             "Tank support",
         };
         int vehicle_selection = ui_state->vehicle_model == static_cast<int>(VehicleModelKind::TrackedVehicle) ? 1 : 0;
-        if (ImGui::Combo("Motion Primitive Support", &vehicle_selection, vehicle_items, IM_ARRAYSIZE(vehicle_items))) {
+        if (ui_labeled_combo("Robot model", &vehicle_selection, vehicle_items, IM_ARRAYSIZE(vehicle_items))) {
             const VehicleModelKind next_model =
                 vehicle_selection == 1 ? VehicleModelKind::TrackedVehicle : VehicleModelKind::CarLikeBicycle;
             ui_state->vehicle_model = static_cast<int>(next_model);
@@ -166,7 +87,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::HardwareLab),
                 thesis_sim::unstructured_map_preset_name(UnstructuredMapPreset::IdealValidation),
             };
-            if (ImGui::Combo("Unstructured Map", &ui_state->unstructured_preset, preset_items, IM_ARRAYSIZE(preset_items))) {
+            if (ui_labeled_combo("Unstructured Map", &ui_state->unstructured_preset, preset_items, IM_ARRAYSIZE(preset_items))) {
                 const bool manual_editor = ui_state->unstructured_preset == static_cast<int>(UnstructuredMapPreset::Custom);
                 sim.load_world(world_from_ui_selection(sim, *ui_state));
                 apply_gui_stack_for_selected_map(sim, ui_state);
@@ -195,7 +116,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                     thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Randomized),
                     thesis_sim::gate_behavior_mode_name(GateBehaviorMode::Mobile),
                 };
-                if (ImGui::Combo("Gate Layout", &gate_behavior, gate_items, IM_ARRAYSIZE(gate_items))) {
+                if (ui_labeled_combo("Gate Layout", &gate_behavior, gate_items, IM_ARRAYSIZE(gate_items))) {
                     gate_changed = true;
                 }
                 if (ImGui::InputInt("Gate Seed", &ui_state->gate_seed_input)) {
@@ -219,7 +140,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 ImGui::Text("Gate seed = %u", sim.gate_seed());
             }
         } else if (sim.environment_mode() == EnvironmentMode::MixedRoadGates) {
-            ImGui::TextWrapped("Mixed mode follows the structured road while LiDAR gaps compete as dynamic gates. The arbiter only leaves the road when the gate is stable, aligned, safe and useful for progress.");
+            ImGui::TextWrapped("Follow the road, bypass obstacles through detected gates, then rejoin.");
             const char* mixed_items[] = {
                 mixed_map_preset_name(0),
                 mixed_map_preset_name(1),
@@ -229,7 +150,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 mixed_map_preset_name(5),
             };
             int mixed_selection = std::clamp(ui_state->mixed_preset, 0, static_cast<int>(IM_ARRAYSIZE(mixed_items)) - 1);
-            if (ImGui::Combo("Mixed Map", &mixed_selection, mixed_items, IM_ARRAYSIZE(mixed_items))) {
+            if (ui_labeled_combo("Mixed Map", &mixed_selection, mixed_items, IM_ARRAYSIZE(mixed_items))) {
                 ui_state->mixed_preset = mixed_selection;
                 sim.load_world(world_from_ui_selection(sim, *ui_state));
                 apply_gui_stack_for_selected_map(sim, ui_state);
@@ -249,7 +170,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.42f, 1.0f), "Dynamic LiDAR gates are disabled; the mixed validation will remain on the structured road.");
             }
         } else {
-            ImGui::TextWrapped("Structured mode keeps the planner on a fixed road loop while the EKF fuses encoder, IMU and LiDAR for the state estimate.");
+            ImGui::TextWrapped("Follow the authored road using the selected vehicle and sensor model.");
             const char* structured_items[] = {
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::ValidationRoad),
                 thesis_sim::structured_map_preset_name(StructuredMapPreset::CircleLoop),
@@ -289,7 +210,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                     structured_selection = 0;
                     break;
             }
-            if (ImGui::Combo("Structured Map", &structured_selection, structured_items, IM_ARRAYSIZE(structured_items))) {
+            if (ui_labeled_combo("Structured Map", &structured_selection, structured_items, IM_ARRAYSIZE(structured_items))) {
                 StructuredMapPreset next_structured_preset = StructuredMapPreset::ValidationRoad;
                 switch (structured_selection) {
                     case 1:
@@ -348,13 +269,10 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         }
     }
 
-            ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Sensors", nullptr, requested_tab_flags(ui_state->requested_simulation_panel_tab, 2))) {
-            activate_simulation_panel_tab(ui_state, 2, kWorkspaceViewDiagnostics, false);
-            consume_requested_tab(&ui_state->requested_simulation_panel_tab, 2);
-            ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
+        if (ui_state->workspace_view == kWorkspaceViewSetup || ui_state->workspace_view == kWorkspaceViewDiagnostics) {
+            ImGui::SetNextItemOpen(ui_state->workspace_view == kWorkspaceViewDiagnostics, ImGuiCond_FirstUseEver);
             if (ImGui::CollapsingHeader("Sensors & Localization", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SameLine();
         help_marker("These toggles affect the simulated measurements that feed the EKF. The planner still works on the fused state estimate.");
@@ -381,7 +299,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 thesis_sim::range_sensor_profile_name(RangeSensorProfile::RplidarA1),
                 thesis_sim::range_sensor_profile_name(RangeSensorProfile::ShortRangeScanner),
             };
-            if (ImGui::Combo("Range Sensor", &sensor_profile, sensor_items, IM_ARRAYSIZE(sensor_items))) {
+            if (ui_labeled_combo("Range Sensor", &sensor_profile, sensor_items, IM_ARRAYSIZE(sensor_items))) {
                 sensor_changed = true;
             }
             if (sensor_changed) {
@@ -409,12 +327,9 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         }
     }
 
-            ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Map", nullptr, requested_tab_flags(ui_state->requested_simulation_panel_tab, 3))) {
-            activate_simulation_panel_tab(ui_state, 3, kWorkspaceViewMap, true);
-            consume_requested_tab(&ui_state->requested_simulation_panel_tab, 3);
+        if (ui_state->workspace_view == kWorkspaceViewMap) {
             ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
             if (ImGui::CollapsingHeader("Map Editor", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SameLine();
@@ -440,7 +355,12 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                     0.5 * (editor_world.start().x + editor_world.goal().x),
                     0.5 * (editor_world.start().y + editor_world.goal().y),
                 };
-                editor_world.editable_obstacles().push_back({center.x - 1.0, center.y - 1.0, center.x + 1.0, center.y + 1.0});
+                const Rect bounds = editor_world.bounds();
+                const double half = 0.075 * std::min(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y);
+                const Vec2 obstacle_center{std::clamp(center.x, bounds.min_x + half, bounds.max_x - half),
+                                           std::clamp(center.y, bounds.min_y + half, bounds.max_y - half)};
+                editor_world.editable_obstacles().push_back({obstacle_center.x - half, obstacle_center.y - half,
+                                                             obstacle_center.x + half, obstacle_center.y + half});
                 ui_state->scenario_editor_dirty = true;
                 ui_state->selected_editor_handle = {MapEditorHandleType::Obstacle, static_cast<int>(editor_world.editable_obstacles().size()) - 1};
             }
@@ -527,17 +447,14 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         }
     }
 
-            ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Export", nullptr, requested_tab_flags(ui_state->requested_simulation_panel_tab, 4))) {
-            activate_simulation_panel_tab(ui_state, 4, kWorkspaceViewExport, false);
-            consume_requested_tab(&ui_state->requested_simulation_panel_tab, 4);
+        if (ui_state->workspace_view == kWorkspaceViewExport) {
             ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
             if (ImGui::CollapsingHeader("Reports", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SameLine();
         help_marker("Writes paper-ready artifacts: JSON for reproducibility, CSV for plots, Markdown for quick thesis notes.");
-        if (ImGui::Button("Write JSON Report", ImVec2(-1.0f, 0.0f))) {
+        if (ImGui::Button("Save JSON snapshot", ImVec2(-1.0f, 0.0f))) {
             const std::string report_path = default_report_path(sim, "gui");
             if (write_json_report(sim, report_status_string(sim), report_path)) {
                 ui_state->report_written = true;
@@ -547,7 +464,7 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
                 ui_state->last_export_error = "Could not write JSON report.";
             }
         }
-        if (ImGui::Button("Write Paper Bundle", ImVec2(-1.0f, 0.0f))) {
+        if (ImGui::Button("Save complete bundle", ImVec2(-1.0f, 0.0f))) {
             const std::string json_path = default_report_path(sim, "gui_bundle");
             const std::string csv_path = replace_extension(json_path, ".csv");
             const std::string markdown_path = replace_extension(json_path, ".md");
@@ -578,132 +495,10 @@ void render_control_panel(PlannerDrivenVehicleSim& sim, UiState* ui_state, LiveV
         }
     }
 
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-
-    ImGui::EndChild();
-}
-
-void render_workspace_top_bar(PlannerDrivenVehicleSim& sim,
-                              const HardwareViewerState* hardware,
-                              UiState* ui_state,
-                              LiveViewStreamServer* hardware_server) {
-    if (ui_state == nullptr) {
-        return;
-    }
-
-    const bool hardware_mode = workspace_source_is_hardware(ui_state->workspace_source);
-    const VehicleSnapshot& vehicle = sim.vehicle();
-    const bool hardware_connected = hardware_server != nullptr && hardware_server->connected();
-    const bool hardware_listening = hardware_server != nullptr && hardware_server->listening();
-
-    const char* status_text = nullptr;
-    ImVec4 status_color;
-    std::string scenario_label;
-    std::string map_label;
-    std::string robot_label;
-    char goal_buf[48];
-    char speed_buf[48];
-
-    if (hardware_mode) {
-        const LiveFrameSnapshot* frame = hardware != nullptr ? &hardware->frame : nullptr;
-        status_text = hardware_connected
-                          ? ((frame != nullptr && frame->goal_reached) ? "Goal reached"
-                                                                        : ((frame != nullptr && frame->safety_stop_active) ? "Safety stop" : "Live"))
-                          : (hardware_listening ? "Listening" : "Preview");
-        status_color = hardware_connected
-                           ? ((frame != nullptr && frame->goal_reached) ? ImVec4(0.45f, 0.86f, 0.53f, 1.0f)
-                                                                         : ((frame != nullptr && frame->safety_stop_active)
-                                                                                ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
-                                                                                : ImVec4(0.87f, 0.79f, 0.39f, 1.0f)))
-                           : (hardware_listening ? ImVec4(0.43f, 0.82f, 0.96f, 1.0f)
-                                                 : ImVec4(0.74f, 0.79f, 0.84f, 1.0f));
-        scenario_label = "Hardware Planner";
-        map_label = hardware != nullptr && hardware->has_scene
-                        ? map_preset_name(hardware->scene.world)
-                        : "configured preview";
-        robot_label = hardware != nullptr && hardware->has_scene
-                          ? hardware->scene.vehicle_model_name
-                          : thesis_sim::vehicle_model_kind_name(static_cast<VehicleModelKind>(ui_state->hardware_vehicle_model));
-        const std::string goal_label =
-            hardware != nullptr
-                ? hardware_goal_distance_label(hardware->frame, hardware->scene.world.environment_mode())
-                : "n/a";
-        std::snprintf(goal_buf, sizeof(goal_buf), "%s", goal_label.c_str());
-        std::snprintf(speed_buf,
-                      sizeof(speed_buf),
-                      "%.2f m/s",
-                      frame != nullptr ? frame->vehicle.speed : 0.0);
-    } else {
-        status_text = sim.goal_reached() ? "Goal reached" : (sim.collision() ? "Collision" : (ui_state->paused ? "Paused" : "Running"));
-        status_color = sim.goal_reached() ? ImVec4(0.45f, 0.86f, 0.53f, 1.0f)
-                                          : (sim.collision() ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
-                                                             : (ui_state->paused ? ImVec4(0.74f, 0.79f, 0.84f, 1.0f)
-                                                                                 : ImVec4(0.87f, 0.79f, 0.39f, 1.0f)));
-        scenario_label = thesis_sim::environment_mode_name(sim.environment_mode());
-        map_label = map_preset_name(sim.world());
-        robot_label = thesis_sim::vehicle_model_kind_name(sim.vehicle_model_kind());
-        std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", sim.distance_to_goal());
-        std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", vehicle.speed);
-    }
-
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 10.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.07f, 0.10f, 0.13f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.18f, 0.25f, 0.29f, 1.0f));
-    if (ImGui::BeginChild("WorkspaceTopBar", ImVec2(0.0f, 68.0f), true, ImGuiWindowFlags_NoScrollbar)) {
-        if (ImGui::BeginTable("WorkspaceTopBarLayout", 4, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-            ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 248.0f);
-            ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 230.0f);
-            ImGui::TableSetupColumn("Vehicle", ImGuiTableColumnFlags_WidthFixed, 245.0f);
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted("Autonomous Reasoning Engine");
-            ImGui::TextDisabled("%s  |  %s", scenario_label.c_str(), map_label.c_str());
-
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("Workspace");
-            auto source_button = [&](const char* label, int source) {
-                const bool selected = ui_state->workspace_source == source;
-                if (selected) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.43f, 0.52f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.56f, 0.66f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.11f, 0.33f, 0.40f, 1.0f));
-                }
-                if (ImGui::Button(label, ImVec2(112.0f, 0.0f))) {
-                    ui_state->workspace_source = source;
-                    if (workspace_source_is_hardware(source) &&
-                        hardware_server != nullptr &&
-                        !hardware_server->listening() &&
-                        ui_state->hardware_listen_port > 0) {
-                        hardware_server->start(static_cast<std::uint16_t>(ui_state->hardware_listen_port));
-                    }
-                }
-                if (selected) {
-                    ImGui::PopStyleColor(3);
-                }
-            };
-            source_button("Engine", kWorkspaceSourceSimulation);
-            ImGui::SameLine();
-            source_button("Hardware", kWorkspaceSourceHardwarePlanner);
-
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("Run State");
-            ImGui::PushStyleColor(ImGuiCol_Text, status_color);
-            ImGui::TextUnformatted(status_text);
-            ImGui::PopStyleColor();
-            ImGui::TextDisabled("goal %s", goal_buf);
-
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("Robot");
-            ImGui::TextUnformatted(robot_label.c_str());
-            ImGui::TextDisabled("speed %s", speed_buf);
-            ImGui::EndTable();
         }
     }
+
+    ImGui::PopTextWrapPos();
+    ImGui::PopItemWidth();
     ImGui::EndChild();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(2);
 }

@@ -9,8 +9,7 @@ void HardwarePlannerRunner::mitigate_compact_unstructured_encoder_slip(
     double* odom_yaw_rate) {
     encoder_slip_guard_active_ = false;
     if (odom_yaw_rate == nullptr ||
-        config_.vehicle_model != VehicleModelKind::CarLikeBicycle ||
-        !open_ended_unstructured_exploration(world_)) {
+        config_.vehicle_model != VehicleModelKind::CarLikeBicycle) {
         return;
     }
 
@@ -616,6 +615,10 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         return;
     }
 
+    // A bypass may have just ended; its clothoid is not the road reference.
+    // plan_if_needed rebuilds the road in this same cycle before tracking.
+    if (world_is_mixed(world_) && planner_reference_is_gate_) return;
+
     if (road_ == nullptr ||
         cl_.prev_road.num_segments() <= 0 ||
         !std::isfinite(cl_.end_point_s) ||
@@ -691,18 +694,8 @@ void HardwarePlannerRunner::update_estimate_from_structured_motion_fallback(cons
         }
     }
 
-    // A road projection is a useful weak constraint in structured-only runs,
-    // but it is not a pose measurement. Applying it in mixed mode pulled the
-    // EKF back onto the centerline as soon as a temporary gate was released,
-    // hiding the physical bypass seen by encoder/IMU odometry.
-    const bool allow_centerline_pose_constraint = !world_is_mixed(world_);
-    if (allow_centerline_pose_constraint) {
-        double x_on_path = 0.0;
-        double y_on_path = 0.0;
-        cl_.prev_road.eval(fused_constrained_s, x_on_path, y_on_path);
-        estimator_.update_lidar_pose({x_on_path, y_on_path}, measured_yaw, false);
-        sync_estimate_from_ekf_state();
-    }
+    // The route defines tracking error and progress, never a sensor update.
+    // Pulling the EKF onto it hides real cross-track error from the MPC.
 
     double constrained_n = 0.0;
     double confirmed_s = fused_constrained_s;
@@ -766,68 +759,32 @@ double HardwarePlannerRunner::stabilize_structured_track_s(double candidate_s,
 }
 
 void HardwarePlannerRunner::stabilize_compact_open_gate_odometry(double odom_speed, double dt) {
-    if (!compact_mixed_open_road(world_) ||
-        !locked_gap_goal_.has_value() ||
-        !(odom_speed > 1e-5) ||
-        !(dt > 1e-6) ||
-        cl_.prev_road.num_segments() <= 0 ||
-        !std::isfinite(cl_.end_point_s) ||
-        cl_.end_point_s <= 1e-6) {
-        return;
+    if (!compact_mixed_open_road(world_) || !locked_gap_goal_.has_value() ||
+        !(dt > 1e-6)) return;
+    (void)odom_speed;
+    // Progress belongs to the authored road, never to the temporary gate
+    // clothoid or a scaled travelled distance. Leave gate-local x0_ untouched.
+    const auto& road = world_.road_centerline();
+    double cumulative = 0.0, best_s = 0.0;
+    double best_distance = std::numeric_limits<double>::infinity();
+    for (size_t i = 1; i < road.size(); ++i) {
+        const Vec2 segment{road[i].x-road[i-1].x, road[i].y-road[i-1].y};
+        const double length_sq = dot_product(segment, segment);
+        if (length_sq <= 1e-12) continue;
+        const Vec2 offset{estimate_.position.x-road[i-1].x, estimate_.position.y-road[i-1].y};
+        const double t = clamp_value(dot_product(offset, segment)/length_sq, 0.0, 1.0);
+        const Vec2 projection{road[i-1].x+t*segment.x, road[i-1].y+t*segment.y};
+        const double d = distance_sq(estimate_.position, projection);
+        if (d < best_distance) {
+            best_distance = d;
+            best_s = cumulative+t*std::sqrt(length_sq);
+        }
+        cumulative += std::sqrt(length_sq);
     }
-
-    const double road_length = cl_.end_point_s;
-    const double progress_scale = 0.86;
-    const double progress_delta = clamp_value(progress_scale * odom_speed * dt, 0.0, 0.08);
-    if (!(progress_delta > 1e-6)) {
-        return;
+    if (std::isfinite(best_distance)) {
+        structured_last_s_ = best_s;
+        structured_progress_s_ = std::max(structured_progress_s_, best_s);
     }
-
-    const double previous_progress = clamp_value(
-        std::max(structured_progress_s_,
-                 std::isfinite(structured_last_s_) ? structured_last_s_ : 0.0),
-        0.0,
-        road_length);
-    structured_progress_s_ = clamp_value(previous_progress + progress_delta, 0.0, road_length);
-
-    const double s_hint =
-        std::isfinite(structured_last_s_) ? structured_last_s_ : structured_progress_s_;
-    double projected_s = structured_progress_s_;
-    double projected_n = 0.0;
-    const bool have_projection = project_curvilinear_state(
-        cl_,
-        estimate_.position,
-        s_hint,
-        false,
-        false,
-        &projected_s,
-        &projected_n);
-    if (!have_projection) {
-        projected_s = structured_progress_s_;
-        projected_n = 0.0;
-    }
-
-    const double odom_floor_s = structured_progress_s_;
-    const double fused_s = clamp_value(std::max(projected_s, odom_floor_s), 0.0, road_length);
-    const bool rejoin_phase =
-        passed_unstructured_gap_count_ > 0 &&
-        (passed_unstructured_gap_count_ % 2) == 1;
-    double fused_n = projected_n;
-    if (rejoin_phase) {
-        const double rejoin_band =
-            odom_floor_s >= 0.70 * road_length ? 0.035 : 0.065;
-        fused_n = clamp_value(fused_n, -rejoin_band, rejoin_band);
-    } else {
-        fused_n = clamp_value(fused_n, -0.22, 0.22);
-    }
-
-    structured_last_s_ = fused_s;
-    x0_.x = fused_s;
-    x0_.n = fused_n;
-    x0_.b = 0.0;
-    // Keep this gate helper progress-only. During a gate bypass the robot may
-    // legitimately leave the structured centerline; overriding the EKF pose here
-    // creates artificial jumps in hardware exactly when the first gate is locked.
 }
 
 void HardwarePlannerRunner::sync_estimate_from_ekf_state() {

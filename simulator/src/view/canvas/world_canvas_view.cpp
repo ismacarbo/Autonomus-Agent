@@ -24,21 +24,22 @@ constexpr ImU32 kColorHeading = IM_COL32(255, 142, 79, 255);
 using model::structured_content_bounds;
 
 void apply_style() {
+    ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowBorderSize = 1.0f;
     style.ChildBorderSize = 1.0f;
-    style.FrameBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
     style.WindowRounding = 14.0f;
-    style.ChildRounding = 12.0f;
-    style.FrameRounding = 8.0f;
+    style.ChildRounding = 8.0f;
+    style.FrameRounding = 5.0f;
     style.GrabRounding = 8.0f;
     style.PopupRounding = 10.0f;
     style.ScrollbarRounding = 12.0f;
-    style.TabRounding = 10.0f;
+    style.TabRounding = 5.0f;
     style.WindowPadding = ImVec2(14.0f, 14.0f);
     style.FramePadding = ImVec2(10.0f, 7.0f);
-    style.ItemSpacing = ImVec2(10.0f, 10.0f);
-    style.CellPadding = ImVec2(8.0f, 8.0f);
+    style.ItemSpacing = ImVec2(10.0f, 8.0f);
+    style.CellPadding = ImVec2(6.0f, 6.0f);
     style.ScrollbarSize = 14.0f;
 
     ImVec4* colors = style.Colors;
@@ -47,7 +48,7 @@ void apply_style() {
     colors[ImGuiCol_WindowBg] = ImVec4(0.05f, 0.07f, 0.09f, 1.0f);
     colors[ImGuiCol_ChildBg] = ImVec4(0.07f, 0.09f, 0.12f, 1.0f);
     colors[ImGuiCol_PopupBg] = ImVec4(0.09f, 0.11f, 0.14f, 0.98f);
-    colors[ImGuiCol_Border] = ImVec4(0.20f, 0.25f, 0.29f, 1.0f);
+    colors[ImGuiCol_Border] = ImVec4(0.16f, 0.20f, 0.25f, 1.0f);
     colors[ImGuiCol_FrameBg] = ImVec4(0.12f, 0.15f, 0.18f, 1.0f);
     colors[ImGuiCol_FrameBgHovered] = ImVec4(0.17f, 0.21f, 0.25f, 1.0f);
     colors[ImGuiCol_FrameBgActive] = ImVec4(0.20f, 0.25f, 0.30f, 1.0f);
@@ -64,14 +65,14 @@ void apply_style() {
     colors[ImGuiCol_TabActive] = ImVec4(0.12f, 0.19f, 0.23f, 1.0f);
     colors[ImGuiCol_TableBorderStrong] = ImVec4(0.18f, 0.23f, 0.27f, 1.0f);
     colors[ImGuiCol_TableBorderLight] = ImVec4(0.11f, 0.15f, 0.18f, 1.0f);
-    colors[ImGuiCol_Separator] = ImVec4(0.20f, 0.25f, 0.29f, 1.0f);
+    colors[ImGuiCol_Separator] = ImVec4(0.16f, 0.20f, 0.25f, 1.0f);
     colors[ImGuiCol_PlotLines] = ImVec4(0.53f, 0.87f, 0.97f, 1.0f);
     colors[ImGuiCol_PlotHistogram] = ImVec4(0.96f, 0.67f, 0.31f, 1.0f);
 }
 
 CanvasTransform make_transform(const WorldMap& world, const ImVec2& canvas_pos, const ImVec2& canvas_size) {
     const Rect bounds = world.bounds();
-    const float pad = 24.0f;
+    const float pad = 32.0f;
     const float width = static_cast<float>(bounds.max_x - bounds.min_x);
     const float height = static_cast<float>(bounds.max_y - bounds.min_y);
     const float scale_x = std::max(1.0f, (canvas_size.x - pad * 2.0f) / width);
@@ -80,8 +81,8 @@ CanvasTransform make_transform(const WorldMap& world, const ImVec2& canvas_pos, 
     CanvasTransform tx;
     tx.scale = std::min(scale_x, scale_y);
     tx.origin = ImVec2(
-        canvas_pos.x + pad - static_cast<float>(bounds.min_x) * tx.scale,
-        canvas_pos.y + canvas_size.y - pad + static_cast<float>(bounds.min_y) * tx.scale);
+        canvas_pos.x + (canvas_size.x - width * tx.scale) * 0.5f - static_cast<float>(bounds.min_x) * tx.scale,
+        canvas_pos.y + (canvas_size.y + height * tx.scale) * 0.5f + static_cast<float>(bounds.min_y) * tx.scale);
     return tx;
 }
 
@@ -116,7 +117,7 @@ void draw_polyline(ImDrawList* draw_list, const CanvasTransform& tx, const std::
         screen_points.push_back(world_to_screen(tx, point));
     }
 
-    const bool closed_loop = points.size() >= 3 && thesis_sim::distance(points.front(), points.back()) <= 0.45;
+    const bool closed_loop = points.size() >= 3 && thesis_sim::distance(points.front(), points.back()) <= 1e-6;
     draw_list->AddPolyline(
         screen_points.data(),
         static_cast<int>(screen_points.size()),
@@ -196,7 +197,7 @@ std::vector<Vec2> make_offset_polyline(const std::vector<Vec2>& points, double o
     }
 
     std::vector<Vec2> base = points;
-    const bool closed_loop = base.size() >= 3 && thesis_sim::distance(base.front(), base.back()) <= 0.45;
+    const bool closed_loop = base.size() >= 3 && thesis_sim::distance(base.front(), base.back()) <= 1e-6;
     if (closed_loop && base.size() > 2) {
         base.pop_back();
     }
@@ -270,7 +271,7 @@ void draw_structured_road_map(ImDrawList* draw_list, const CanvasTransform& tx, 
 
     const double road_width = structured_road_width_for_world(world);
     const double half_width = 0.5 * road_width;
-    const ImU32 road_bound_color = IM_COL32(255, 96, 96, 230);
+    const ImU32 road_bound_color = IM_COL32(113, 145, 162, 190);
     const ImU32 road_center_color = IM_COL32(122, 232, 158, 190);
     const ImU32 lane_color = IM_COL32(245, 213, 105, 150);
     const bool aruco_reference_mixed_map =
@@ -414,8 +415,7 @@ void draw_lidar_scan(ImDrawList* draw_list,
             const LidarHit& hit = hits[i];
             const ImVec2 hit_screen = world_to_screen(tx, hit.point);
             if (hit.hit) {
-                draw_list->AddCircleFilled(hit_screen, 2.7f, kColorLidarHit);
-                draw_list->AddCircle(hit_screen, 4.8f, IM_COL32(231, 255, 212, 205), 0, 1.1f);
+                draw_list->AddCircleFilled(hit_screen, 1.8f, kColorLidarHit);
             } else {
                 draw_list->AddCircleFilled(hit_screen, 1.6f, IM_COL32(150, 207, 255, 135));
             }

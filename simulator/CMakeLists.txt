@@ -213,6 +213,8 @@ add_library(thesis_hardware_planner STATIC
   src/controller/hardware_planner/telemetry_controller.cpp
 )
 
+find_package(Threads REQUIRED)
+
 target_include_directories(thesis_hardware_planner PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
@@ -222,6 +224,7 @@ target_compile_options(thesis_hardware_planner PRIVATE
 )
 
 target_link_libraries(thesis_hardware_planner PUBLIC
+  Threads::Threads
   sabrina_planner
   thesis_initial_lidar_matcher
   thesis_planner_stack
@@ -343,6 +346,11 @@ target_link_libraries(thesis_sim_lidar_start_matcher PRIVATE
 )
 
 if(BUILD_TESTING)
+  add_executable(thesis_start_matching_runtime_smoke
+    src/tests/integration/start_matching_runtime_test.cpp)
+  target_link_libraries(thesis_start_matching_runtime_smoke PRIVATE thesis_hardware_planner)
+  add_test(NAME thesis_start_matching_runtime COMMAND thesis_start_matching_runtime_smoke)
+  set_tests_properties(thesis_start_matching_runtime PROPERTIES TIMEOUT 25)
   add_executable(thesis_slam_observation_smoke
     src/tests/integration/slam_observation_test.cpp
   )
@@ -359,6 +367,17 @@ if(BUILD_TESTING)
   )
   add_test(NAME thesis_hardware_runtime_settings COMMAND thesis_hardware_runtime_settings_smoke)
   add_test(NAME thesis_trial_recording COMMAND thesis_hardware_runtime_settings_smoke --trial-recording)
+  add_test(NAME thesis_structured_mixed_feedback COMMAND thesis_hardware_runtime_settings_smoke --structured-mixed)
+  set_tests_properties(thesis_structured_mixed_feedback PROPERTIES TIMEOUT 60)
+  add_test(NAME thesis_structured_mixed_pwm_navigation COMMAND thesis_hardware_runtime_settings_smoke --road-pwm)
+  set_tests_properties(thesis_structured_mixed_pwm_navigation PROPERTIES TIMEOUT 180)
+  add_test(NAME thesis_structured_hardware_navigation COMMAND thesis_robot_runner
+    --simulate --scenario structured --structured-map validation --vehicle-model car
+    --no-start-matching --no-slam-toolbox --max-steps 1200)
+  add_test(NAME thesis_mixed_hardware_navigation COMMAND thesis_robot_runner
+    --simulate --scenario mixed --mixed-map hardware_aligned --vehicle-model car
+    --no-start-matching --no-slam-toolbox --max-steps 900)
+  set_tests_properties(thesis_structured_hardware_navigation thesis_mixed_hardware_navigation PROPERTIES TIMEOUT 180)
   set_tests_properties(thesis_hardware_runtime_settings PROPERTIES TIMEOUT 60)
   add_test(NAME thesis_loaded_gate_pwm_tracking COMMAND thesis_hardware_runtime_settings_smoke --loaded-gates)
   set_tests_properties(thesis_loaded_gate_pwm_tracking PROPERTIES TIMEOUT 60)

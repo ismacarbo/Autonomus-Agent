@@ -134,6 +134,17 @@ void visit_trial_sample(const thesis_sim::HardwareTelemetrySample& sample, Emit 
     emit("overspeed_braking_active", sample.overspeed_braking_active);
     emit("drivetrain_stall_stop_active", sample.drivetrain_stall_stop_active);
     emit("reference_invalidation_reason", sample.reference_invalidation_reason);
+    emit("pose_epoch", sample.pose_epoch);
+    emit("mission_goal_reached", sample.mission_goal_reached);
+    emit("start_matching_offset_x_m", sample.start_matching_offset_x_m);
+    emit("start_matching_offset_y_m", sample.start_matching_offset_y_m);
+    emit("start_matching_offset_yaw_deg", sample.start_matching_offset_yaw_deg);
+    emit("start_matching_collected_scans", sample.start_matching_collected_scans);
+    emit("start_matching_completed_matches", sample.start_matching_completed_matches);
+    emit("start_matching_compute_ms", sample.start_matching_compute_ms);
+    emit("start_matching_rmse_m", sample.start_matching_rmse_m);
+    emit("start_matching_inlier_ratio", sample.start_matching_inlier_ratio);
+    emit("start_matching_reference_hash", sample.start_matching_reference_hash);
 }
 
 void write_trial_csv_cell(std::ostream& out, const std::string& value) {
@@ -185,7 +196,7 @@ class HardwareTrialRecorder {
             std::chrono::steady_clock::now().time_since_epoch()).count();
         std::ostringstream row;
         row.imbue(std::locale::classic());
-        row << std::setprecision(17) << "1,";
+        row << std::setprecision(17) << "2,";
         write_trial_csv_cell(row, trial_);
         row << ',' << (rows_ + 1) << ',' << epoch << ',' << step << ',' << unix_s << ',' << monotonic_s << ',';
         write_trial_csv_cell(row, config.calibration_profile_version);

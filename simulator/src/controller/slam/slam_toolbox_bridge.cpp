@@ -76,7 +76,15 @@ void SlamToolboxBridgeClient::close() {
     }
     socket_fd_ = -1;
     port_ = 0;
+    reset_session();
+}
+
+void SlamToolboxBridgeClient::reset_session() {
+    active_session_.clear();
+    submitted_poses_.clear();
     snapshot_ = {};
+    map_alignment_valid_ = false;
+    last_response_time_ = {};
 }
 
 bool SlamToolboxBridgeClient::submit_scan(const std::string& session,

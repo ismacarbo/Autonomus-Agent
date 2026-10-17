@@ -233,55 +233,7 @@ void render_world_tab(PlannerDrivenVehicleSim& sim,
             : (sim.environment_mode() == EnvironmentMode::MixedRoadGates ? "road / dynamic gate arbiter"
                                                                           : thesis_sim::structured_map_preset_name(sim.world().structured_preset()));
 
-    char speed_buf[32];
-    char goal_buf[32];
-    char tracking_buf[32];
-    char target_buf[48];
-    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", sim.vehicle().speed);
-    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", sim.distance_to_goal());
-    std::snprintf(tracking_buf, sizeof(tracking_buf), "%.2f m / %.1f deg", sim.tracker_cross_track_error(), sim.tracker_heading_error_deg());
-    std::snprintf(target_buf, sizeof(target_buf), "%s", active_target.c_str());
-
-    if (ImGui::BeginChild("WorldToolbar", ImVec2(0.0f, 102.0f), true)) {
-        if (ImGui::BeginTable("WorldToolbarLayout", 2, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("WorldMetrics", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-            ImGui::TableSetupColumn("WorldControls", ImGuiTableColumnFlags_WidthFixed, 320.0f);
-
-            ImGui::TableNextColumn();
-            if (ImGui::BeginTable("WorldMetricCards", 4, ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();
-                metric_card("world_speed", "Vehicle", speed_buf, "Live speed", ImVec4(0.43f, 0.82f, 0.96f, 1.0f), 64.0f);
-                ImGui::TableNextColumn();
-                metric_card("world_goal", "Goal", goal_buf, "Distance remaining", ImVec4(0.99f, 0.70f, 0.32f, 1.0f), 64.0f);
-                ImGui::TableNextColumn();
-                metric_card("world_tracking", "Tracking", tracking_buf, "cte / heading", ImVec4(0.97f, 0.89f, 0.45f, 1.0f), 64.0f);
-                ImGui::TableNextColumn();
-                metric_card("world_target", "Target", target_buf,
-                            sim.environment_mode() == EnvironmentMode::UnstructuredGates
-                                ? "Active planner gate"
-                                : (sim.environment_mode() == EnvironmentMode::MixedRoadGates ? "Mixed arbitration" : "Active structured loop"),
-                            ImVec4(0.48f, 0.88f, 0.62f, 1.0f),
-                            64.0f);
-                ImGui::EndTable();
-            }
-
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("VIEWPORT LAYERS");
-            ImGui::Checkbox("Grid", &ui_state->show_grid);
-            ImGui::SameLine();
-            ImGui::Checkbox("Trails", &ui_state->show_trails);
-            ImGui::Checkbox("LiDAR Rays", &ui_state->show_lidar_rays);
-            ImGui::SameLine();
-            ImGui::Checkbox("LiDAR Hits", &ui_state->show_lidar_hits);
-            ImGui::Checkbox("Labels", &ui_state->show_gate_labels);
-            ImGui::Checkbox("HUD", &ui_state->show_world_hud);
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", ui_state->map_editor_enabled ? "Editor enabled" : "Editor off");
-            ImGui::TextWrapped("Use the viewport for live diagnosis first, then enable drag editing only when you want to reshape the map.");
-            ImGui::EndTable();
-        }
-    }
-    ImGui::EndChild();
+    render_map_toolbar(ui_state, sim.world(), sim.step_count() > 0);
 
     if (!ImGui::BeginChild("SimulationViewport", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_NoScrollbar)) {
         ImGui::EndChild();
@@ -291,17 +243,17 @@ void render_world_tab(PlannerDrivenVehicleSim& sim,
 
     const ImVec2 viewport_pos = ImGui::GetCursorScreenPos();
     ImVec2 viewport_size = ImGui::GetContentRegionAvail();
-    viewport_size.x = std::max(viewport_size.x, 640.0f);
-    viewport_size.y = std::max(viewport_size.y, 320.0f);
-    const float panel_gap = 10.0f;
-    const float slam_width = std::clamp(viewport_size.x * 0.34f, 260.0f, 390.0f);
-    const ImVec2 canvas_pos = viewport_pos;
-    const ImVec2 canvas_size(viewport_size.x - slam_width - panel_gap, viewport_size.y);
-    const ImVec2 slam_pos(canvas_pos.x + canvas_size.x + panel_gap, canvas_pos.y);
-    const ImVec2 slam_size(slam_width, viewport_size.y);
+    viewport_size.x = std::max(viewport_size.x, 1.0f);
+    viewport_size.y = std::max(viewport_size.y, 1.0f);
+    const MapViewportLayout layout = map_viewport_layout(viewport_pos, viewport_size, ui_state->show_slam_map);
+    const ImVec2 canvas_pos = layout.map_pos;
+    const ImVec2 canvas_size = layout.map_size;
+    const ImVec2 slam_pos = layout.slam_pos;
+    const ImVec2 slam_size = layout.slam_size;
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     draw_viewport_background(draw_list, canvas_pos, canvas_size);
+    draw_list->PushClipRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), true);
 
     const CanvasTransform tx = make_transform(sim.world(), canvas_pos, canvas_size);
     const Rect bounds = sim.world().bounds();
@@ -419,6 +371,9 @@ void render_world_tab(PlannerDrivenVehicleSim& sim,
     }
 
     const float vehicle_visual_scale = simulation_vehicle_visual_scale_for_world(sim.world());
+    if (ui_state->show_robot_footprint)
+        draw_robot_footprint(draw_list, tx, sim.vehicle().position, sim.vehicle().yaw,
+                             sim.geometry().body_length, sim.geometry().body_width);
     draw_vehicle(draw_list,
                  tx,
                  sim.vehicle(),
@@ -438,6 +393,8 @@ void render_world_tab(PlannerDrivenVehicleSim& sim,
                 !slam_snapshot->occupied_points.empty()
             ? slam_snapshot->occupied_points
             : sim.slam_points();
+    draw_list->PopClipRect();
+    if (ui_state->show_slam_map) {
     draw_slam_reconstruction(
         draw_list,
         sim.world(),
@@ -448,6 +405,10 @@ void render_world_tab(PlannerDrivenVehicleSim& sim,
         &nav_pos,
         ui_state->show_grid,
         slam_snapshot);
+    }
+    draw_list->PushClipRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), true);
+
+    draw_metric_map_caption(draw_list, tx, sim.world(), canvas_pos, canvas_size);
 
     if (ui_state->show_world_hud) {
         char hud_line[96];
@@ -490,7 +451,7 @@ void render_world_tab(PlannerDrivenVehicleSim& sim,
         if (!aruco_reference_mixed_map &&
             (sim.world().environment_mode() == EnvironmentMode::StructuredRoad ||
              sim.world().environment_mode() == EnvironmentMode::MixedRoadGates)) {
-            legend.push_back({"red: structured road bounds", IM_COL32(255, 96, 96, 230)});
+            legend.push_back({"slate: structured road bounds", IM_COL32(113, 145, 162, 190)});
         }
         if (sim.lidar_enabled() && ui_state->show_lidar_rays) {
             legend.push_back({"green: LiDAR hit rays", kColorLidar});
@@ -527,6 +488,7 @@ void render_world_tab(PlannerDrivenVehicleSim& sim,
         }
     }
 
+    draw_list->PopClipRect();
     ImGui::Dummy(viewport_size);
     ImGui::EndChild();
     ImGui::EndChild();

@@ -3,7 +3,9 @@
 namespace thesis_sim {
 
 void HardwarePlannerRunner::plan_if_needed() {
-    if (step_count_ % planning_interval_steps() != 0) {
+    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
+    if (step_count_ % planning_interval_steps() != 0 &&
+        (!world_is_mixed(world_) || mixed_gate_active == planner_reference_is_gate_)) {
         return;
     }
 
@@ -18,8 +20,8 @@ void HardwarePlannerRunner::plan_if_needed() {
         planner_initial_yaw_rate_ = estimate_.yaw_rate;
         last_planner_command_step_ = step_count_;
     };
-    const bool mixed_gate_active = world_is_mixed(world_) && locked_gap_goal_.has_value();
     if (world_has_structured_reference(world_) && road_ != nullptr && !mixed_gate_active) {
+        planner_reference_is_gate_ = false;
         std::vector<double> commands = sel_jr(
             false,
             step_count_,
@@ -74,6 +76,7 @@ void HardwarePlannerRunner::plan_if_needed() {
         active_gates.push_back(gates_[static_cast<size_t>(index)]);
     }
 
+    planner_reference_is_gate_ = true;
     std::vector<double> commands = sel_jr(
         false,
         step_count_,

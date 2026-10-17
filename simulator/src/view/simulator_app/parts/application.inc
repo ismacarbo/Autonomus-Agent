@@ -36,17 +36,25 @@ int run_headless(const AppOptions& options) {
 }
 
 int run_gui(const AppOptions& options) {
+    UiCapture ui_capture;
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << '\n';
         return 1;
     }
 
+    int window_width = 1500, window_height = 920;
+    if (ui_capture.active()) {
+        if (const char* size = std::getenv("THESIS_UI_CAPTURE_SIZE"))
+            std::sscanf(size, "%dx%d", &window_width, &window_height);
+        window_width = std::max(window_width, 1000);
+        window_height = std::max(window_height, 700);
+    }
     SDL_Window* window = SDL_CreateWindow(
-        "Autonomous Reasoning Engine",
+        "Autonomous / Navigation Lab",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
-        1500,
-        920,
+        window_width,
+        window_height,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (window == nullptr) {
@@ -61,6 +69,10 @@ int run_gui(const AppOptions& options) {
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
     if (renderer == nullptr) {
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    }
+
+    if (renderer == nullptr) {
         std::cerr << "SDL_CreateRenderer failed: " << SDL_GetError() << '\n';
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -72,7 +84,10 @@ int run_gui(const AppOptions& options) {
     ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    if (ui_capture.active()) io.IniFilename = nullptr;
     apply_style();
+    configure_presentation_fonts();
+    SDL_SetWindowMinimumSize(window, 1000, 700);
 
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
@@ -97,7 +112,8 @@ int run_gui(const AppOptions& options) {
     HardwareViewerState hardware_view;
     LiveViewStreamServer hardware_server;
     SlamToolboxBridgeClient slam_bridge;
-    slam_bridge.open();
+    if (!ui_capture.active()) slam_bridge.open();
+    SlamToolboxSnapshot hardware_slam_snapshot;
     std::uint64_t slam_sequence = 0;
     int last_slam_sim_step = -1;
     int slam_sim_session_epoch = 1;
@@ -106,6 +122,7 @@ int run_gui(const AppOptions& options) {
     sync_ui_state_from_sim(&ui_state, sim);
 
     while (running) {
+        ui_capture.prepare(sim, &hardware_view, &ui_state);
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
@@ -145,6 +162,7 @@ int run_gui(const AppOptions& options) {
             ui_state.hardware_slam_toolbox_enabled =
                 hardware_view.scene.slam_toolbox_enabled;
             hardware_view.frame = {};
+            ui_state.last_hardware_frame_at = -1.0;
             hardware_view.history.clear();
             hardware_view.lidar_reconstruction.clear();
             hardware_view.last_lidar_reconstruction_step = -1;
@@ -157,6 +175,7 @@ int run_gui(const AppOptions& options) {
         }
         if (hardware_updates.frame_received && hardware_updates.frame.has_value()) {
             hardware_view.frame = *hardware_updates.frame;
+            ui_state.last_hardware_frame_at = ImGui::GetTime();
             append_lidar_reconstruction_frame(&hardware_view);
             if (hardware_view.frame.has_latest_sample) {
                 const bool duplicate =
@@ -193,7 +212,7 @@ int run_gui(const AppOptions& options) {
             ++slam_sim_session_epoch;
             last_slam_sim_step = -1;
         }
-        if (ui_state.workspace_source == kWorkspaceSourceSimulation &&
+        if (!ui_capture.active() && ui_state.workspace_source == kWorkspaceSourceSimulation &&
             sim.step_count() != last_slam_sim_step &&
             !sim.lidar_hits().empty()) {
             slam_bridge.submit_scan(
@@ -209,7 +228,7 @@ int run_gui(const AppOptions& options) {
         }
         slam_bridge.poll();
 
-        if ((sim.goal_reached() || sim.collision()) && !ui_state.report_written) {
+        if (!ui_capture.active() && (sim.goal_reached() || sim.collision()) && !ui_state.report_written) {
             const std::string report_path = default_report_path(sim, "gui_auto");
             if (write_json_report(sim, report_status_string(sim), report_path)) {
                 ui_state.report_written = true;
@@ -221,33 +240,34 @@ int run_gui(const AppOptions& options) {
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        SlamToolboxSnapshot displayed_slam_snapshot = slam_bridge.snapshot();
-        if (ui_state.workspace_source != kWorkspaceSourceSimulation &&
-            hardware_view.has_scene) {
-            displayed_slam_snapshot.session_id = hardware_view.frame.slam_session_id;
-            displayed_slam_snapshot.connected =
+        if ((hardware_updates.frame_received || hardware_updates.scene_received) && hardware_view.has_scene) {
+            hardware_slam_snapshot.session_id = hardware_view.frame.slam_session_id;
+            hardware_slam_snapshot.connected =
                 hardware_view.frame.slam_connected &&
                 hardware_view.frame.map_source ==
                     thesis_sim::ExplorationMapSource::SlamToolbox;
-            displayed_slam_snapshot.pose_valid = hardware_view.frame.slam_pose_valid;
-            displayed_slam_snapshot.corrected_position = hardware_view.frame.navigation_position;
-            displayed_slam_snapshot.corrected_yaw = hardware_view.frame.navigation_yaw;
-            displayed_slam_snapshot.map_updates = hardware_view.frame.slam_map_updates;
-            displayed_slam_snapshot.graph_nodes = hardware_view.frame.slam_graph_nodes;
-            displayed_slam_snapshot.loop_edges = hardware_view.frame.slam_loop_edges;
-            displayed_slam_snapshot.map_resolution_m = hardware_view.frame.slam_map_resolution_m;
-            displayed_slam_snapshot.free_points = hardware_view.frame.global_free_points;
-            displayed_slam_snapshot.occupied_points = hardware_view.frame.global_occupied_points;
-            displayed_slam_snapshot.reset_reason = hardware_view.frame.slam_reset_reason;
-            displayed_slam_snapshot.status = hardware_view.frame.slam_status;
-            if (!displayed_slam_snapshot.connected &&
+            hardware_slam_snapshot.pose_valid = hardware_view.frame.slam_pose_valid;
+            hardware_slam_snapshot.corrected_position = hardware_view.frame.navigation_position;
+            hardware_slam_snapshot.corrected_yaw = hardware_view.frame.navigation_yaw;
+            hardware_slam_snapshot.map_updates = hardware_view.frame.slam_map_updates;
+            hardware_slam_snapshot.graph_nodes = hardware_view.frame.slam_graph_nodes;
+            hardware_slam_snapshot.loop_edges = hardware_view.frame.slam_loop_edges;
+            hardware_slam_snapshot.map_resolution_m = hardware_view.frame.slam_map_resolution_m;
+            hardware_slam_snapshot.free_points = hardware_view.frame.global_free_points;
+            hardware_slam_snapshot.occupied_points = hardware_view.frame.global_occupied_points;
+            hardware_slam_snapshot.reset_reason = hardware_view.frame.slam_reset_reason;
+            hardware_slam_snapshot.status = hardware_view.frame.slam_status;
+            if (!hardware_slam_snapshot.connected &&
                 hardware_view.frame.map_source ==
                     thesis_sim::ExplorationMapSource::LocalPersistentGrid) {
-                displayed_slam_snapshot.map_resolution_m =
+                hardware_slam_snapshot.map_resolution_m =
                     hardware_view.frame.occupancy_cell_size_m;
-                displayed_slam_snapshot.status = "persistent_local_grid";
+                hardware_slam_snapshot.status = "persistent_local_grid";
             }
         }
+
+        const SlamToolboxSnapshot& displayed_slam_snapshot = workspace_source_is_hardware(ui_state.workspace_source)
+            ? hardware_slam_snapshot : slam_bridge.snapshot();
 
         render_workspace(
             sim,
@@ -260,6 +280,7 @@ int run_gui(const AppOptions& options) {
         SDL_SetRenderDrawColor(renderer, 9, 12, 15, 255);
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
+        if (ui_capture.capture(renderer)) running = false;
         SDL_RenderPresent(renderer);
     }
 

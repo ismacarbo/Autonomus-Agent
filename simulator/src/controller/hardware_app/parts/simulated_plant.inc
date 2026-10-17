@@ -101,6 +101,16 @@ int run_simulated(const AppOptions& options,
         poll_external_pose(options, &external_pose_receiver, &runner);
         runner.step_with_observation(observation, planner_config.nominal_dt, false);
         const auto& applied_command = runner.last_command();
+        if (std::getenv("THESIS_TRACE_CONTROL")) {
+            std::cerr << "control," << step << ',' << plant_state.position.x << ',' << plant_state.position.y
+                      << ',' << plant_state.yaw << ',' << applied_command.target_speed
+                      << ',' << applied_command.target_yaw_rate << ','
+                      << static_cast<int>(runner.diagnostics().control_source) << ','
+                      << runner.diagnostics().reference_invalidation_reason << ','
+                      << runner.reference_trajectory().size() << ','
+                      << runner.history().back().tracker_heading_error_deg << ','
+                      << runner.history().back().tracker_cross_track << '\n';
+        }
         if (std::abs(applied_command.target_speed) <= 0.005 &&
             std::abs(applied_command.target_yaw_rate) >= 0.10) {
             ++pivot_command_cycles;
@@ -166,27 +176,23 @@ int run_simulated(const AppOptions& options,
         const double collision_padding =
             compact_mixed_world
                 ? 0.0
-                : compact_structured_world && runner.world().obstacles().empty()
-                ? -0.45
                 : (indoor_structured_world && runner.world().obstacles().empty()
                        ? 0.0
                        : (compact_structured_world ? 0.0 : 0.05));
-        collision =
-            !compact_mixed_world &&
-            !(compact_structured_world && runner.world().obstacles().empty()) &&
-            runner.world().collides(
+        collision = runner.world().collides(
                 thesis_sim::make_box_corners(
                     plant->state().position,
                     plant->state().yaw,
                     runner.geometry().body_length,
                     runner.geometry().body_width),
-                collision_padding);
+                std::max(collision_padding, 0.0));
     }
 
     stream_frame_if_due(options, runner, &streamer, true);
 
     const HardwarePlannerReport report = runner.current_report();
-    const std::string status = runner.goal_reached() ? "goal_reached" : (collision ? "collision" : "timeout");
+    const std::string status = collision ? "collision" : (runner.goal_reached() ? "goal_reached" : "timeout");
+    std::cout << "simulation_actuation=target_velocity_model (not PWM plant)\n";
     std::cout << "status=" << status << '\n';
     std::cout << "telemetry_ready=" << (report.telemetry_ready ? 1 : 0) << '\n';
     std::cout << "safety_stop_active=" << (report.safety_stop_active ? 1 : 0) << '\n';
@@ -212,6 +218,7 @@ int run_simulated(const AppOptions& options,
     std::cout << "front_lidar_distance=" << report.front_lidar_distance << '\n';
     std::cout << "dynamic_gap_gates=" << (report.dynamic_gap_gates ? 1 : 0) << '\n';
     std::cout << "planner_has_reference=" << (report.planner_has_reference ? 1 : 0) << '\n';
+    std::cout << "reference_invalidation_reason=" << runner.diagnostics().reference_invalidation_reason << '\n';
     std::cout << "stall_boost_active=" << (report.stall_boost_active ? 1 : 0) << '\n';
     std::cout << "valid_lidar_points=" << report.valid_lidar_points << '\n';
     std::cout << "close_lidar_points=" << report.close_lidar_points << '\n';
@@ -233,7 +240,7 @@ int run_simulated(const AppOptions& options,
     std::cout << "controller_target_pwm_right=" << runner.last_command().pwm_right << '\n';
     std::cout << "planned_pwm_left=" << runner.last_command().pwm_left << '\n';
     std::cout << "planned_pwm_right=" << runner.last_command().pwm_right << '\n';
-    return runner.goal_reached() ? 0 : 1;
+    return runner.goal_reached() && !collision ? 0 : 1;
 }
 
 }  // namespace

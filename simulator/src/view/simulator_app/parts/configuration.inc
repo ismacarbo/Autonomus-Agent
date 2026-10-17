@@ -421,8 +421,6 @@ void apply_validation_preset(PlannerDrivenVehicleSim& sim,
     sync_ui_state_from_sim(ui_state, sim);
     ui_state->workspace_source = kWorkspaceSourceSimulation;
     ui_state->workspace_view = kWorkspaceViewMission;
-    ui_state->simulation_panel_tab = 0;
-    ui_state->requested_simulation_panel_tab = 0;
     ui_state->paused = true;
 }
 
@@ -553,36 +551,13 @@ void draw_slam_reconstruction(ImDrawList* draw_list,
     }
 
     char point_count[64];
-    char graph_status[96];
-    std::snprintf(point_count, sizeof(point_count), "%d occupied cells", static_cast<int>(slam_points.size()));
-    std::snprintf(
-        graph_status,
-        sizeof(graph_status),
-        toolbox_active ? "updates %d | graph nodes %d | loop edges %d"
-                       : (persistent_grid_active
-                              ? "non-decaying local fallback | no pose graph"
-                              : "start tools/slam_toolbox_bridge/run.sh for graph SLAM"),
-        toolbox_active ? toolbox_snapshot->map_updates : 0,
-        toolbox_active ? toolbox_snapshot->graph_nodes : 0,
-        toolbox_active ? toolbox_snapshot->loop_edges : 0);
-    draw_overlay_panel(
-        draw_list,
-        ImVec2(canvas_pos.x + 12.0f, canvas_pos.y + 12.0f),
-        std::min(canvas_size.x - 24.0f, 310.0f),
-        {{toolbox_active
-              ? "SLAM Toolbox"
-              : (persistent_grid_active
-                     ? "Persistent exploration grid"
-                     : "LiDAR reconstruction"),
+    std::snprintf(point_count, sizeof(point_count), "%zu %s", slam_points.size(), occupancy_grid_active ? "occupied cells" : "LiDAR endpoints");
+    draw_overlay_panel(draw_list, ImVec2(canvas_pos.x + 12, canvas_pos.y + 12),
+        std::min(canvas_size.x - 24, 270.0f),
+        {{toolbox_active ? "SLAM Toolbox" : persistent_grid_active ? "Local occupancy grid" : "LiDAR reconstruction",
           IM_COL32(132, 232, 215, 255)},
-         {toolbox_active
-              ? "scan matching + loop closure + graph optimization"
-              : (persistent_grid_active
-                     ? "free/occupied cells retained for the full run"
-                     : "estimated-pose endpoint accumulation"),
-          IM_COL32(213, 223, 223, 235)},
-         {graph_status, IM_COL32(160, 177, 181, 235)},
-         {point_count, IM_COL32(160, 177, 181, 235)}});
+         {toolbox_active ? "Map from the SLAM bridge" : "Accumulated estimated-pose scans", IM_COL32(165, 183, 195, 255)},
+         {point_count, IM_COL32(165, 183, 195, 255)}});
     draw_list->PopClipRect();
 }
 
@@ -700,7 +675,7 @@ std::string hardware_launch_hint(const UiState& ui_state) {
     cmd << " --pose-fusion "
         << thesis_sim::hardware_localization_policy_cli_name(
                static_cast<HardwareLocalizationPolicy>(ui_state.hardware_localization_policy));
-    if (ui_state.hardware_start_matching_enabled) {
+    if (ui_state.hardware_start_matching_enabled && !structured) {
         cmd << " --start-reference datasets/localization/"
             << (static_cast<VehicleModelKind>(ui_state.hardware_vehicle_model) ==
                         VehicleModelKind::TrackedVehicle

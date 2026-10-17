@@ -1,5 +1,6 @@
 #include "parts/options.inc"
 #include "parts/trial_recording.inc"
 #include "parts/stream_config.inc"
+#include "parts/slam_session.inc"
 #include "parts/simulated_plant.inc"
 #include "parts/entrypoint.inc"

@@ -195,7 +195,10 @@ void HardwarePlannerRunner::reset() {
     const bool open_ended_unstructured_car =
         open_ended_unstructured_exploration(world_) &&
         config_.vehicle_model == VehicleModelKind::CarLikeBicycle;
-    if (open_ended_unstructured_car) {
+    const bool calibrated_car_controller = open_ended_unstructured_car ||
+        (world_has_structured_reference(world_) && !micro_structured_world(world_) &&
+         config_.vehicle_model == VehicleModelKind::CarLikeBicycle);
+    if (calibrated_car_controller) {
         // The physical car is actuated by independent left/right motor groups.
         // A 1.8 1/m bicycle limit gives a 0.56 m minimum radius and cannot
         // follow the few-decimetre gate clothoids produced from local LiDAR.
@@ -213,7 +216,7 @@ void HardwarePlannerRunner::reset() {
     estimator_.set_geometry(geometry_);
     estimator_.set_tracked_vehicle(config_.vehicle_model == VehicleModelKind::TrackedVehicle);
     MpcFollowerConfig mpc_config{};
-    if (open_ended_unstructured_car) {
+    if (calibrated_car_controller) {
         // Dynamic gate clothoids are only a few decimetres long. The generic
         // 0.6/1.4 m MPC lookahead jumps directly to their endpoint and turns
         // path following back into point pursuit.
@@ -293,6 +296,7 @@ void HardwarePlannerRunner::reset() {
     structured_goal_progress_target_ = 0.0;
     structured_progress_s_ = 0.0;
     structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
+    planner_reference_is_gate_ = false;
     structured_goal_position_ = world_.start();
     clear_locked_gap_goal();
     startup_scan_elapsed_s_ = 0.0;
@@ -454,6 +458,22 @@ bool HardwarePlannerRunner::external_pose_reference_fresh() const {
 }
 
 void HardwarePlannerRunner::reset_pose(const Vec2& position, double heading) {
+    ++pose_epoch_;
+    slam_toolbox_snapshot_ = {};
+    slam_pose_valid_ = false;
+    last_slam_correction_accepted_ = false;
+    slam_snapshot_received_sim_time_s_ = -1.0;
+    // Points accumulated in the previous pose frame must not survive a reset.
+    lidar_hits_.clear();
+    lidar_map_points_.clear();
+    lidar_occupancy_cells_.clear();
+    lidar_map_keys_.clear();
+    exploration_cells_.clear();
+    global_free_points_.clear();
+    global_occupied_points_.clear();
+    exploration_path_.clear();
+    selected_frontier_.reset();
+    exploration_map_source_ = ExplorationMapSource::LocalPersistentGrid;
     estimate_ = {};
     estimate_.position = position;
     estimate_.yaw = heading;

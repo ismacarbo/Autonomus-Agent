@@ -223,6 +223,11 @@ bool micro_structured_world(const WorldMap& world) {
 bool compact_mixed_open_road(const WorldMap& world);
 
 double structured_goal_active_distance(const WorldMap& world, double configured_goal_tolerance) {
+    if (world.environment_mode() == EnvironmentMode::StructuredRoad) {
+        // Keep the reference moving until the same position tolerance used
+        // by completion. A 25 cm tracking cutoff deadlocked short open roads.
+        return std::max(configured_goal_tolerance, .02);
+    }
     if (micro_structured_world(world)) {
         return std::max(0.040, 0.16 * structured_course_span_m(world));
     }

@@ -29,6 +29,7 @@
 #include "mvc/controller/simulation_planner/simulator.h"
 #include "mvc/controller/slam/slam_toolbox_bridge.h"
 #include "mvc/model/reporting/slam_reference_exporter.h"
+#include "mvc/model/reporting/hardware_metrics.h"
 #include "mvc/model/navigation/robot_calibration_profile.h"
 #include "mvc/model/world/scenario_model.h"
 #include "mvc/view/canvas/world_canvas_view.h"
@@ -113,6 +114,7 @@ enum WorkspaceView {
     kWorkspaceViewMap = 2,
     kWorkspaceViewDiagnostics = 3,
     kWorkspaceViewExport = 4,
+    kWorkspaceViewSetup = 5,
 };
 
 constexpr double kDynamicObstacleSimulationLidarRangeM = 0.75;
@@ -138,13 +140,8 @@ struct UiState {
     bool paused = true;
     bool single_step = false;
     int steps_per_frame = 1;
-    int workspace_source = kWorkspaceSourceHardwarePlanner;
-    int workspace_tab = 0;
+    int workspace_source = kWorkspaceSourceSimulation;
     int workspace_view = kWorkspaceViewMission;
-    int simulation_panel_tab = 0;
-    int hardware_panel_tab = 0;
-    int requested_simulation_panel_tab = -1;
-    int requested_hardware_panel_tab = -1;
     int hardware_listen_port = 9559;
     int hardware_environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
     int hardware_unstructured_preset = static_cast<int>(UnstructuredMapPreset::HardwareLab);
@@ -158,10 +155,17 @@ struct UiState {
     float hardware_track_scale = kHardwareTrackDefaultScale;
     bool show_grid = true;
     bool show_trails = true;
-    bool show_lidar_rays = true;
+    bool show_lidar_rays = false;
     bool show_lidar_hits = true;
     bool show_gate_labels = true;
-    bool show_world_hud = true;
+    bool show_world_hud = false;
+    bool show_slam_map = false;
+    bool show_inspector = true;
+    bool show_robot_footprint = true;
+    bool follow_plot_time = true;
+    int plot_window_seconds = 30;
+    int requested_signal_tab = -1;
+    double last_hardware_frame_at = -1.0;
     bool dynamic_lidar_gates = false;
     int gate_seed_input = 7;
     int environment_mode = static_cast<int>(EnvironmentMode::StructuredRoad);
@@ -352,13 +356,6 @@ void help_marker(const char* description) {
     }
 }
 
-void metric_chip(const char* label, const char* value) {
-    ImGui::BeginGroup();
-    ImGui::TextDisabled("%s", label);
-    ImGui::TextUnformatted(value);
-    ImGui::EndGroup();
-}
-
 void status_line(const char* label, const char* value, const ImVec4& color) {
     ImGui::TextDisabled("%s", label);
     ImGui::SameLine(128.0f);
@@ -375,75 +372,6 @@ void status_line(const char* label, const char* value, const ImVec4& color) {
     ImGui::PushStyleColor(ImGuiCol_Text, color);
     ImGui::TextUnformatted(value);
     ImGui::PopStyleColor();
-}
-
-ImGuiTabItemFlags requested_tab_flags(int requested_tab, int tab) {
-    return requested_tab == tab ? ImGuiTabItemFlags_SetSelected : 0;
-}
-
-void consume_requested_tab(int* requested_tab, int tab) {
-    if (requested_tab != nullptr && *requested_tab == tab) {
-        *requested_tab = -1;
-    }
-}
-
-void activate_simulation_panel_tab(UiState* ui_state, int tab, int workspace_view, bool editor_mode) {
-    if (ui_state == nullptr) {
-        return;
-    }
-    const bool changed = ui_state->simulation_panel_tab != tab;
-    ui_state->simulation_panel_tab = tab;
-    if (changed) {
-        ui_state->workspace_view = workspace_view;
-        ui_state->map_editor_enabled = editor_mode;
-    }
-}
-
-void activate_hardware_panel_tab(UiState* ui_state, int tab, int workspace_view, bool editor_mode) {
-    if (ui_state == nullptr) {
-        return;
-    }
-    const bool changed = ui_state->hardware_panel_tab != tab;
-    ui_state->hardware_panel_tab = tab;
-    if (changed) {
-        ui_state->workspace_view = workspace_view;
-        ui_state->map_editor_enabled = editor_mode;
-    }
-}
-
-void metric_card(const char* id,
-                 const char* label,
-                 const char* value,
-                 const char* detail,
-                 const ImVec4& accent,
-                 float height = 76.0f) {
-    ImGui::PushID(id);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.11f, 0.14f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.22f, 0.28f, 0.33f, 1.0f));
-    if (ImGui::BeginChild("##metric_card", ImVec2(0.0f, height), true)) {
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        const ImVec2 pos = ImGui::GetWindowPos();
-        const ImVec2 size = ImGui::GetWindowSize();
-        draw_list->AddRectFilled(
-            pos,
-            ImVec2(pos.x + size.x, pos.y + 4.0f),
-            ImGui::ColorConvertFloat4ToU32(accent),
-            8.0f);
-
-        ImGui::TextDisabled("%s", label);
-        ImGui::PushStyleColor(ImGuiCol_Text, accent);
-        ImGui::TextUnformatted(value);
-        ImGui::PopStyleColor();
-        if (detail != nullptr && detail[0] != '\0') {
-            ImGui::TextWrapped("%s", detail);
-        }
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(2);
-    ImGui::PopID();
 }
 
 void draw_overlay_panel(ImDrawList* draw_list, const ImVec2& pos, float width, const std::vector<OverlayLine>& lines) {
@@ -484,7 +412,7 @@ size_t plot_sample_stride(size_t point_count) {
     if (point_count <= kMaxPlotPoints) {
         return 1;
     }
-    return std::max<size_t>(1, point_count / kMaxPlotPoints);
+    return std::max<size_t>(1, (point_count + kMaxPlotPoints - 1) / kMaxPlotPoints);
 }
 
 std::string json_escape(const std::string& value) {
@@ -1035,10 +963,6 @@ HardwareThesisMetrics summarize_hardware_thesis_metrics(const HardwareViewerStat
         if (sample.min_lidar > 0.0) {
             metrics.min_clearance_m = std::min(metrics.min_clearance_m, sample.min_lidar);
         }
-        if (metrics.time_to_goal_s < 0.0 &&
-            sample.distance_to_goal >= 0.0 && sample.distance_to_goal <= 1e-3) {
-            metrics.time_to_goal_s = sample.time;
-        }
         if (ticks_to_distance > 0.0) {
             metrics.encoder_distance_m +=
                 0.5 *
@@ -1049,8 +973,7 @@ HardwareThesisMetrics summarize_hardware_thesis_metrics(const HardwareViewerStat
         if (i > 0) {
             const HardwareTelemetrySample& prev = hardware.history[i - 1];
             metrics.estimated_path_length_m +=
-                std::hypot(sample.position_x - prev.position_x,
-                           sample.position_y - prev.position_y);
+                thesis_sim::mvc::model::hardware_path_increment(prev, sample);
             const double dt = std::max(sample.time - prev.time, 0.0);
             // A visible/locked gate can coexist with HOLD or recovery. Count
             // the controller actually active during the preceding interval;
@@ -1085,9 +1008,8 @@ HardwareThesisMetrics summarize_hardware_thesis_metrics(const HardwareViewerStat
     if (!std::isfinite(metrics.min_clearance_m)) {
         metrics.min_clearance_m = 0.0;
     }
-    if (hardware.frame.goal_reached && metrics.time_to_goal_s < 0.0) {
-        metrics.time_to_goal_s = hardware.frame.sim_time;
-    }
+    metrics.time_to_goal_s = thesis_sim::mvc::model::hardware_mission_time(
+        hardware.history, hardware.frame.goal_reached, hardware.frame.sim_time);
     return metrics;
 }
 

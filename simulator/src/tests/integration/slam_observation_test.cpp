@@ -12,6 +12,8 @@
 using namespace thesis_sim;
 
 namespace {
+#include "../../controller/hardware_app/parts/slam_session.inc"
+
 void require(bool ok, const char* message) {
     if (!ok) throw std::runtime_error(message);
 }
@@ -100,10 +102,60 @@ void check_observation(const SlamToolboxSnapshot& snapshot) {
     require(observer.history().back().slam_pose_valid == 0.0,
             "disconnected SLAM pose remained valid in history");
 }
+
+void check_start_session() {
+    UdpFixture fixture;
+    HardwareSlamSession session;
+    auto world = WorldMap::unstructured_demo(UnstructuredMapPreset::HardwareLab);
+    HardwarePlannerConfig config;
+    config.start_matching.enabled = true;
+    config.start_matching.reference_path = "/nonexistent/start-session.csv";
+    config.slam_toolbox_enabled = true;
+    config.slam_observe_only = true;
+    HardwarePlannerRunner runner(world, RealRobotBridge::Options{}, config);
+    RealRobotObservation observation;
+    observation.host_timestamp_s = observation.lidar_scan_end_timestamp_s = 10.0;
+    observation.lidar_scan_mid_timestamp_s = 9.95;
+    observation.have_lidar_scan = true;
+    for (int i = 0; i < 180; ++i) {
+        observation.lidar_scan.push_back({15, 2.0 * i, 750, .75, 0, 0});
+    }
+    runner.step_with_observation(observation, .1, false);
+    require(!runner.lidar_hits().empty(), "session fixture has no LiDAR points");
+    session.update(runner, fixture.bridge, observation, "run", 1);
+    char buffer[60000];
+    auto receive = [&]() {
+        socklen_t size = sizeof(fixture.client);
+        const auto n = ::recvfrom(fixture.fd, buffer, sizeof(buffer), MSG_DONTWAIT,
+            reinterpret_cast<sockaddr*>(&fixture.client), &size);
+        return n > 0 ? std::string(buffer, n) : std::string{};
+    };
+    require(receive().empty(), "SLAM received a scan before matching acceptance");
+    config.start_matching.enabled = false;
+    runner.apply_config(config);
+    runner.step_with_observation(observation, .1, false);
+    session.update(runner, fixture.bridge, observation, "run", 1);
+    const auto first = receive();
+    require(first.find("SCAN|run_1_pose_") == 0, "ready session did not submit a scan");
+    session.update(runner, fixture.bridge, observation, "run", 1);
+    require(receive().empty(), "same scan submitted twice");
+    const auto split = first.find('|', 5);
+    const std::string old_session = first.substr(5, split - 5);
+    require(fixture.reply(old_session, 1, "100", "200"), "initial ready reply rejected");
+    runner.apply_slam_toolbox_snapshot(fixture.bridge.snapshot());
+    runner.reset_pose({4, 5}, .2);
+    // An old UDP response must be rejected even before a new scan is available.
+    observation.have_lidar_scan = false;
+    session.update(runner, fixture.bridge, observation, "run", 1);
+    require(!fixture.reply(old_session, 1, "100", "200", 2) &&
+            !fixture.bridge.snapshot().pose_valid && !runner.slam_toolbox_snapshot().pose_valid,
+            "pose reset retained the old SLAM frame/replies");
+}
 }
 
 int main() {
     try {
+        check_start_session();
         UdpFixture fixture;
         fixture.scan("session_a", 1, {1.0, 2.0});
         require(fixture.reply("session_a", 1, "100", "200"), "first map rejected");

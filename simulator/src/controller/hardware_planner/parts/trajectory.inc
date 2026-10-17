@@ -87,7 +87,8 @@ void HardwarePlannerRunner::update_planner_references(double dt) {
             0.0,
             1.0);
         double speed_ref = 0.05 + (cruise_speed - 0.05) * distance_scale;
-        if (estimate_.front_lidar_distance > 0.0) {
+        if (estimate_.front_lidar_distance > 0.0 &&
+            !(mixed_gate_active && config_.vehicle_model == VehicleModelKind::CarLikeBicycle)) {
             const double clearance_scale = clamp_value(
                 (estimate_.front_lidar_distance - config_.localization.obstacle_stop_distance_m) / 0.45,
                 0.0,
@@ -131,40 +132,6 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         }
         planned_trajectory_ = world_.road_centerline();
         reference_trajectory_ = build_reference_waypoints(planned_trajectory_, planner_speed_ref_);
-        diagnostics_.planner_has_reference = reference_trajectory_.size() >= 2;
-        return diagnostics_.planner_has_reference;
-    };
-    const auto assign_compact_mixed_gate_fallback = [&]() {
-        if (!mixed_gate_active ||
-            !locked_gap_goal_.has_value() ||
-            world_span_m(world_) > 1.25) {
-            return false;
-        }
-        const Vec2 target = *locked_gap_goal_;
-        const double gate_distance = distance(estimate_.position, target);
-        if (!(gate_distance > 0.025)) {
-            return false;
-        }
-
-        const int sample_count = std::max(
-            3,
-            static_cast<int>(std::ceil(gate_distance / 0.045)) + 1);
-        planned_trajectory_.clear();
-        planned_trajectory_.reserve(static_cast<size_t>(sample_count));
-        for (int i = 0; i < sample_count; ++i) {
-            const double alpha = sample_count > 1
-                ? static_cast<double>(i) / static_cast<double>(sample_count - 1)
-                : 1.0;
-            planned_trajectory_.push_back({
-                estimate_.position.x + alpha * (target.x - estimate_.position.x),
-                estimate_.position.y + alpha * (target.y - estimate_.position.y),
-            });
-        }
-        const double local_speed_ref = clamp_value(
-            std::max(planner_speed_ref_, 0.045),
-            0.0,
-            std::min(config_.cruise_speed_limit, config_.gap_extraction.gap_goal_cruise_speed_mps));
-        reference_trajectory_ = build_reference_waypoints(planned_trajectory_, local_speed_ref);
         diagnostics_.planner_has_reference = reference_trajectory_.size() >= 2;
         return diagnostics_.planner_has_reference;
     };
@@ -236,16 +203,13 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         road_ == nullptr) {
         return;
     }
-    if (assign_compact_mixed_gate_fallback()) {
-        return;
-    }
     if (!has_planner_clothoid) {
         restore_last_safe_gate_reference(
             "physical_gate_clothoid_temporarily_unavailable");
         return;
     }
 
-    const bool closed_structured_loop = structured_road_is_closed_loop(world_);
+    const bool closed_structured_loop = !mixed_gate_active && structured_road_is_closed_loop(world_);
     const bool prefer_hinted_loop_projection =
         world_is_mixed(world_) &&
         closed_structured_loop &&
@@ -351,7 +315,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
         planner_speed_ref_,
         closed_structured_loop);
     planned_trajectory_ = extract_reference_positions(reference_trajectory_);
-    if (open_ended_unstructured_exploration(world_)) {
+    if (open_ended_unstructured_exploration(world_) || mixed_gate_active) {
         // A clear straight chord to the detected aperture does not guarantee
         // that the car-like clothoid is safe. Validate the complete oriented
         // footprint against current LiDAR/occupancy endpoints before the MPC
@@ -396,7 +360,7 @@ void HardwarePlannerRunner::update_selected_trajectory() {
             gate_normal);
         const auto selected_gate_boundary_sample =
             [&](const Vec2& point, const ReferenceWaypoint& waypoint) {
-                if (!committed_physical_gate) {
+                if (!committed_physical_gate || mixed_gate_active) {
                     return false;
                 }
                 const Vec2 point_relative{
@@ -435,6 +399,10 @@ void HardwarePlannerRunner::update_selected_trajectory() {
                 waypoint.yaw,
                 geometry_.body_length + 2.0 * footprint_margin_m,
                 geometry_.body_width + 2.0 * footprint_margin_m);
+            if (mixed_gate_active && world_.collides(corners, 0.0)) {
+                reference_is_safe = false;
+                break;
+            }
             if (navigation_world_bounds_enabled(world_) &&
                 std::any_of(
                     corners.begin(),

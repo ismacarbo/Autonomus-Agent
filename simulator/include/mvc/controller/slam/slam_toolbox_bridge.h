@@ -42,6 +42,8 @@ class SlamToolboxBridgeClient {
 
     bool open(const std::string& host = "127.0.0.1", std::uint16_t port = 9760);
     void close();
+    // Invalidate replies/alignment without closing the UDP socket.
+    void reset_session();
     bool submit_scan(const std::string& session,
                      std::uint64_t sequence,
                      double timestamp_s,

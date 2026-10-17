@@ -203,6 +203,28 @@ bool compact_hardware_mixed_lab_world(const WorldMap& world) {
            !world.road_centerline().empty();
 }
 
+void apply_car_actuation_config(HardwarePlannerConfig* config) {
+    if (config == nullptr || config->vehicle_model != VehicleModelKind::CarLikeBicycle) return;
+    // One measured drivetrain, independently of the route planner in use.
+    // Running deadband and left/right mapping still come from calibration.
+    config->pwm.start_motion_pwm = 110;
+    config->pwm.overspeed_braking_enabled = true;
+    config->pwm.wheel_stall_timeout_s = 1.5;
+    config->pwm.yaw_rate_tracking_kp = 0.45;
+    config->pwm.yaw_rate_tracking_ki = 0.15;
+    config->pwm.body_yaw_pwm_kp = 35.0;
+    config->pwm.body_yaw_pwm_ki = 40.0;
+    config->pwm.yaw_rate_error_integral_limit = 0.25;
+    config->pwm.yaw_rate_feedback_filter_tau_s = 1.00;
+    config->pwm.yaw_rate_feedback_deadband_rad_s = 0.012;
+    config->pwm.yaw_rate_feedback_correction_limit_rad_s = 0.22;
+    config->pwm.yaw_rate_target_slew_rate_rad_s2 = 1.80;
+    config->pwm.yaw_rate_sign_preservation_threshold_rad_s = 0.020;
+    config->pwm.stall_target_speed_threshold_mps =
+        std::min(config->pwm.stall_target_speed_threshold_mps, 0.018);
+    config->pwm.stall_boost_after_cycles = std::min(config->pwm.stall_boost_after_cycles, 2);
+}
+
 void apply_unstructured_hardware_config(const WorldMap& world,
                                         HardwarePlannerConfig* config) {
     if (config == nullptr ||
@@ -262,27 +284,7 @@ void apply_unstructured_hardware_config(const WorldMap& world,
     // Retain the measured running deadband (45 in car_calibrated.json).
     // Raising it to 70 also shifted feed-forward by 25 PWM and prevented the
     // speed loop from slowing a moving wheel. Starting torque is separate.
-    if (config->vehicle_model == VehicleModelKind::CarLikeBicycle) {
-        config->pwm.start_motion_pwm = 110;
-        config->pwm.overspeed_braking_enabled = true;
-        config->pwm.wheel_stall_timeout_s = 1.5;
-        // Close the body-yaw loop outside the per-wheel encoder loop.
-        // The planner is driven by fresh LiDAR frames (about 7 Hz on the
-        // measured hardware) while the BNO080 and the motor command each have
-        // their own latency. A unit-gain outer loop therefore chased the
-        // previous PWM command and alternated the turn direction. Keep a
-        // deliberately slow, bounded trim around the MPC request instead.
-        config->pwm.yaw_rate_tracking_kp = 0.45;
-        config->pwm.yaw_rate_tracking_ki = 0.15;
-        config->pwm.body_yaw_pwm_kp = 35.0;
-        config->pwm.body_yaw_pwm_ki = 40.0;
-        config->pwm.yaw_rate_error_integral_limit = 0.25;
-        config->pwm.yaw_rate_feedback_filter_tau_s = 1.00;
-        config->pwm.yaw_rate_feedback_deadband_rad_s = 0.012;
-        config->pwm.yaw_rate_feedback_correction_limit_rad_s = 0.22;
-        config->pwm.yaw_rate_target_slew_rate_rad_s2 = 1.80;
-        config->pwm.yaw_rate_sign_preservation_threshold_rad_s = 0.020;
-    }
+    apply_car_actuation_config(config);
     config->pwm.stall_target_speed_threshold_mps =
         std::min(config->pwm.stall_target_speed_threshold_mps, 0.018);
     config->pwm.stall_boost_after_cycles =
@@ -291,9 +293,9 @@ void apply_unstructured_hardware_config(const WorldMap& world,
 
 void apply_structured_hardware_config(const WorldMap& world,
                                       HardwarePlannerConfig* config) {
-    if (config == nullptr ||
-        world.environment_mode() != EnvironmentMode::StructuredRoad ||
-        world_span_m(world) > 1.25 ||
+    if (config == nullptr || world.environment_mode() != EnvironmentMode::StructuredRoad) return;
+    apply_car_actuation_config(config);
+    if (world_span_m(world) > 1.25 ||
         world.road_centerline().empty()) {
         return;
     }
@@ -322,6 +324,11 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
     }
 
     config->cruise_speed_limit = 0.16;
+    apply_car_actuation_config(config);
+    if (config->vehicle_model == VehicleModelKind::CarLikeBicycle) {
+        config->cruise_speed_limit = 0.060;
+        config->gap_extraction.gap_goal_cruise_speed_mps = 0.060;
+    }
     config->goal_tolerance_m = 0.08;
     apply_measured_hardware_geometry(config->vehicle_model, &config->drive);
     config->localization.max_range_m = 1.80;
@@ -332,7 +339,7 @@ void apply_mixed_hardware_config(const WorldMap& world, HardwarePlannerConfig* c
     config->gap_extraction.dynamic_bounds_margin_m = 0.08;
     config->gap_extraction.startup_scan_duration_s = 0.0;
     config->gap_extraction.strict_locked_gate_motion = false;
-    config->gap_extraction.min_passed_gates_to_complete = 1;
+    config->gap_extraction.min_passed_gates_to_complete = 2;
 
     if (!compact_hardware_mixed_lab_world(world)) {
         return;

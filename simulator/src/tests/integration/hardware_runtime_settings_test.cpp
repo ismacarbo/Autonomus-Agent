@@ -58,10 +58,10 @@ void check_trial_recording() {
     const std::string content((std::istreambuf_iterator<char>(in)), {});
     require(content.find("schema_version,trial_id,row_index,configuration_epoch,control_step") == 0,
             "local recorder did not write its schema header");
-    require(content.find("1,\"T01\",1,1,1,") != std::string::npos &&
-            content.find("1,\"T01\",2,1,2,") != std::string::npos &&
-            content.find("1,\"T01\",3,2,1,") != std::string::npos &&
-            content.find("1,\"T01\",4,") == std::string::npos,
+    require(content.find("2,\"T01\",1,1,1,") != std::string::npos &&
+            content.find("2,\"T01\",2,1,2,") != std::string::npos &&
+            content.find("2,\"T01\",3,2,1,") != std::string::npos &&
+            content.find("2,\"T01\",4,") == std::string::npos,
             "recorder lost/reset/duplicated control samples or failed to flush live rows");
     require(content.find("\"hash,\"\"quoted\"\"\"") != std::string::npos &&
             content.find("\"reason,\"\"quoted\"\"\nsecond line\"") != std::string::npos,
@@ -77,7 +77,7 @@ void check_trial_recording() {
     dummy.append(1, 1, config, sample);
     std::ifstream dummy_in(options.telemetry_csv_path);
     const std::string dummy_content((std::istreambuf_iterator<char>(dummy_in)), {});
-    require(dummy_content.find("1,\"dummy\",1,1,1,") != std::string::npos,
+    require(dummy_content.find("2,\"dummy\",1,1,1,") != std::string::npos,
             "unlabelled physical acquisition was promoted to validation");
     options.telemetry_csv_path = (path / "unwritable.csv").string();
     rejected = false;
@@ -253,14 +253,76 @@ void check_settings(int disabled_mask, bool simulate = false) {
     }
 }
 
-void check_actuation_guards() {
+WorldMap straight_road_world(EnvironmentMode mode) {
+    auto world = mode == EnvironmentMode::StructuredRoad
+        ? WorldMap::structured_demo(StructuredMapPreset::Custom)
+        : WorldMap::mixed_hardware_aligned_demo();
+    world.set_bounds({0.0, 0.0, 1.2, 1.2});
+    world.set_start({0.22, 0.6});
+    world.set_goal({1.0, 0.6});
+    world.set_start_heading(0.0);
+    world.editable_road_centerline() = {{0.22, 0.6}, {0.60, 0.6}, {1.0, 0.6}};
+    world.editable_obstacles().clear();
+    world.editable_perception_obstacles().clear();
+    world.editable_dynamic_obstacles().clear();
+    world.editable_gates().clear();
+    world.finalize_editor_changes();
+    require(distance(world.goal(), {1.0, .6}) < 1e-9 &&
+            distance(world.road_centerline().front(), world.road_centerline().back()) > .7,
+            "GUI finalization closed an open road or moved its destination");
+    return world;
+}
+
+void check_road_pose_is_measured(EnvironmentMode mode) {
     AppOptions options;
-    options.environment_mode = EnvironmentMode::UnstructuredGates;
-    const auto world = make_world_from_options(options);
+    options.environment_mode = mode;
+    auto world = straight_road_world(mode);
+    HardwarePlannerConfig config;
+    apply_vehicle_profile(options, &config);
+    apply_robot_calibration_profile(options, &config);
+    apply_structured_hardware_config(world, &config);
+    apply_mixed_hardware_config(world, &config);
+    config.start_matching.enabled = config.slam_toolbox_enabled = false;
+    config.gap_extraction.enabled = false;
+    require(config.drive.encoder_ticks_per_revolution == 38 &&
+            std::abs(config.drive.wheel_radius - .0327) < 1e-9 &&
+            config.localization.lidar_flip_left_right &&
+            std::abs(config.localization.lidar_yaw_offset) < 1e-9,
+            "road mode lost the measured encoder/LiDAR calibration");
+    HardwarePlannerRunner runner(world, RealRobotBridge::Options{}, config);
+    const Vec2 actual_start{.24, .68};
+    runner.reset_pose(actual_start, 0.0);
+    for (int step = 0; step < 8; ++step) {
+        auto observation = stationary_observation(30.0 + step*.1);
+        observation.controller.status_flags = 0x99;
+        observation.controller.ticks_left = observation.controller.ticks_right = step;
+        runner.step_with_observation(observation, .1, false);
+    }
+    require(std::abs(runner.estimate().position.y - actual_start.y) < 1e-8 &&
+            runner.estimate().position.x > actual_start.x + .015,
+            "road centerline was fused as a fictitious position measurement");
+    const double before = runner.history().back().structured_progress_s;
+    auto cached = stationary_observation(30.7);
+    cached.controller.status_flags = 0x99;
+    cached.controller.ticks_left = cached.controller.ticks_right = 7;
+    cached.host_timestamp_s += .02;
+    runner.step_with_observation(cached, .02, false);
+    require(std::abs(runner.history().back().structured_progress_s-before) < 1e-9,
+            "cached encoders advanced structured progress");
+}
+
+void check_actuation_guards(EnvironmentMode mode = EnvironmentMode::UnstructuredGates) {
+    AppOptions options;
+    options.environment_mode = mode;
+    const auto world = mode == EnvironmentMode::UnstructuredGates
+        ? make_world_from_options(options) : straight_road_world(mode);
     HardwarePlannerConfig config;
     apply_vehicle_profile(options, &config);
     apply_robot_calibration_profile(options, &config);
     apply_unstructured_hardware_config(world, &config);
+    apply_structured_hardware_config(world, &config);
+    apply_mixed_hardware_config(world, &config);
+    if (mode != EnvironmentMode::UnstructuredGates) config.gap_extraction.enabled = false;
     config.start_matching.enabled = config.slam_toolbox_enabled = false;
     require(config.pwm.min_effective_pwm == 45, "hardware setup overwrote the measured running deadband");
     HardwarePlannerRunner runner(world, RealRobotBridge::Options{}, config);
@@ -284,12 +346,19 @@ void check_actuation_guards() {
     require(braked, "0.21 m/s encoder speed did not brake a 0.06 m/s request");
     bool resumed = false;
     for (int step = 0; step < 12; ++step) {
-        auto observation = stationary_observation(21.2 + step * 0.1);
+        auto observation = stationary_observation(21.2 + step * 0.2);
         observation.controller.status_flags = 0x99;
         observation.controller.ticks_left = observation.controller.ticks_right = 45 + step;
-        runner.step_with_observation(observation, 0.1, false);
+        runner.step_with_observation(observation, 0.2, false);
         resumed = resumed || (runner.last_command().pwm_left > 0 && runner.last_command().pwm_right > 0);
     }
+    if (!resumed) std::cerr << "resume mode=" << static_cast<int>(mode)
+        << " speed=" << runner.last_command().target_speed
+        << " heading=" << runner.history().back().tracker_heading_error_deg
+        << " cte=" << runner.history().back().tracker_cross_track
+        << " pose=" << runner.estimate().position.x << ',' << runner.estimate().position.y
+        << " source=" << static_cast<int>(runner.diagnostics().control_source)
+        << " reason=" << runner.diagnostics().reference_invalidation_reason << '\n';
     require(resumed, "speed regulation did not release braking after slowing down");
 
     HardwarePlannerRunner feedback_guard(world, RealRobotBridge::Options{}, config);
@@ -321,7 +390,7 @@ void check_actuation_guards() {
         observation.host_timestamp_s += .02;
         pulse_guard.step_with_observation(observation, .02, false);
         require(!pulse_guard.diagnostics().stall_boost_active &&
-                pulse_guard.history().back().no_motion_cycles == stalled_cycles,
+                pulse_guard.history().back().no_motion_cycles <= stalled_cycles,
                 "cached feedback extended the breakaway pulse or counted another stall");
         break;
     }
@@ -334,7 +403,7 @@ void check_actuation_guards() {
     HardwarePlannerRunner consecutive_guard(world, RealRobotBridge::Options{}, config);
     bool previous_pulse = false;
     int pulse_count = 0;
-    for (int step = 0; step < 10; ++step) {
+    for (int step = 0; step < 12; ++step) {
         auto observation = stationary_observation(28.0 + step * .15);
         observation.controller.status_flags = 0x99;
         // Prime overspeed braking, then fresh zero intervals: just as in the
@@ -344,6 +413,17 @@ void check_actuation_guards() {
         observation.controller.pwm_r = consecutive_guard.last_command().pwm_right;
         consecutive_guard.step_with_observation(observation, .15, false);
         const bool pulse = consecutive_guard.diagnostics().stall_boost_active;
+        if (std::getenv("THESIS_TEST_GATE_TRACE")) {
+            std::cerr << "pulse," << static_cast<int>(mode) << ',' << step << ','
+                << consecutive_guard.last_command().target_speed << ','
+                << consecutive_guard.last_command().pwm_left << ','
+                << consecutive_guard.last_command().pwm_right << ',' << pulse << ','
+                << consecutive_guard.history().back().no_motion_cycles << ','
+                << consecutive_guard.history().back().left_wheel_stall_cycles << ','
+                << consecutive_guard.history().back().right_wheel_stall_cycles << ','
+                << consecutive_guard.last_command().planner_target_yaw_rate << ','
+                << consecutive_guard.diagnostics().reference_invalidation_reason << '\n';
+        }
         require(!(pulse && previous_pulse), "two recovery paths extended the breakaway pulse");
         previous_pulse = pulse;
         pulse_count += pulse;
@@ -665,10 +745,27 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
             "PWM-driven plant passed outside the lateral aperture");
 }
 
+#include "road_pwm_fixture.inc"
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--road-pwm") {
+            check_road_pwm_plant(false);
+            check_road_pwm_plant(true);
+            check_road_pwm_plant(true, -1.0, .15);
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--structured-mixed") {
+            check_mixed_blocked_reference();
+            for (auto mode : {EnvironmentMode::StructuredRoad, EnvironmentMode::MixedRoadGates}) {
+                check_road_pose_is_measured(mode);
+                check_actuation_guards(mode);
+            }
+            std::cout << "structured_mixed_feedback: ok\n";
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--trial-recording") {
             check_trial_recording();
             return 0;

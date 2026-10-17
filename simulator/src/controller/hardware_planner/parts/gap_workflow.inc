@@ -341,6 +341,7 @@ void HardwarePlannerRunner::set_locked_gap_goal(
     }
 
     locked_gap_goal_ = target;
+    if (world_is_mixed(world_)) planner_reference_is_gate_ = false;
     navigation_target_kind_ = NavigationTargetKind::PhysicalGate;
     exploration_state_ = UnstructuredExplorationState::GateLocked;
     locked_gap_name_ = persistent_name.empty() ? "locked_gap_goal" : persistent_name;
@@ -516,28 +517,14 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         (passed_unstructured_gap_count_ % 2) == 1;
 
     const double longitudinal_progress = locked_gap_longitudinal_progress(estimate_.position);
-    const double crossing_progress =
-        longitudinal_progress + std::max(geometry_.cg_to_front, 0.0);
+    // Use the same centre-of-body crossing plane as unstructured navigation.
+    const double crossing_progress = longitudinal_progress;
     const double lateral_offset = std::abs(locked_gap_lateral_offset(estimate_.position));
     const double crossing_margin =
         std::max(config_.gap_extraction.gap_crossing_margin_m, 0.0);
     const double pass_lateral_limit = locked_gap_pass_lateral_limit();
-    const double crossing_distance = std::max(crossing_margin - crossing_progress, 0.0);
-    const double near_pass_longitudinal_slack = clamp_value(
-        0.46 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-        0.045,
-        0.085);
     const double gate_distance = distance(estimate_.position, *locked_gap_goal_);
     const bool micro_hardware_lab = compact_hardware_mixed_lab_world(world_);
-    const double near_pass_gate_radius = micro_hardware_lab
-        ? clamp_value(
-              1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-              0.045,
-              std::max(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.055))
-        : clamp_value(
-              1.25 * std::max(config_.gap_extraction.gap_goal_tolerance_m, 0.0),
-              0.18,
-              std::max(std::min(config_.gap_extraction.gap_goal_acceptance_radius_m, 0.24), 0.18));
     const double compact_gate_radius = micro_hardware_lab
         ? clamp_value(compact_mixed_gate_validation_radius_m(world_), 0.045, 0.070)
         : clamp_value(
@@ -548,11 +535,7 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         compact_mixed_world &&
         gate_distance <= compact_gate_radius;
     const bool gate_crossed =
-        compact_gate_reached ||
-        (lateral_offset <= pass_lateral_limit &&
-         (crossing_progress >= crossing_margin ||
-          (crossing_distance <= near_pass_longitudinal_slack &&
-           gate_distance <= near_pass_gate_radius)));
+        lateral_offset <= pass_lateral_limit && crossing_progress >= crossing_margin;
     if (!gate_crossed) {
         return;
     }
@@ -567,71 +550,45 @@ void HardwarePlannerRunner::count_mixed_gate_crossing_if_needed() {
         }
     }
 
-    // On the compact open-road validation map, reaching the visual gate is not
-    // enough: the rear of the robot must have cleared the obstacle before road
-    // tracking is allowed to resume. This prevents an early switch back to the
-    // centerline while the footprint is still alongside the blocking object.
-    if (compact_mixed_open_road(world_) &&
-        passed_unstructured_gap_count_ == 0 &&
-        !world_.obstacles().empty()) {
-        Vec2 road_axis{
-            world_.goal().x - world_.start().x,
-            world_.goal().y - world_.start().y,
+    // Continue alongside the blockage until the rear has cleared it. Use
+    // sensed endpoints too: real mixed maps need not contain the obstacle.
+    if (compact_mixed_open_road(world_) && passed_unstructured_gap_count_ == 0) {
+        const Vec2 axis = normalize_with_fallback(
+            {world_.goal().x-world_.start().x, world_.goal().y-world_.start().y}, {1.0, 0.0});
+        const Vec2 normal{-axis.y, axis.x};
+        const double road_length = distance(world_.start(), world_.goal());
+        double required_center_progress = -std::numeric_limits<double>::infinity();
+        const auto consider_obstacle_point = [&](const Vec2& point) {
+            const Vec2 offset{point.x-world_.start().x, point.y-world_.start().y};
+            const double along = dot_product(offset, axis);
+            if (along <= 0.0 || along >= road_length ||
+                std::abs(dot_product(offset, normal)) > .5*geometry_.body_width+.08) return;
+            required_center_progress = std::max(required_center_progress,
+                along+.5*geometry_.body_length+.02);
         };
-        const double axis_norm = vector_norm(road_axis);
-        if (axis_norm > 1e-6) {
-            road_axis.x /= axis_norm;
-            road_axis.y /= axis_norm;
-            double required_center_progress =
-                -std::numeric_limits<double>::infinity();
-            bool cleared_obstacles = true;
-            for (const Rect& obstacle : world_.obstacles()) {
-                const std::array<Vec2, 4> corners{{
-                    {obstacle.min_x, obstacle.min_y},
-                    {obstacle.max_x, obstacle.min_y},
-                    {obstacle.max_x, obstacle.max_y},
-                    {obstacle.min_x, obstacle.max_y},
-                }};
-                double farthest_obstacle_progress =
-                    -std::numeric_limits<double>::infinity();
-                for (const Vec2& corner : corners) {
-                    const double corner_progress = dot_product(
-                        Vec2{corner.x - world_.start().x,
-                             corner.y - world_.start().y},
-                        road_axis);
-                    required_center_progress = std::max(
-                        required_center_progress,
-                        corner_progress + 0.5 * geometry_.body_length + 0.02);
-                    farthest_obstacle_progress = std::max(
-                        farthest_obstacle_progress,
-                        dot_product(
-                            Vec2{corner.x - estimate_.position.x,
-                                 corner.y - estimate_.position.y},
-                            road_axis));
-                }
-                if (farthest_obstacle_progress > -0.5 * geometry_.body_length) {
-                    cleared_obstacles = false;
+        for (const auto& obstacle : world_.obstacles()) {
+            consider_obstacle_point({obstacle.min_x, obstacle.min_y});
+            consider_obstacle_point({obstacle.min_x, obstacle.max_y});
+            consider_obstacle_point({obstacle.max_x, obstacle.min_y});
+            consider_obstacle_point({obstacle.max_x, obstacle.max_y});
+        }
+        for (const auto& point : lidar_map_points_) consider_obstacle_point(point);
+        for (const auto& hit : lidar_hits_) if (hit.hit) consider_obstacle_point(hit.point);
+        const double robot_progress = dot_product(
+            {estimate_.position.x-world_.start().x, estimate_.position.y-world_.start().y}, axis);
+        if (robot_progress < required_center_progress) {
+            const double locked_progress = dot_product(
+                {locked_gap_goal_->x-world_.start().x, locked_gap_goal_->y-world_.start().y}, axis);
+            const double advance = required_center_progress-locked_progress;
+            if (advance > .015) {
+                const Vec2 staged_target = clamp_point_to_bounds(world_,
+                    {locked_gap_goal_->x+advance*axis.x, locked_gap_goal_->y+advance*axis.y}, .10);
+                if (dynamic_gap_point_allowed(staged_target)) {
+                    set_locked_gap_goal(staged_target);
+                    publish_locked_gap_goal();
                 }
             }
-            if (!cleared_obstacles) {
-                const double locked_progress = dot_product(
-                    Vec2{locked_gap_goal_->x - world_.start().x,
-                         locked_gap_goal_->y - world_.start().y},
-                    road_axis);
-                const double advance = required_center_progress - locked_progress;
-                if (advance > 0.015) {
-                    Vec2 staged_target{
-                        locked_gap_goal_->x + advance * road_axis.x,
-                        locked_gap_goal_->y + advance * road_axis.y,
-                    };
-                    staged_target = clamp_point_to_bounds(world_, staged_target, 0.10);
-                    if (dynamic_gap_point_allowed(staged_target)) {
-                        set_locked_gap_goal(staged_target);
-                        publish_locked_gap_goal();
-                    }
-                }
-                return;
-            }
+            return;
         }
     }
 
@@ -1282,9 +1239,9 @@ void HardwarePlannerRunner::update_unstructured_gap_workflow(double dt) {
             }
 
             const bool compact_bypass_sensor_ready =
-                lab_scale_mixed_world
+                road_block_score >= 0.35 || (lab_scale_mixed_world
                     ? (front_obstacle_pressure || compact_close_obstacle_recovery)
-                    : (have_close_dynamic_obstacle || front_obstacle_pressure);
+                    : (have_close_dynamic_obstacle || front_obstacle_pressure));
             const bool lab_scale_gate_priority_ready =
                 !compact_mixed_world ||
                 rejoin_stage ||

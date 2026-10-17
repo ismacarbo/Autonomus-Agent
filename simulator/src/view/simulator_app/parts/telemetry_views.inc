@@ -1,9 +1,42 @@
+bool plot_follow_time = true;
+int plot_window_seconds = 30;
+
+void render_plot_controls(UiState* state) {
+    ImGui::Checkbox("Follow time", &state->follow_plot_time);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(184);
+    const char* windows[] = {"Last 10 seconds", "Last 30 seconds", "Last 60 seconds", "Entire run"};
+    const int seconds[] = {10, 30, 60, 0};
+    int selected = state->plot_window_seconds == 10 ? 0 : state->plot_window_seconds == 30 ? 1 : state->plot_window_seconds == 60 ? 2 : 3;
+    if (ImGui::Combo("##PlotWindow", &selected, windows, 4)) state->plot_window_seconds = seconds[selected];
+    if (ImGui::GetContentRegionAvail().x > 400) ImGui::SameLine();
+    ImGui::TextDisabled(state->follow_plot_time ? "Uncheck to zoom and pan" : "Scroll: zoom / drag: pan / double-click: fit");
+    plot_follow_time = state->follow_plot_time;
+    plot_window_seconds = state->plot_window_seconds;
+}
+
+bool begin_signal_tab(const char* label, int index, UiState* state) {
+    const bool selected = ImGui::BeginTabItem(label, nullptr,
+        state->requested_signal_tab == index ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None);
+    if (selected && state->requested_signal_tab == index) state->requested_signal_tab = -1;
+    return selected;
+}
+
+bool begin_signal_grid(const char* id) {
+    const int columns = ImGui::GetContentRegionAvail().x < 820 ? 1 : 2;
+    const int rows = 4 / columns;
+    return ImPlot::BeginSubplots(id, rows, columns,
+        ImVec2(-1, std::max(ImGui::GetContentRegionAvail().y, 215.0f * rows)),
+        ImPlotSubplotFlags_LinkAllX);
+}
+
 void setup_time_plot_axes(const std::vector<double>& time, const char* y_axis_label) {
-    const double x_min = time.empty() ? 0.0 : time.front();
-    const double x_max = time.size() > 1 ? time.back() : (x_min + 1.0);
-    ImPlot::SetupAxes("t [s]", y_axis_label, ImPlotAxisFlags_None, ImPlotAxisFlags_AutoFit);
+    const double first = time.empty() ? 0.0 : time.front();
+    const double x_max = time.size() > 1 ? time.back() : (first + 1.0);
+    const double x_min = plot_window_seconds > 0 ? std::max(first, x_max - plot_window_seconds) : first;
+    ImPlot::SetupAxes("t [s]", y_axis_label, ImPlotAxisFlags_None, plot_follow_time ? (ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit) : ImPlotAxisFlags_None);
     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImGuiCond_Always);
+    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, plot_follow_time ? ImGuiCond_Always : ImGuiCond_Once);
 }
 
 void render_timeline_events(const std::vector<TimelineEvent>& events, const char* child_id) {
@@ -58,192 +91,7 @@ void render_timeline_events(const std::vector<TimelineEvent>& events, const char
     ImGui::EndChild();
 }
 
-void render_sim_telemetry_side_panel(const PlannerDrivenVehicleSim& sim) {
-    if (!ImGui::BeginChild("SimulationTelemetrySidePanel", ImVec2(0.0f, 0.0f), true)) {
-        ImGui::EndChild();
-        return;
-    }
-
-    ImGui::TextUnformatted("Telemetry");
-    const std::vector<TelemetrySample>& history = sim.history();
-    if (history.empty()) {
-        ImGui::TextDisabled("No samples yet.");
-        ImGui::EndChild();
-        return;
-    }
-
-    const TelemetrySample& latest = history.back();
-    char speed_buf[32];
-    char goal_buf[32];
-    char lidar_buf[32];
-    char err_buf[32];
-    char samples_buf[32];
-    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", latest.speed);
-    std::snprintf(goal_buf, sizeof(goal_buf), "%.2f m", latest.distance_to_goal);
-    std::snprintf(lidar_buf, sizeof(lidar_buf), "%.2f m", latest.min_lidar);
-    std::snprintf(err_buf, sizeof(err_buf), "%.2f / %.1f", latest.nav_xy_error, latest.nav_yaw_error_deg);
-    std::snprintf(samples_buf, sizeof(samples_buf), "%d", static_cast<int>(history.size()));
-
-    if (ImGui::BeginTable("SimTelemetryCards", 2, ImGuiTableFlags_SizingStretchSame)) {
-        ImGui::TableNextColumn();
-        metric_card("side_sim_speed", "Speed", speed_buf, "", ImVec4(0.37f, 0.63f, 0.76f, 1.0f), 54.0f);
-        ImGui::TableNextColumn();
-        metric_card("side_sim_goal", "Goal", goal_buf, "", ImVec4(0.80f, 0.62f, 0.34f, 1.0f), 54.0f);
-        ImGui::TableNextColumn();
-        metric_card("side_sim_lidar", "LiDAR", lidar_buf, "", ImVec4(0.42f, 0.70f, 0.49f, 1.0f), 54.0f);
-        ImGui::TableNextColumn();
-        metric_card("side_sim_ekf", "EKF", err_buf, "", ImVec4(0.78f, 0.72f, 0.38f, 1.0f), 54.0f);
-        ImGui::EndTable();
-    }
-
-    ImGui::SeparatorText("Run");
-    status_line("Samples", samples_buf, ImVec4(0.43f, 0.82f, 0.96f, 1.0f));
-    status_line("Scenario",
-                thesis_sim::environment_mode_name(sim.environment_mode()),
-                ImVec4(0.48f, 0.88f, 0.62f, 1.0f));
-    status_line("State",
-                sim.goal_reached() ? "goal reached" : (sim.collision() ? "collision" : "running"),
-                sim.goal_reached() ? ImVec4(0.48f, 0.88f, 0.62f, 1.0f)
-                                   : (sim.collision() ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
-                                                      : ImVec4(0.87f, 0.79f, 0.39f, 1.0f)));
-
-    ImGui::SeparatorText("Focus");
-    ImGui::TextDisabled("Main");
-    ImGui::TextWrapped("Velocity, planner commands, clearance, compute time.");
-    ImGui::TextDisabled("Tracking");
-    ImGui::TextWrapped("Steering, speed reference, cross-track and heading error.");
-
-    std::vector<double> time;
-    std::vector<double> speed;
-    std::vector<double> target_speed;
-    std::vector<double> tracking;
-    const size_t stride = plot_sample_stride(history.size());
-    for (size_t i = 0; i < history.size(); i += stride) {
-        const TelemetrySample& sample = history[i];
-        time.push_back(sample.time);
-        speed.push_back(sample.speed);
-        target_speed.push_back(sample.target_speed);
-        tracking.push_back(sample.tracker_cross_track);
-    }
-    if ((history.size() - 1) % stride != 0) {
-        const TelemetrySample& sample = history.back();
-        time.push_back(sample.time);
-        speed.push_back(sample.speed);
-        target_speed.push_back(sample.target_speed);
-        tracking.push_back(sample.tracker_cross_track);
-    }
-
-    ImGui::SeparatorText("Main Plots");
-    if (ImPlot::BeginPlot("Speed Tracking##side_sim", ImVec2(-1.0f, 132.0f), ImPlotFlags_NoTitle)) {
-        setup_time_plot_axes(time, "m/s");
-        plot_series(time, target_speed, "target", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
-        plot_series(time, speed, "actual", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
-        ImPlot::EndPlot();
-    }
-    if (ImPlot::BeginPlot("Cross-Track Error##side_sim", ImVec2(-1.0f, 132.0f), ImPlotFlags_NoTitle)) {
-        setup_time_plot_axes(time, "m");
-        plot_series(time, tracking, "cross-track error", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
-        ImPlot::EndPlot();
-    }
-    ImGui::EndChild();
-}
-
-void render_hardware_telemetry_side_panel(const HardwareViewerState& hardware) {
-    if (!ImGui::BeginChild("HardwareTelemetrySidePanel", ImVec2(0.0f, 0.0f), true)) {
-        ImGui::EndChild();
-        return;
-    }
-
-    ImGui::TextUnformatted("Telemetry");
-    if (hardware.history.empty()) {
-        ImGui::TextDisabled("Waiting for live samples.");
-        ImGui::EndChild();
-        return;
-    }
-
-    const HardwareTelemetrySample& latest = hardware.history.back();
-    char speed_buf[32];
-    char goal_buf[32];
-    char lidar_buf[32];
-    char err_buf[32];
-    char samples_buf[32];
-    const std::string goal_label =
-        hardware_goal_distance_label(hardware.frame, hardware.scene.world.environment_mode());
-    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", latest.speed);
-    std::snprintf(goal_buf, sizeof(goal_buf), "%s", goal_label.c_str());
-    std::snprintf(lidar_buf, sizeof(lidar_buf), "%.2f / %.2f m", latest.min_lidar, latest.front_lidar);
-    std::snprintf(err_buf, sizeof(err_buf), "%.2f / %.1f", latest.tracker_cross_track, latest.tracker_heading_error_deg);
-    std::snprintf(samples_buf, sizeof(samples_buf), "%d", static_cast<int>(hardware.history.size()));
-
-    if (ImGui::BeginTable("HardwareTelemetryCards", 2, ImGuiTableFlags_SizingStretchSame)) {
-        ImGui::TableNextColumn();
-        metric_card("side_hw_speed", "Speed", speed_buf, "", ImVec4(0.37f, 0.63f, 0.76f, 1.0f), 54.0f);
-        ImGui::TableNextColumn();
-        metric_card("side_hw_goal", "Goal", goal_buf, "", ImVec4(0.80f, 0.62f, 0.34f, 1.0f), 54.0f);
-        ImGui::TableNextColumn();
-        metric_card("side_hw_lidar", "LiDAR", lidar_buf, "", ImVec4(0.42f, 0.70f, 0.49f, 1.0f), 54.0f);
-        ImGui::TableNextColumn();
-        metric_card("side_hw_tracking", "Tracking", err_buf, "", ImVec4(0.78f, 0.72f, 0.38f, 1.0f), 54.0f);
-        ImGui::EndTable();
-    }
-
-    ImGui::SeparatorText("Run");
-    status_line("Samples", samples_buf, ImVec4(0.43f, 0.82f, 0.96f, 1.0f));
-    status_line("Planner",
-                hardware.frame.planner_has_reference ? "reference ready" : "waiting",
-                hardware.frame.planner_has_reference ? ImVec4(0.48f, 0.88f, 0.62f, 1.0f)
-                                                     : ImVec4(0.87f, 0.79f, 0.39f, 1.0f));
-    status_line("Safety",
-                hardware.frame.safety_stop_active ? "stop active" : "clear",
-                hardware.frame.safety_stop_active ? ImVec4(0.95f, 0.40f, 0.34f, 1.0f)
-                                                  : ImVec4(0.48f, 0.88f, 0.62f, 1.0f));
-
-    ImGui::SeparatorText("Focus");
-    ImGui::TextDisabled("Main");
-    ImGui::TextWrapped("Speed, road tracking, clearance, compute time.");
-    ImGui::TextDisabled("Drivetrain");
-    ImGui::TextWrapped("PWM echo, encoder deltas and controller timing.");
-
-    std::vector<double> time;
-    std::vector<double> speed;
-    std::vector<double> ref_speed;
-    std::vector<double> tracking;
-    std::vector<double> clearance;
-    const size_t stride = plot_sample_stride(hardware.history.size());
-    for (size_t i = 0; i < hardware.history.size(); i += stride) {
-        const HardwareTelemetrySample& sample = hardware.history[i];
-        time.push_back(sample.time);
-        speed.push_back(sample.speed);
-        ref_speed.push_back(sample.planner_speed_ref);
-        tracking.push_back(sample.tracker_cross_track);
-        clearance.push_back(sample.front_lidar);
-    }
-    if ((hardware.history.size() - 1) % stride != 0) {
-        const HardwareTelemetrySample& sample = hardware.history.back();
-        time.push_back(sample.time);
-        speed.push_back(sample.speed);
-        ref_speed.push_back(sample.planner_speed_ref);
-        tracking.push_back(sample.tracker_cross_track);
-        clearance.push_back(sample.front_lidar);
-    }
-
-    ImGui::SeparatorText("Main Plots");
-    if (ImPlot::BeginPlot("Speed / Ref##side_hw", ImVec2(-1.0f, 132.0f), ImPlotFlags_NoTitle)) {
-        setup_time_plot_axes(time, "m/s");
-        plot_series(time, speed, "actual", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
-        plot_series(time, ref_speed, "ref", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
-        ImPlot::EndPlot();
-    }
-    if (ImPlot::BeginPlot("Tracking / Clearance##side_hw", ImVec2(-1.0f, 132.0f), ImPlotFlags_NoTitle)) {
-        setup_time_plot_axes(time, "m");
-        plot_series(time, tracking, "cte", ImVec4(0.48f, 0.87f, 0.60f, 1.0f));
-        plot_series(time, clearance, "front", ImVec4(0.96f, 0.66f, 0.28f, 1.0f));
-        ImPlot::EndPlot();
-    }
-    ImGui::EndChild();
-}
-
-void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
+void render_graphs_tab(PlannerDrivenVehicleSim& sim, UiState* state) {
     if (!ImGui::BeginChild("TelemetryViewport", ImVec2(0.0f, 0.0f), true)) {
         ImGui::EndChild();
         return;
@@ -251,75 +99,108 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
 
     const std::vector<TelemetrySample>& history = sim.history();
     if (history.empty()) {
-        ImGui::TextUnformatted("No data yet.");
+        ImGui::TextUnformatted("No simulation samples yet");
+        ImGui::TextDisabled("Run the simulation from Overview to inspect these signals.");
         ImGui::EndChild();
         return;
     }
 
-    std::vector<double> time;
-    std::vector<double> speed;
-    std::vector<double> accel;
-    std::vector<double> yaw_rate;
-    std::vector<double> jerk;
-    std::vector<double> command_r;
-    std::vector<double> left_wheel_speed;
-    std::vector<double> right_wheel_speed;
-    std::vector<double> target_speed;
-    std::vector<double> target_yaw_rate;
-    std::vector<double> left_pwm;
-    std::vector<double> right_pwm;
-    std::vector<double> left_encoder_delta;
-    std::vector<double> right_encoder_delta;
-    std::vector<double> dist_goal;
-    std::vector<double> min_lidar;
-    std::vector<double> nav_xy_error;
-    std::vector<double> nav_yaw_error_deg;
-    std::vector<double> steer_angle;
-    std::vector<double> target_steer_angle;
-    std::vector<double> planner_speed_ref;
-    std::vector<double> tracker_accel_cmd;
-    std::vector<double> tracker_steer_rate_cmd;
-    std::vector<double> tracker_cross_track;
-    std::vector<double> tracker_heading_error_deg;
-    std::vector<double> planning_ms;
-    std::vector<double> tracking_ms;
-    std::vector<double> lidar_ms;
-    std::vector<double> estimator_ms;
-    std::vector<double> step_ms;
-    std::vector<double> visible_gates;
-    std::vector<double> lidar_samples;
-    time.reserve(history.size());
-    speed.reserve(history.size());
-    accel.reserve(history.size());
-    yaw_rate.reserve(history.size());
-    jerk.reserve(history.size());
-    command_r.reserve(history.size());
-    left_wheel_speed.reserve(history.size());
-    right_wheel_speed.reserve(history.size());
-    target_speed.reserve(history.size());
-    target_yaw_rate.reserve(history.size());
-    left_pwm.reserve(history.size());
-    right_pwm.reserve(history.size());
-    left_encoder_delta.reserve(history.size());
-    right_encoder_delta.reserve(history.size());
-    dist_goal.reserve(history.size());
-    min_lidar.reserve(history.size());
-    nav_xy_error.reserve(history.size());
-    nav_yaw_error_deg.reserve(history.size());
-    steer_angle.reserve(history.size());
-    target_steer_angle.reserve(history.size());
-    planner_speed_ref.reserve(history.size());
-    tracker_accel_cmd.reserve(history.size());
-    tracker_steer_rate_cmd.reserve(history.size());
-    tracker_cross_track.reserve(history.size());
-    tracker_heading_error_deg.reserve(history.size());
-    planning_ms.reserve(history.size());
-    tracking_ms.reserve(history.size());
-    lidar_ms.reserve(history.size());
-    estimator_ms.reserve(history.size());
-    step_ms.reserve(history.size());
-    visible_gates.reserve(history.size());
-    lidar_samples.reserve(history.size());
+    static std::vector<double> time;
+    time.clear();
+    static std::vector<double> speed;
+    speed.clear();
+    static std::vector<double> accel;
+    accel.clear();
+    static std::vector<double> yaw_rate;
+    yaw_rate.clear();
+    static std::vector<double> jerk;
+    jerk.clear();
+    static std::vector<double> command_r;
+    command_r.clear();
+    static std::vector<double> left_wheel_speed;
+    left_wheel_speed.clear();
+    static std::vector<double> right_wheel_speed;
+    right_wheel_speed.clear();
+    static std::vector<double> target_speed;
+    target_speed.clear();
+    static std::vector<double> target_yaw_rate;
+    target_yaw_rate.clear();
+    static std::vector<double> left_pwm;
+    left_pwm.clear();
+    static std::vector<double> right_pwm;
+    right_pwm.clear();
+    static std::vector<double> left_encoder_delta;
+    left_encoder_delta.clear();
+    static std::vector<double> right_encoder_delta;
+    right_encoder_delta.clear();
+    static std::vector<double> dist_goal;
+    dist_goal.clear();
+    static std::vector<double> min_lidar;
+    min_lidar.clear();
+    static std::vector<double> nav_xy_error;
+    nav_xy_error.clear();
+    static std::vector<double> nav_yaw_error_deg;
+    nav_yaw_error_deg.clear();
+    static std::vector<double> steer_angle;
+    steer_angle.clear();
+    static std::vector<double> target_steer_angle;
+    target_steer_angle.clear();
+    static std::vector<double> planner_speed_ref;
+    planner_speed_ref.clear();
+    static std::vector<double> tracker_accel_cmd;
+    tracker_accel_cmd.clear();
+    static std::vector<double> tracker_steer_rate_cmd;
+    tracker_steer_rate_cmd.clear();
+    static std::vector<double> tracker_cross_track;
+    tracker_cross_track.clear();
+    static std::vector<double> tracker_heading_error_deg;
+    tracker_heading_error_deg.clear();
+    static std::vector<double> planning_ms;
+    planning_ms.clear();
+    static std::vector<double> tracking_ms;
+    tracking_ms.clear();
+    static std::vector<double> lidar_ms;
+    lidar_ms.clear();
+    static std::vector<double> estimator_ms;
+    estimator_ms.clear();
+    static std::vector<double> step_ms;
+    step_ms.clear();
+    static std::vector<double> visible_gates;
+    visible_gates.clear();
+    static std::vector<double> lidar_samples;
+    lidar_samples.clear();
+    time.reserve(602);
+    speed.reserve(602);
+    accel.reserve(602);
+    yaw_rate.reserve(602);
+    jerk.reserve(602);
+    command_r.reserve(602);
+    left_wheel_speed.reserve(602);
+    right_wheel_speed.reserve(602);
+    target_speed.reserve(602);
+    target_yaw_rate.reserve(602);
+    left_pwm.reserve(602);
+    right_pwm.reserve(602);
+    left_encoder_delta.reserve(602);
+    right_encoder_delta.reserve(602);
+    dist_goal.reserve(602);
+    min_lidar.reserve(602);
+    nav_xy_error.reserve(602);
+    nav_yaw_error_deg.reserve(602);
+    steer_angle.reserve(602);
+    target_steer_angle.reserve(602);
+    planner_speed_ref.reserve(602);
+    tracker_accel_cmd.reserve(602);
+    tracker_steer_rate_cmd.reserve(602);
+    tracker_cross_track.reserve(602);
+    tracker_heading_error_deg.reserve(602);
+    planning_ms.reserve(602);
+    tracking_ms.reserve(602);
+    lidar_ms.reserve(602);
+    estimator_ms.reserve(602);
+    step_ms.reserve(602);
+    visible_gates.reserve(602);
+    lidar_samples.reserve(602);
 
     const size_t stride = plot_sample_stride(history.size());
     for (size_t i = 0; i < history.size(); i += stride) {
@@ -393,9 +274,10 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
         lidar_samples.push_back(sample.lidar_samples);
     }
 
+    render_plot_controls(state);
     if (ImGui::BeginTabBar("GraphTabs", ImGuiTabBarFlags_Reorderable)) {
-        if (ImGui::BeginTabItem("Main")) {
-            if (ImPlot::BeginSubplots("OverviewSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("Overview", 0, state)) {
+            if (begin_signal_grid("##OverviewSubplots")) {
                 if (ImPlot::BeginPlot("Speed Tracking")) {
                     setup_time_plot_axes(time, "speed [m/s]");
                     plot_series(time, planner_speed_ref, "planner reference", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -445,15 +327,15 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Timeline")) {
+        if (begin_signal_tab("Timeline", 1, state)) {
             ImGui::TextUnformatted("Mission events");
             ImGui::TextDisabled("Planner references, mixed arbitration, clearance warnings and performance spikes.");
             render_timeline_events(build_sim_timeline(sim), "SimulationTimelineEvents");
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Drivetrain")) {
-            if (ImPlot::BeginSubplots("DrivetrainSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("Drivetrain", 2, state)) {
+            if (begin_signal_grid("##DrivetrainSubplots")) {
                 if (ImPlot::BeginPlot("Target / Wheel Speed")) {
                     setup_time_plot_axes(time, "speed [m/s]");
                     plot_series(time, target_speed, "target v", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -501,8 +383,8 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Localization")) {
-            if (ImPlot::BeginSubplots("LocalizationSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("Localization", 3, state)) {
+            if (begin_signal_grid("##LocalizationSubplots")) {
                 if (ImPlot::BeginPlot("Position Estimate Error")) {
                     setup_time_plot_axes(time, "error [m]");
                     plot_series(time, nav_xy_error, "xy err [m]", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -540,8 +422,8 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Tracking")) {
-            if (ImPlot::BeginSubplots("TrackingSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("MPC tracking", 4, state)) {
+            if (begin_signal_grid("##TrackingSubplots")) {
                 if (ImPlot::BeginPlot("Steering Tracking")) {
                     setup_time_plot_axes(time, "steer [deg]");
                     plot_series(time, steer_angle, "steer actual", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -585,9 +467,9 @@ void render_graphs_tab(PlannerDrivenVehicleSim& sim) {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Performance")) {
+        if (begin_signal_tab("Performance", 5, state)) {
             ImGui::TextWrapped("This tab is for lag diagnosis. In unstructured mode, spikes here usually come from repeated gate clothoid evaluation, LiDAR raycasting or state-estimation corrections.");
-            if (ImPlot::BeginSubplots("PerformanceSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+            if (begin_signal_grid("##PerformanceSubplots")) {
                 if (ImPlot::BeginPlot("Planner / Tracking Compute")) {
                     setup_time_plot_axes(time, "ms");
                     plot_series(time, planning_ms, "planning ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -648,65 +530,11 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
         return;
     }
 
-    const bool show_live_scene = hardware.has_scene && !ui_state->hardware_world_sync_pending;
+    const bool show_live_scene = hardware.has_scene && !ui_state->hardware_world_sync_pending && ui_state->workspace_view != kWorkspaceViewMap;
     const LiveFrameSnapshot& frame = hardware.frame;
-    const WorldMap preview_world = show_live_scene ? hardware.scene.world : hardware_world_from_ui_selection(*ui_state);
-    const WorldMap& world = preview_world;
-    const char* active_target = "none";
-    if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
-        if (show_live_scene && frame.chosen_gate_index >= 0 && frame.chosen_gate_index < static_cast<int>(frame.gates.size())) {
-            active_target = frame.gates[static_cast<std::size_t>(frame.chosen_gate_index)].spec.name.c_str();
-        } else {
-            active_target = thesis_sim::unstructured_map_preset_name(world.unstructured_preset());
-        }
-    } else {
-        active_target = thesis_sim::structured_map_preset_name(world.structured_preset());
-    }
-
-    char speed_buf[32];
-    char goal_buf[32];
-    char tracking_buf[32];
-    char target_buf[48];
-    const std::string goal_label = hardware_goal_distance_label(frame, world.environment_mode());
-    std::snprintf(speed_buf, sizeof(speed_buf), "%.2f m/s", frame.vehicle.speed);
-    std::snprintf(goal_buf, sizeof(goal_buf), "%s", goal_label.c_str());
-    std::snprintf(tracking_buf, sizeof(tracking_buf), "%.2f m / %.1f deg", frame.tracker_cross_track_error, frame.tracker_heading_error_deg);
-    std::snprintf(target_buf, sizeof(target_buf), "%s", active_target);
-
-    if (ImGui::BeginChild("HardwareWorldToolbar", ImVec2(0.0f, 84.0f), true)) {
-        if (ImGui::BeginTable("HardwareWorldToolbarLayout", 2, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("WorldMetrics", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-            ImGui::TableSetupColumn("WorldControls", ImGuiTableColumnFlags_WidthFixed, 260.0f);
-
-            ImGui::TableNextColumn();
-            if (ImGui::BeginTable("HardwareMetricCards", 4, ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();
-                metric_card("hw_world_speed", "Vehicle", speed_buf, "", ImVec4(0.43f, 0.82f, 0.96f, 1.0f), 56.0f);
-                ImGui::TableNextColumn();
-                metric_card("hw_world_goal", "Goal", goal_buf, "", ImVec4(0.99f, 0.70f, 0.32f, 1.0f), 56.0f);
-                ImGui::TableNextColumn();
-                metric_card("hw_world_tracking", "Tracking", tracking_buf, "", ImVec4(0.97f, 0.89f, 0.45f, 1.0f), 56.0f);
-                ImGui::TableNextColumn();
-                metric_card("hw_world_target", "Target", target_buf, "", ImVec4(0.48f, 0.88f, 0.62f, 1.0f), 56.0f);
-                ImGui::EndTable();
-            }
-
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("VIEW");
-            ImGui::Checkbox("Grid", &ui_state->show_grid);
-            ImGui::SameLine();
-            ImGui::Checkbox("Path", &ui_state->show_trails);
-            ImGui::SameLine();
-            ImGui::Checkbox("HUD", &ui_state->show_world_hud);
-            ImGui::Checkbox("Rays", &ui_state->show_lidar_rays);
-            ImGui::SameLine();
-            ImGui::Checkbox("Hits", &ui_state->show_lidar_hits);
-            ImGui::SameLine();
-            ImGui::Checkbox("Labels", &ui_state->show_gate_labels);
-            ImGui::EndTable();
-        }
-    }
-    ImGui::EndChild();
+    const WorldMap preview_world = show_live_scene ? WorldMap{} : hardware_world_from_ui_selection(*ui_state);
+    const WorldMap& world = ui_state->workspace_view == kWorkspaceViewMap ? ui_state->hardware_editor_world : show_live_scene ? hardware.scene.world : preview_world;
+    render_map_toolbar(ui_state, world, show_live_scene);
 
     if (!ImGui::BeginChild("HardwareViewport", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_NoScrollbar)) {
         ImGui::EndChild();
@@ -716,17 +544,17 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
 
     const ImVec2 viewport_pos = ImGui::GetCursorScreenPos();
     ImVec2 viewport_size = ImGui::GetContentRegionAvail();
-    viewport_size.x = std::max(viewport_size.x, 640.0f);
-    viewport_size.y = std::max(viewport_size.y, 320.0f);
-    const float panel_gap = 10.0f;
-    const float slam_width = std::clamp(viewport_size.x * 0.34f, 260.0f, 390.0f);
-    const ImVec2 canvas_pos = viewport_pos;
-    const ImVec2 canvas_size(viewport_size.x - slam_width - panel_gap, viewport_size.y);
-    const ImVec2 slam_pos(canvas_pos.x + canvas_size.x + panel_gap, canvas_pos.y);
-    const ImVec2 slam_size(slam_width, viewport_size.y);
+    viewport_size.x = std::max(viewport_size.x, 1.0f);
+    viewport_size.y = std::max(viewport_size.y, 1.0f);
+    const MapViewportLayout layout = map_viewport_layout(viewport_pos, viewport_size, ui_state->show_slam_map);
+    const ImVec2 canvas_pos = layout.map_pos;
+    const ImVec2 canvas_size = layout.map_size;
+    const ImVec2 slam_pos = layout.slam_pos;
+    const ImVec2 slam_size = layout.slam_size;
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     draw_viewport_background(draw_list, canvas_pos, canvas_size);
+    draw_list->PushClipRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), true);
 
     const CanvasTransform tx = make_transform(world, canvas_pos, canvas_size);
     const Rect bounds = world.bounds();
@@ -761,7 +589,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
         draw_polyline(draw_list, tx, hardware.frame.trail, kColorEstimateTrail, 2.5f);
         draw_polyline(draw_list, tx, hardware.frame.planned_trajectory, kColorTrajectory, 3.0f);
         std::vector<Vec2> external_pose_trail;
-        external_pose_trail.reserve(hardware.history.size());
+        external_pose_trail.reserve(602);
         for (const HardwareTelemetrySample& sample : hardware.history) {
             if (sample.external_pose_valid > 0.5 &&
                 std::isfinite(sample.external_pose_x) &&
@@ -827,6 +655,9 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
 
     if (show_live_scene) {
         const VehicleSnapshot vehicle = build_vehicle_snapshot_from_live(frame.vehicle, hardware.scene.geometry);
+        if (ui_state->show_robot_footprint)
+            draw_robot_footprint(draw_list, tx, frame.navigation_position, frame.navigation_yaw,
+                                 hardware.scene.geometry.body_length, hardware.scene.geometry.body_width);
         draw_vehicle(draw_list,
                      tx,
                      vehicle,
@@ -867,6 +698,8 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
             : fallback_slam_points;
     const std::vector<Vec2>& slam_trail = show_live_scene ? frame.trail : empty_points;
     const Vec2* slam_robot_position = show_live_scene ? &frame.navigation_position : nullptr;
+    draw_list->PopClipRect();
+    if (ui_state->show_slam_map) {
     draw_slam_reconstruction(
         draw_list,
         world,
@@ -877,6 +710,10 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
         slam_robot_position,
         ui_state->show_grid,
         slam_snapshot);
+    }
+    draw_list->PushClipRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), true);
+
+    draw_metric_map_caption(draw_list, tx, world, canvas_pos, canvas_size);
 
     if (ui_state->show_world_hud) {
         char hud_line[96];
@@ -886,6 +723,8 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
                       "area %.2f x %.2f m",
                       bounds.max_x - bounds.min_x,
                       bounds.max_y - bounds.min_y);
+        const char* active_target = frame.chosen_gate_index >= 0 && frame.chosen_gate_index < static_cast<int>(frame.gates.size())
+            ? frame.gates[static_cast<std::size_t>(frame.chosen_gate_index)].spec.name.c_str() : "none";
         std::vector<OverlayLine> top_left = {
             {show_live_scene
                  ? "Autonomous Reasoning Engine | hardware"
@@ -918,7 +757,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
                  : IM_COL32(132, 214, 255, 255)},
             {hud_line, IM_COL32(240, 243, 235, 255)},
         };
-        std::snprintf(hud_line, sizeof(hud_line), "goal %s", goal_label.c_str());
+        std::snprintf(hud_line, sizeof(hud_line), "goal %s", hardware_goal_distance_label(frame, world.environment_mode()).c_str());
         top_right.push_back({hud_line, IM_COL32(170, 179, 185, 255)});
         if (world.environment_mode() == EnvironmentMode::UnstructuredGates) {
             if (show_live_scene &&
@@ -951,7 +790,7 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
             {"yellow: selected planner trajectory", kColorTrajectory},
         };
         if (world.environment_mode() == EnvironmentMode::StructuredRoad) {
-            legend.push_back({"red: structured road bounds", IM_COL32(255, 96, 96, 230)});
+            legend.push_back({"slate: structured road bounds", IM_COL32(113, 145, 162, 190)});
         }
         if (show_live_scene && hardware.scene.lidar_enabled && ui_state->show_lidar_rays) {
             legend.push_back({"green: LiDAR hit rays", kColorLidar});
@@ -984,12 +823,13 @@ void render_hardware_world_tab(const HardwareViewerState& hardware,
         }
     }
 
+    draw_list->PopClipRect();
     ImGui::Dummy(viewport_size);
     ImGui::EndChild();
     ImGui::EndChild();
 }
 
-void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
+void render_hardware_graphs_tab(const HardwareViewerState& hardware, UiState* state) {
     if (!ImGui::BeginChild("HardwareTelemetryViewport", ImVec2(0.0f, 0.0f), true)) {
         ImGui::EndChild();
         return;
@@ -1001,69 +841,100 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
         return;
     }
 
-    std::vector<double> time;
-    std::vector<double> speed;
-    std::vector<double> accel;
-    std::vector<double> yaw_rate;
-    std::vector<double> jerk;
-    std::vector<double> command_r;
-    std::vector<double> target_speed;
-    std::vector<double> target_yaw_rate;
-    std::vector<double> left_pwm;
-    std::vector<double> right_pwm;
-    std::vector<double> controller_left_pwm;
-    std::vector<double> controller_right_pwm;
-    std::vector<double> controller_target_pwm_left;
-    std::vector<double> controller_target_pwm_right;
-    std::vector<double> controller_left_encoder_ticks;
-    std::vector<double> controller_right_encoder_ticks;
-    std::vector<double> controller_left_encoder_delta;
-    std::vector<double> controller_right_encoder_delta;
-    std::vector<double> controller_encoder_dt_ms;
-    std::vector<double> dist_goal;
-    std::vector<double> min_lidar;
-    std::vector<double> front_lidar;
-    std::vector<double> planner_speed_ref;
-    std::vector<double> tracker_cross_track;
-    std::vector<double> tracker_heading_error_deg;
-    std::vector<double> planning_ms;
-    std::vector<double> tracking_ms;
-    std::vector<double> lidar_ms;
-    std::vector<double> estimator_ms;
-    std::vector<double> step_ms;
-    std::vector<double> visible_gates;
+    static std::vector<double> time;
+    time.clear();
+    static std::vector<double> speed;
+    speed.clear();
+    static std::vector<double> accel;
+    accel.clear();
+    static std::vector<double> yaw_rate;
+    yaw_rate.clear();
+    static std::vector<double> jerk;
+    jerk.clear();
+    static std::vector<double> command_r;
+    command_r.clear();
+    static std::vector<double> target_speed;
+    target_speed.clear();
+    static std::vector<double> target_yaw_rate;
+    target_yaw_rate.clear();
+    static std::vector<double> left_pwm;
+    left_pwm.clear();
+    static std::vector<double> right_pwm;
+    right_pwm.clear();
+    static std::vector<double> controller_left_pwm;
+    controller_left_pwm.clear();
+    static std::vector<double> controller_right_pwm;
+    controller_right_pwm.clear();
+    static std::vector<double> controller_target_pwm_left;
+    controller_target_pwm_left.clear();
+    static std::vector<double> controller_target_pwm_right;
+    controller_target_pwm_right.clear();
+    static std::vector<double> controller_left_encoder_ticks;
+    controller_left_encoder_ticks.clear();
+    static std::vector<double> controller_right_encoder_ticks;
+    controller_right_encoder_ticks.clear();
+    static std::vector<double> controller_left_encoder_delta;
+    controller_left_encoder_delta.clear();
+    static std::vector<double> controller_right_encoder_delta;
+    controller_right_encoder_delta.clear();
+    static std::vector<double> controller_encoder_dt_ms;
+    controller_encoder_dt_ms.clear();
+    static std::vector<double> dist_goal;
+    dist_goal.clear();
+    static std::vector<double> min_lidar;
+    min_lidar.clear();
+    static std::vector<double> front_lidar;
+    front_lidar.clear();
+    static std::vector<double> planner_speed_ref;
+    planner_speed_ref.clear();
+    static std::vector<double> tracker_cross_track;
+    tracker_cross_track.clear();
+    static std::vector<double> tracker_heading_error_deg;
+    tracker_heading_error_deg.clear();
+    static std::vector<double> planning_ms;
+    planning_ms.clear();
+    static std::vector<double> tracking_ms;
+    tracking_ms.clear();
+    static std::vector<double> lidar_ms;
+    lidar_ms.clear();
+    static std::vector<double> estimator_ms;
+    estimator_ms.clear();
+    static std::vector<double> step_ms;
+    step_ms.clear();
+    static std::vector<double> visible_gates;
+    visible_gates.clear();
 
-    time.reserve(hardware.history.size());
-    speed.reserve(hardware.history.size());
-    accel.reserve(hardware.history.size());
-    yaw_rate.reserve(hardware.history.size());
-    jerk.reserve(hardware.history.size());
-    command_r.reserve(hardware.history.size());
-    target_speed.reserve(hardware.history.size());
-    target_yaw_rate.reserve(hardware.history.size());
-    left_pwm.reserve(hardware.history.size());
-    right_pwm.reserve(hardware.history.size());
-    controller_left_pwm.reserve(hardware.history.size());
-    controller_right_pwm.reserve(hardware.history.size());
-    controller_target_pwm_left.reserve(hardware.history.size());
-    controller_target_pwm_right.reserve(hardware.history.size());
-    controller_left_encoder_ticks.reserve(hardware.history.size());
-    controller_right_encoder_ticks.reserve(hardware.history.size());
-    controller_left_encoder_delta.reserve(hardware.history.size());
-    controller_right_encoder_delta.reserve(hardware.history.size());
-    controller_encoder_dt_ms.reserve(hardware.history.size());
-    dist_goal.reserve(hardware.history.size());
-    min_lidar.reserve(hardware.history.size());
-    front_lidar.reserve(hardware.history.size());
-    planner_speed_ref.reserve(hardware.history.size());
-    tracker_cross_track.reserve(hardware.history.size());
-    tracker_heading_error_deg.reserve(hardware.history.size());
-    planning_ms.reserve(hardware.history.size());
-    tracking_ms.reserve(hardware.history.size());
-    lidar_ms.reserve(hardware.history.size());
-    estimator_ms.reserve(hardware.history.size());
-    step_ms.reserve(hardware.history.size());
-    visible_gates.reserve(hardware.history.size());
+    time.reserve(602);
+    speed.reserve(602);
+    accel.reserve(602);
+    yaw_rate.reserve(602);
+    jerk.reserve(602);
+    command_r.reserve(602);
+    target_speed.reserve(602);
+    target_yaw_rate.reserve(602);
+    left_pwm.reserve(602);
+    right_pwm.reserve(602);
+    controller_left_pwm.reserve(602);
+    controller_right_pwm.reserve(602);
+    controller_target_pwm_left.reserve(602);
+    controller_target_pwm_right.reserve(602);
+    controller_left_encoder_ticks.reserve(602);
+    controller_right_encoder_ticks.reserve(602);
+    controller_left_encoder_delta.reserve(602);
+    controller_right_encoder_delta.reserve(602);
+    controller_encoder_dt_ms.reserve(602);
+    dist_goal.reserve(602);
+    min_lidar.reserve(602);
+    front_lidar.reserve(602);
+    planner_speed_ref.reserve(602);
+    tracker_cross_track.reserve(602);
+    tracker_heading_error_deg.reserve(602);
+    planning_ms.reserve(602);
+    tracking_ms.reserve(602);
+    lidar_ms.reserve(602);
+    estimator_ms.reserve(602);
+    step_ms.reserve(602);
+    visible_gates.reserve(602);
 
     const size_t stride = plot_sample_stride(hardware.history.size());
     for (size_t i = 0; i < hardware.history.size(); i += stride) {
@@ -1135,9 +1006,10 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
         visible_gates.push_back(sample.visible_gates);
     }
 
+    render_plot_controls(state);
     if (ImGui::BeginTabBar("HardwareGraphTabs", ImGuiTabBarFlags_Reorderable)) {
-        if (ImGui::BeginTabItem("Main")) {
-            if (ImPlot::BeginSubplots("HardwareOverviewSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("Overview", 0, state)) {
+            if (begin_signal_grid("##HardwareOverviewSubplots")) {
                 if (ImPlot::BeginPlot("Speed Tracking")) {
                     setup_time_plot_axes(time, "speed [m/s]");
                     plot_series(time, planner_speed_ref, "planner reference", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -1189,15 +1061,15 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Timeline")) {
+        if (begin_signal_tab("Timeline", 1, state)) {
             ImGui::TextUnformatted("Hardware events");
             ImGui::TextDisabled("Reference state, safety stops, front-clearance warnings and loop timing spikes.");
             render_timeline_events(build_hardware_timeline(hardware), "HardwareTimelineEvents");
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Tracking")) {
-            if (ImPlot::BeginSubplots("HardwareTrackingSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("MPC tracking", 4, state)) {
+            if (begin_signal_grid("##HardwareTrackingSubplots")) {
                 if (ImPlot::BeginPlot("Speed Tracking")) {
                     setup_time_plot_axes(time, "speed [m/s]");
                     plot_series(time, planner_speed_ref, "planner v ref", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -1243,8 +1115,8 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Drivetrain")) {
-            if (ImPlot::BeginSubplots("HardwareDrivetrainSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("Drivetrain", 2, state)) {
+            if (begin_signal_grid("##HardwareDrivetrainSubplots")) {
                 if (ImPlot::BeginPlot("Controller PWM Echo")) {
                     setup_time_plot_axes(time, "PWM");
                     plot_series(time, controller_target_pwm_left, "target PWM left", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));
@@ -1292,8 +1164,8 @@ void render_hardware_graphs_tab(const HardwareViewerState& hardware) {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Performance")) {
-            if (ImPlot::BeginSubplots("HardwarePerformanceSubplots", 2, 2, ImVec2(-1.0f, -1.0f), ImPlotSubplotFlags_LinkAllX)) {
+        if (begin_signal_tab("Performance", 5, state)) {
+            if (begin_signal_grid("##HardwarePerformanceSubplots")) {
                 if (ImPlot::BeginPlot("Planner / Tracking Compute")) {
                     setup_time_plot_axes(time, "ms");
                     plot_series(time, planning_ms, "planning ms", ImVec4(0.36f, 0.73f, 0.98f, 1.0f));

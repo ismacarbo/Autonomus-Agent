@@ -55,6 +55,7 @@ const char* hardware_control_source_name(HardwareControlSource source) {
 }
 
 void HardwarePlannerRunner::reset_start_matching() {
+    ++start_match_generation_;
     start_matching_status_ = {};
     start_matching_status_.enabled =
         config_.start_matching.enabled &&
@@ -100,6 +101,7 @@ void HardwarePlannerRunner::reset_start_matching() {
         return;
     }
     start_matching_status_.reference_loaded = true;
+    start_matching_status_.reference_hash = start_reference_.computed_content_hash;
     start_matching_status_.status = "waiting_for_stationary_scans";
 }
 
@@ -111,8 +113,52 @@ bool HardwarePlannerRunner::motion_permitted_by_start_match() const {
 void HardwarePlannerRunner::update_start_matching(
     const std::vector<RPLidarA1::ScanPoint>& scan) {
     if (!start_matching_status_.enabled || start_matching_status_.complete ||
-        !start_matching_status_.reference_loaded || scan.empty()) {
+        !start_matching_status_.reference_loaded) {
         return;
+    }
+
+    // A match computed on a stationary cloud cannot authorize motion after
+    // the robot has been repositioned while its worker was running.
+    const bool wheel_motion = encoder_snapshot_fresh_ && encoder_snapshot_valid_ &&
+        (latest_controller_left_encoder_delta_ != 0 || latest_controller_right_encoder_delta_ != 0);
+    const bool body_rotation = body_yaw_rate_measurement_valid_ &&
+        std::abs(body_yaw_rate_measurement_) > 0.10;
+    if (wheel_motion || body_rotation) {
+        ++start_match_generation_;
+        start_match_group_points_.clear();
+        start_match_group_scan_count_ = 0;
+        start_match_results_.clear();
+        start_matching_status_.collected_scans = 0;
+        start_matching_status_.completed_matches = 0;
+        start_matching_status_.status = "waiting_for_stationary_robot";
+        return;
+    }
+    if (scan.empty()) return;
+
+    if (start_match_future_.valid()) {
+        if (start_match_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            start_matching_status_.status = "matching_stationary_cloud";
+            return;
+        }
+        try {
+            const auto result = start_match_future_.get();
+            if (start_match_job_generation_ == start_match_generation_) {
+                start_match_results_.push_back(result);
+                start_matching_status_.last_compute_ms = result.total_compute_ms;
+                start_matching_status_.last_rmse_m = result.rmse_m;
+                start_matching_status_.last_inlier_ratio = result.inlier_ratio;
+                finish_start_matching_confirmation();
+                // Acquire the next independent cloud on subsequent fresh scans.
+                return;
+            }
+        } catch (const std::exception& error) {
+            if (start_match_job_generation_ == start_match_generation_) {
+                start_matching_status_.complete = true;
+                start_matching_status_.accepted = false;
+                start_matching_status_.status = std::string("matcher_failed: ") + error.what();
+                return;
+            }
+        }
     }
 
     if (!start_reference_.metadata.lidar_serial.empty()) {
@@ -173,11 +219,18 @@ void HardwarePlannerRunner::update_start_matching(
             start_match_group_points_,
             std::max(metadata.voxel_size_m, 0.005),
             1);
-    mvc::model::InitialLidarMatcher matcher(config_.start_matching.matcher);
-    start_match_results_.push_back(
-        matcher.match(start_reference_.points, current_cloud));
+    start_match_job_generation_ = start_match_generation_;
+    start_match_future_ = std::async(std::launch::async,
+        [config = config_.start_matching.matcher,
+         reference = start_reference_.points, current_cloud]() {
+            return mvc::model::InitialLidarMatcher(config).match(reference, current_cloud);
+        });
     start_match_group_points_.clear();
     start_match_group_scan_count_ = 0;
+    start_matching_status_.status = "matching_stationary_cloud";
+}
+
+void HardwarePlannerRunner::finish_start_matching_confirmation() {
     start_matching_status_.completed_matches =
         static_cast<int>(start_match_results_.size());
 

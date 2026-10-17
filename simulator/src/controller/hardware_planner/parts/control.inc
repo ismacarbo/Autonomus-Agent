@@ -53,7 +53,6 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
 
     if (config_.vehicle_model == VehicleModelKind::CarLikeBicycle &&
-        open_ended_unstructured_exploration(world_) &&
         config_.use_encoder_odometry && !actuator_feedback_fresh_) {
         commanded_speed_ = commanded_steer_angle_ = 0.0;
         safety_stop_active_ = last_command_.safety_stop = true;
@@ -102,6 +101,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         world_.environment_mode() == EnvironmentMode::UnstructuredGates ||
         mixed_gate_active;
     const bool tracked_vehicle = config_.vehicle_model == VehicleModelKind::TrackedVehicle;
+    const bool hardware_car = !tracked_vehicle;
     const bool compact_hardware_car =
         compact_hardware_mixed_lab_world(world_) && !tracked_vehicle;
     const bool compact_unstructured_car =
@@ -116,8 +116,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const auto hardware_car_footprint = make_box_corners(
         estimate_.position,
         estimate_.yaw,
-        geometry_.body_length,
-        geometry_.body_width);
+        geometry_.body_length + (bounded_hardware_car ? .03 : 0.0),
+        geometry_.body_width + (bounded_hardware_car ? .03 : 0.0));
     const bool hardware_car_footprint_outside_bounds =
         bounded_hardware_car &&
         std::any_of(
@@ -145,6 +145,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         right_wheel_breakaway_hold_cycles_ = 0;
         diagnostics_.no_motion_command_cycles = 0;
         diagnostics_.stall_boost_active = false;
+        diagnostics_.reference_invalidation_reason = "arena_footprint_margin";
         control_source_ = HardwareControlSource::SafetyStop;
         return;
     }
@@ -648,6 +649,47 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
                   mixed_gate_active ? 0.30 : 0.50,
                   config_.localization.max_range_m)
             : estimate_.front_lidar_distance;
+    // A beam in the broad front sector may hit a wall beside a curved
+    // rejoin. Only waive that sector stop when the swept body of the actual
+    // MPC reference is clear, including a 2 cm margin and the current pose.
+    const bool mixed_swept_reference_clear = [&]() {
+        if (!mixed_gate_active || !last_mpc_command_.has_value() ||
+            !have_reference_trajectory || gate_reference_grace_active_) return false;
+        const auto pose_clear = [&](const Vec2& position, double yaw) {
+            const auto corners = make_box_corners(position, yaw,
+                geometry_.body_length + .04, geometry_.body_width + .04);
+            if (world_.collides(corners, 0.0)) return false;
+            const double c = std::cos(yaw), s = std::sin(yaw);
+            for (const auto& hit : lidar_hits_) {
+                if (!hit.hit) continue;
+                const double dx = hit.point.x - position.x, dy = hit.point.y - position.y;
+                if (std::abs(c*dx+s*dy) <= .5*geometry_.body_length+.02 &&
+                    std::abs(-s*dx+c*dy) <= .5*geometry_.body_width+.02) return false;
+            }
+            return true;
+        };
+        if (!pose_clear(estimate_.position, estimate_.yaw)) return false;
+        Vec2 previous = estimate_.position;
+        double previous_yaw = estimate_.yaw, checked_distance = 0.0;
+        const int first = std::clamp(last_mpc_command_->anchor_index, 0,
+                                    static_cast<int>(reference_trajectory_.size())-1);
+        for (size_t i = first; i < reference_trajectory_.size(); ++i) {
+            const auto& waypoint = reference_trajectory_[i];
+            const double length = distance(previous, waypoint.position);
+            const int samples = std::max(1, static_cast<int>(std::ceil(length/.02)));
+            for (int j = 1; j <= samples; ++j) {
+                const double t = static_cast<double>(j)/samples;
+                if (!pose_clear({previous.x+t*(waypoint.position.x-previous.x),
+                                 previous.y+t*(waypoint.position.y-previous.y)},
+                                previous_yaw+t*wrap_angle(waypoint.yaw-previous_yaw))) return false;
+            }
+            checked_distance += length;
+            if (checked_distance >= .20) return true;
+            previous = waypoint.position;
+            previous_yaw = waypoint.yaw;
+        }
+        return checked_distance >= .08;
+    }();
     const bool lidar_side_clearance_blocked =
         use_dynamic_gap_gates_ &&
         have_reference_trajectory &&
@@ -995,6 +1037,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
     if (!use_gap_recovery_turn &&
         mixed_gate_active &&
+        tracked_vehicle &&
         locked_gap_goal_.has_value() &&
         lidar_front_blocked &&
         have_motion_heading &&
@@ -1057,7 +1100,8 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             config_.localization.obstacle_stop_distance_m + 0.05,
             config_.localization.min_valid_range_m + 0.16);
     const bool effective_lidar_front_blocked =
-        lidar_front_blocked && !mixed_gate_side_motion_clear && !static_map_front_block_only;
+        lidar_front_blocked && !mixed_gate_side_motion_clear &&
+        !mixed_swept_reference_clear && !static_map_front_block_only;
     const bool validated_reverse_reposition =
         allow_reverse_recovery_motion &&
         last_command_.target_speed < -1e-4;
@@ -1067,7 +1111,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         (!scanning_startup || compact_unstructured_car) &&
         (!use_gap_recovery_turn || compact_unstructured_car) &&
         ((!validated_reverse_reposition && effective_lidar_front_blocked) ||
-         lidar_side_clearance_blocked)) {
+         (lidar_side_clearance_blocked && !mixed_swept_reference_clear))) {
         safety_stop_active_ = true;
         last_command_.safety_stop = true;
         commanded_speed_ = 0.0;
@@ -1449,7 +1493,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     last_command_.planner_target_yaw_rate = last_command_.target_yaw_rate;
     const bool body_yaw_tracking_enabled =
         body_yaw_rate_measurement_valid_ &&
-        forward_creep_gate_car &&
+        hardware_car &&
         last_command_.target_speed > 1e-4 &&
         !safety_stop_active_ &&
         config_.pwm.yaw_rate_tracking_kp > 0.0;
@@ -1617,7 +1661,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
 
     // Encoder wheel speeds alone cannot close body yaw under scrub/slip.
     // Apply bounded inertial feedback in canonical PWM before side mapping.
-    const bool body_pwm_control = compact_unstructured_car &&
+    const bool body_pwm_control = hardware_car &&
         !config_.use_mcu_velocity_closed_loop && config_.pwm.body_yaw_pwm_kp > 0.0;
     if (body_pwm_control && body_yaw_tracking_enabled && measured_wheel_speeds_valid_) {
         const double correction = clamp_value(
@@ -1642,7 +1686,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const double requested_turn = last_command_.planner_target_yaw_rate;
     const bool turn_needs_authority = body_pwm_control && last_command_.target_speed > 0.0 &&
         std::abs(requested_turn) > .04 &&
-        (!body_yaw_rate_measurement_valid_ ||
+        (world_has_structured_reference(world_) || !body_yaw_rate_measurement_valid_ ||
          requested_turn * body_yaw_rate_measurement_ < .70 * requested_turn * requested_turn);
     if (hold_left_for_yaw) last_command_.pwm_left = 0;
     if (hold_right_for_yaw) last_command_.pwm_right = 0;
@@ -1685,7 +1729,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     }
     const double max_target_wheel_speed = std::max(std::abs(left_wheel_speed), std::abs(right_wheel_speed));
     const double max_measured_wheel_speed =
-        compact_unstructured_car ? std::max(left_speed_for_stall, right_speed_for_stall)
+        hardware_car ? std::max(left_speed_for_stall, right_speed_for_stall)
                                 : std::max(std::abs(measured_left_wheel_speed), std::abs(measured_right_wheel_speed));
     const bool demanding_motion =
         !safety_stop_active_ &&
@@ -1694,9 +1738,9 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     const bool robot_is_still =
         max_measured_wheel_speed <= config_.pwm.stall_speed_threshold_mps;
     if (demanding_motion && robot_is_still &&
-        (!compact_unstructured_car || fresh_stall_observation)) {
+        (!hardware_car || fresh_stall_observation)) {
         ++no_motion_command_cycles_;
-    } else if (!compact_unstructured_car || fresh_stall_observation || !demanding_motion) {
+    } else if (!hardware_car || fresh_stall_observation || !demanding_motion) {
         no_motion_command_cycles_ = 0;
     }
 
@@ -1752,7 +1796,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
     }
 
-    const int stall_boost_cycles_required = compact_unstructured_car
+    const int stall_boost_cycles_required = hardware_car
         ? std::max(3, config_.pwm.stall_boost_after_cycles)
         : (use_dynamic_gap_gates_ ? std::max(1, config_.pwm.stall_boost_after_cycles - 1)
                                  : config_.pwm.stall_boost_after_cycles);
@@ -1765,7 +1809,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     // interval too, one frame before the wheel counters. Running both paths
     // extended a one-frame pulse into two in physical run 20261010_122332.
     const bool continuous_breakaway_boost =
-        !compact_unstructured_car &&
+        !hardware_car &&
         no_motion_command_cycles_ >= stall_boost_cycles_required;
     if (continuous_breakaway_boost ||
         (forward_only_tracked_tracks && commanding_motion && robot_is_still)) {
@@ -1780,7 +1824,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     int left_breakaway_pwm_ceiling = 0;
     int right_breakaway_pwm_ceiling = 0;
     const bool forward_arc_command =
-        compact_unstructured_car && last_command_.target_speed > 1e-4;
+        hardware_car && last_command_.target_speed > 1e-4;
     if (forward_arc_command) {
         const double wheel_target_threshold = 0.010;
         const double wheel_motion_threshold = 0.008;
@@ -2075,7 +2119,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     // forward-only floors and slew limiter, just like the recovery hold.
     if (hold_left_for_yaw) last_command_.pwm_left = 0;
     if (hold_right_for_yaw) last_command_.pwm_right = 0;
-    if (compact_unstructured_car && config_.pwm.overspeed_braking_enabled &&
+    if (hardware_car && config_.pwm.overspeed_braking_enabled &&
         !config_.use_mcu_velocity_closed_loop && commanding_motion) {
         const double requested_speed = std::abs(last_command_.target_speed);
         const double margin = previously_braking

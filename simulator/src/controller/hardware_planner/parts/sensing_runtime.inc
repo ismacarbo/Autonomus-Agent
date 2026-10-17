@@ -284,7 +284,7 @@ void HardwarePlannerRunner::step() {
     rearm_controller_if_needed(observation.controller);
     const double now = observation.host_timestamp_s;
     const double dt = last_observation_time_ > 0.0
-                          ? clamp_value(now - last_observation_time_, 0.02, 0.25)
+                          ? std::max(0.0, now - last_observation_time_)
                           : config_.nominal_dt;
     last_observation_time_ = now;
     step_with_observation(observation, dt, true);
@@ -293,7 +293,8 @@ void HardwarePlannerRunner::step() {
 void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& observation,
                                                   double dt,
                                                   bool send_pwm) {
-    const double bounded_dt = clamp_value(dt, 0.01, 0.25);
+    const double elapsed_dt = std::isfinite(dt) && dt >= 0.0 ? dt : config_.nominal_dt;
+    const double bounded_dt = clamp_value(elapsed_dt, 0.01, 0.25);
     const bool lidar_enabled = lidar_enabled_for_current_mode();
     RealRobotObservation synchronized_observation = observation;
     const double observation_now = observation.host_timestamp_s;
@@ -344,8 +345,13 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     estimator_compute_ms_ = elapsed_ms(estimator_start, std::chrono::steady_clock::now());
 
     const auto lidar_start = std::chrono::steady_clock::now();
-    if (lidar_enabled && synchronized_observation.have_lidar_scan) {
+    if (lidar_enabled && synchronized_observation.have_lidar_scan &&
+        !synchronized_observation.lidar_scan_reused) {
         update_start_matching(synchronized_observation.lidar_scan);
+    } else {
+        update_start_matching({});  // Still check motion while a worker is pending.
+    }
+    if (lidar_enabled && synchronized_observation.have_lidar_scan) {
         correct_pose_with_lidar(synchronized_observation.lidar_scan);
         update_lidar_hits_world(synchronized_observation.lidar_scan);
         update_global_exploration_map(synchronized_observation.lidar_scan);
@@ -400,7 +406,8 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
     compute_control_command(bounded_dt);
     tracking_compute_ms_ = elapsed_ms(tracking_start, std::chrono::steady_clock::now());
 
-    sim_time_ += bounded_dt;
+    // Bound numerical integration, never the clock used for reports/timeouts.
+    sim_time_ += elapsed_dt;
     ++step_count_;
     count_unstructured_gate_crossing_if_needed();
     count_mixed_gate_crossing_if_needed();
@@ -442,12 +449,6 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
             !tracked_closed_loop ||
             (tracker_cross_track_error_ <= tracked_goal_cross_track_acceptance &&
              tracker_heading_error_deg_ <= tracked_goal_heading_acceptance_deg);
-        const bool tiny_loop_neighborhood_complete =
-            tiny_indoor_loop &&
-            !tracked_closed_loop &&
-            structured_goal_ready_ &&
-            structured_progress_s_ >= 0.50 * structured_goal_progress_target_ &&
-            goal_position_distance < goal_position_acceptance;
         const bool returned_to_start =
             wrapped_track_s <= start_window || wrapped_track_s >= std::max(cl_.end_point_s - start_window, 0.0);
         distance_to_goal_ = structured_goal_ready_
@@ -477,18 +478,17 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
              goal_position_distance < large_tank_goal_position_acceptance) &&
             tracker_cross_track_error_ <= std::clamp(0.35 * structured_course_span_m(world_), 0.070, 0.110);
         if (compact_mixed_loop) {
-            const double minimum_mixed_progress =
-                0.65 * structured_goal_progress_target_;
             const bool active_dynamic_gate = locked_gap_goal_.has_value();
             if (tracked_closed_loop) {
                 goal_reached_ = !active_dynamic_gate && (precise_tracked_goal || legacy_large_tank_loop_goal);
             } else {
                 goal_reached_ =
                     !active_dynamic_gate &&
+                    !planner_reference_is_gate_ &&
                     structured_goal_ready_ &&
-                    structured_progress_s_ >= minimum_mixed_progress &&
+                    full_loop_progress_complete &&
                     returned_to_start &&
-                    goal_position_distance < goal_position_acceptance;
+                    goal_position_distance < config_.goal_tolerance_m;
             }
             if (!goal_reached_ &&
                 distance_to_goal_ <= structured_goal_active_distance(world_, config_.goal_tolerance_m) &&
@@ -502,14 +502,12 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
                 goal_reached_ = precise_tracked_goal || legacy_large_tank_loop_goal;
             } else {
                 goal_reached_ =
-                    tiny_loop_neighborhood_complete ||
-                    (full_loop_progress_complete &&
-                     (returned_to_start || goal_position_distance < goal_position_acceptance));
+                    full_loop_progress_complete &&
+                    goal_position_distance < config_.goal_tolerance_m;
             }
         }
         if (!goal_reached_ &&
-            tracked_closed_loop &&
-            (full_loop_progress_complete || returned_to_start)) {
+            (full_loop_progress_complete || (tracked_closed_loop && returned_to_start))) {
             distance_to_goal_ = std::max(goal_position_distance, goal_position_acceptance);
         }
         if (goal_reached_) {
@@ -567,7 +565,7 @@ void HardwarePlannerRunner::step_with_observation(const RealRobotObservation& ob
         const bool active_dynamic_gate =
             compact_mixed_open_world && locked_gap_goal_.has_value();
         const double open_progress_target =
-            compact_mixed_open_world ? std::max(cl_.end_point_s, 0.0) : 0.0;
+            compact_mixed_open_world ? structured_road_length_m(world_) : 0.0;
         const double open_progress_margin =
             compact_mixed_open_world
                 ? std::clamp(0.08 * std::max(open_progress_target, 0.10), 0.035, 0.080)

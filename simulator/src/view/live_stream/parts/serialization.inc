@@ -22,7 +22,7 @@ namespace thesis_sim {
 namespace {
 
 constexpr std::uint32_t kPacketMagic = 0x54485631U;  // THV1
-constexpr std::uint16_t kPacketVersion = 16U;
+constexpr std::uint16_t kPacketVersion = 17U;
 constexpr std::uint32_t kWorldBlobMagic = 0x5448574DU;  // THWM
 constexpr std::uint16_t kWorldBlobVersion = 2U;
 constexpr std::uint16_t kPacketHello = 0U;
@@ -570,6 +570,17 @@ void write_hardware_sample(std::vector<std::uint8_t>* out, const HardwareTelemet
     write_pod(out, sample.overspeed_braking_active);
     write_pod(out, sample.drivetrain_stall_stop_active);
     write_string(out, sample.reference_invalidation_reason);
+    write_pod(out, sample.pose_epoch);
+    write_pod(out, sample.mission_goal_reached);
+    write_pod(out, sample.start_matching_offset_x_m);
+    write_pod(out, sample.start_matching_offset_y_m);
+    write_pod(out, sample.start_matching_offset_yaw_deg);
+    write_pod(out, sample.start_matching_collected_scans);
+    write_pod(out, sample.start_matching_completed_matches);
+    write_pod(out, sample.start_matching_compute_ms);
+    write_pod(out, sample.start_matching_rmse_m);
+    write_pod(out, sample.start_matching_inlier_ratio);
+    write_string(out, sample.start_matching_reference_hash);
 }
 
 bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* offset, HardwareTelemetrySample* sample) {
@@ -705,7 +716,18 @@ bool read_hardware_sample(const std::vector<std::uint8_t>& data, std::size_t* of
            read_pod(data, offset, &sample->locked_gate_crossing_y) &&
            read_pod(data, offset, &sample->overspeed_braking_active) &&
            read_pod(data, offset, &sample->drivetrain_stall_stop_active) &&
-           read_string(data, offset, &sample->reference_invalidation_reason);
+           read_string(data, offset, &sample->reference_invalidation_reason) &&
+           read_pod(data, offset, &sample->pose_epoch) &&
+           read_pod(data, offset, &sample->mission_goal_reached) &&
+           read_pod(data, offset, &sample->start_matching_offset_x_m) &&
+           read_pod(data, offset, &sample->start_matching_offset_y_m) &&
+           read_pod(data, offset, &sample->start_matching_offset_yaw_deg) &&
+           read_pod(data, offset, &sample->start_matching_collected_scans) &&
+           read_pod(data, offset, &sample->start_matching_completed_matches) &&
+           read_pod(data, offset, &sample->start_matching_compute_ms) &&
+           read_pod(data, offset, &sample->start_matching_rmse_m) &&
+           read_pod(data, offset, &sample->start_matching_inlier_ratio) &&
+           read_string(data, offset, &sample->start_matching_reference_hash);
 }
 
 std::vector<std::uint8_t> serialize_scene(const LiveSceneSnapshot& scene) {

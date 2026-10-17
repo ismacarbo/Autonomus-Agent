@@ -3,9 +3,30 @@
 ## Obiettivo
 
 `thesis_lidar_start_matcher` verifica che il robot sia nella stessa posa prima
-di ogni prova. In questa prima fase il risultato non viene ancora applicato
-all'EKF durante il moto: il tool serve a validare separatamente acquisizione,
+di ogni prova. Il tool standalone valida separatamente acquisizione,
 geometria LiDAR, scan matching, qualità e ripetibilità dello start.
+
+Il runner hardware integra lo stesso matcher tramite `--start-reference`:
+mantiene i PWM a zero, raccoglie tre conferme indipendenti di due scan nuove,
+applica la posa iniziale accettata all'estimatore e consente poi l'esplorazione.
+Dal 14 ottobre 2026 il calcolo viene eseguito in un worker: seriale e GUI
+continuano a essere servite durante l'attesa. Un movimento rilevato dagli
+encoder o una rotazione misurata superiore a 0,10 rad/s invalida le conferme
+ancora pendenti. Le scan riutilizzate non contano come nuove acquisizioni.
+
+La sessione SLAM viene alimentata dopo l'accettazione dello start; ogni reset
+della posa invalida la mappa locale precedente e l'allineamento SLAM. In
+`--slam-observe-only` la posa SLAM viene registrata per confronto ma non
+corregge EKF, planner o mappa di navigazione. Start matching e SLAM online
+rimangono due operazioni distinte.
+
+Il protocollo GUI/runner è **17**: ricompilare e riavviare entrambi. Non è
+richiesto un nuovo flash Arduino per queste modifiche. Il CSV locale è schema
+2 e include epoca della posa, offset accettati, numero di scan/conferme,
+tempo/qualità dell'ultimo match e hash della reference. Il tempo dei report
+conserva l'intervallo hardware completo anche quando il dt dell'integrazione
+è limitato; reset della posa e prossimità a un target temporaneo non vengono
+conteggiati rispettivamente come distanza percorsa o missione completata.
 
 Il programma apre esclusivamente `/dev/ttyUSB0` (o la porta LiDAR indicata). Non
 apre il controller, non invia PWM e non può muovere i motori.

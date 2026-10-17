@@ -167,7 +167,9 @@ void WorldMap::finalize_editor_changes() {
         }
 
         road_centerline_ = sanitize_structured_centerline(bounds_, start_, goal_, road_centerline_);
-        if (points_form_closed_loop(road_centerline_, 0.45) && road_centerline_.size() > 2) {
+        const double closure_threshold = std::clamp(.12*std::min(
+            bounds_.max_x-bounds_.min_x, bounds_.max_y-bounds_.min_y), .03, .45);
+        if (points_form_closed_loop(road_centerline_, closure_threshold) && road_centerline_.size() > 2) {
             std::vector<Vec2> base = road_centerline_;
             base.pop_back();
             const size_t start_index = find_nearest_point_index(base, start_);

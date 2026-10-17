@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <future>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -254,6 +255,10 @@ struct StartMatchingStatus {
     Vec2 position_offset_m{};
     double yaw_offset_rad = 0.0;
     double confidence = 0.0;
+    double last_compute_ms = 0.0;
+    double last_rmse_m = 0.0;
+    double last_inlier_ratio = 0.0;
+    std::string reference_hash;
     std::string status = "disabled";
 };
 
@@ -489,6 +494,17 @@ struct HardwareTelemetrySample {
     double overspeed_braking_active = 0.0;
     double drivetrain_stall_stop_active = 0.0;
     std::string reference_invalidation_reason;
+    double pose_epoch = 0.0;
+    double mission_goal_reached = 0.0;
+    double start_matching_offset_x_m = 0.0;
+    double start_matching_offset_y_m = 0.0;
+    double start_matching_offset_yaw_deg = 0.0;
+    double start_matching_collected_scans = 0.0;
+    double start_matching_completed_matches = 0.0;
+    double start_matching_compute_ms = 0.0;
+    double start_matching_rmse_m = 0.0;
+    double start_matching_inlier_ratio = 0.0;
+    std::string start_matching_reference_hash;
 };
 
 struct HardwarePlannerDiagnostics {
@@ -599,6 +615,8 @@ class HardwarePlannerRunner {
     const std::vector<Vec2>& global_occupied_points() const { return global_occupied_points_; }
     const SlamToolboxSnapshot& slam_toolbox_snapshot() const { return slam_toolbox_snapshot_; }
     const StartMatchingStatus& start_matching_status() const { return start_matching_status_; }
+    std::uint64_t pose_epoch() const { return pose_epoch_; }
+    bool slam_start_ready() const { return motion_permitted_by_start_match(); }
     void set_external_pose_reference(const ExternalPoseReference& reference,
                                      double timeout_s = 0.25);
     const ExternalPoseReference& external_pose_reference() const {
@@ -705,6 +723,7 @@ class HardwarePlannerRunner {
     bool startup_scan_active() const;
     void reset_start_matching();
     void update_start_matching(const std::vector<RPLidarA1::ScanPoint>& scan);
+    void finish_start_matching_confirmation();
     bool motion_permitted_by_start_match() const;
     void update_global_exploration_map(const std::vector<RPLidarA1::ScanPoint>& scan);
     void rebuild_global_map_vectors();
@@ -777,6 +796,12 @@ class HardwarePlannerRunner {
     std::vector<Vec2> start_match_group_points_;
     std::vector<mvc::model::InitialLidarMatchResult> start_match_results_;
     int start_match_group_scan_count_ = 0;
+    // The worker owns copies only; resets invalidate its generation without
+    // waiting on a match while the controller/GUI still need servicing.
+    std::future<mvc::model::InitialLidarMatchResult> start_match_future_;
+    std::uint64_t start_match_generation_ = 0;
+    std::uint64_t start_match_job_generation_ = 0;
+    std::uint64_t pose_epoch_ = 0;
     ExternalPoseReference external_pose_reference_{};
     double external_pose_received_sim_time_s_ = -1.0;
     double external_pose_timeout_s_ = 0.25;
@@ -854,6 +879,7 @@ class HardwarePlannerRunner {
     double structured_goal_progress_target_ = 0.0;
     double structured_progress_s_ = 0.0;
     double structured_last_s_ = std::numeric_limits<double>::quiet_NaN();
+    bool planner_reference_is_gate_ = false;
     Vec2 structured_goal_position_{};
     std::optional<Vec2> locked_gap_goal_;
     std::string locked_gap_name_ = "locked_gap_goal";
