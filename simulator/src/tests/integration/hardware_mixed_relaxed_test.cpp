@@ -157,6 +157,25 @@ struct HardwareMixedTestAccess {
     static void rejoin(HardwarePlannerRunner& r){r.mixed_entry_s_=0;r.mixed_set_state(hm::State::RoadRejoining,"offline_fixture");}
     static void time(HardwarePlannerRunner& r,double t){r.sim_time_=t;}
     static hm::State state(const HardwarePlannerRunner& r){return r.mixed_state_;}
+    static void blocked_gate(HardwarePlannerRunner& r) {
+        r.set_locked_gap_goal({1,0},"offline_blocked_aperture",Vec2{.7,0});
+        r.locked_gap_width_m_=.10;r.locked_gap_approach_direction_={1,0};
+        r.mixed_path_.clear();r.mixed_set_state(hm::State::GateFollowing,"offline_blocked_aperture");
+    }
+    static void drive(HardwarePlannerRunner& r,std::uint32_t ms,int ticks,double dt=.1) {
+        r.actuator_feedback_fresh_=true;r.mixed_state_=hm::State::RoadFollowing;
+        r.reference_trajectory_={{{0,0},0,0,.04},{{.5,0},0,0,.04},{{1,0},0,0,.04}};
+        r.planner_speed_ref_=.04;r.sync_planner_from_estimate(false);
+        r.encoder_snapshot_valid_=true;r.encoder_snapshot_fresh_=true;r.last_encoder_ms_=ms;
+        r.latest_controller_left_encoder_delta_=r.latest_controller_right_encoder_delta_=ticks;
+        r.latest_controller_encoder_dt_ms_=1000*dt;
+        r.measured_wheel_speeds_valid_=true;
+        r.measured_left_wheel_speed_=r.measured_right_wheel_speed_=ticks*(2*pi*r.geometry_.wheel_radius/38)/dt;
+        r.body_yaw_rate_measurement_valid_=true;r.body_yaw_rate_measurement_=0;
+        r.compute_control_command(dt);r.sim_time_+=dt;
+    }
+    static double crawl_credit(const HardwarePlannerRunner& r){return r.mixed_crawl_credit_m_;}
+    static void observed_space(HardwarePlannerRunner& r,const hm::ObservedSpace& space){r.mixed_space_=space;}
 };
 }
 namespace {
@@ -226,6 +245,100 @@ void recorded_comparison() {
              <<" relaxed_accepted="<<relaxed_accepted<<" selected_gates="<<selected<<" relaxed_ms="<<ms<<'\n';
     check(relaxed_accepted>strict_accepted && selected>0,"no improvement on real observed endpoint fixture");
 }
+void stopped_recording() {
+    using Access=HardwareMixedTestAccess;
+    auto c=runner_config();const auto world=hm::mission("");HardwarePlannerRunner detector(world,{},c);
+    std::ifstream in(std::filesystem::path(__FILE__).parent_path()/"data/mixed_20261018_201108_stopped_scans.txt");
+    check(in.good(),"missing stopped-scene fixture");
+    double now=0,current_speed=0;size_t n=0;hm::Scan scan;hm::ObservedSpace space;ReferenceWaypoint current;
+    std::vector<RPLidarA1::ScanPoint> last_raw;
+    while(in>>now>>current.position.x>>current.position.y>>current.yaw>>current.curvature>>current_speed
+            >>scan.origin.x>>scan.origin.y>>scan.motion_uncertainty_m>>n) {
+        scan.timestamp=now;scan.rays.clear();std::vector<RPLidarA1::ScanPoint> raw;
+        for(size_t i=0;i<n;++i) {
+            double a,r;check(bool(in>>a>>r),"truncated stopped-scene fixture");scan.rays.push_back({a,r,true});
+            double body=a-current.yaw;raw.push_back({15,body*180/pi,r*1000,r,r*std::cos(body),r*std::sin(body)});
+        }
+        space.add(scan,.6);current.speed=.04;Access::pose(detector,current);Access::detect(detector,raw);
+        last_raw=std::move(raw);
+    }
+    hm::ReferenceRoad road;road.build({{0,0},{1.3,0}},0);
+    check(space.validate({current,current},current,geometry(),world.bounds(),now,c.mixed_dynamic).valid(),"stopped current body collides");
+    const auto gates=Access::gates(detector);check(!gates.empty(),"stopped gate extraction failed");
+    int adaptive_accepted=0;
+    for(const auto& [center,heading,width]:gates) {
+        auto old=configuration();old.local_min_segment_m=old.local_horizon_m/3;
+        const auto baseline=hm::plan_gate(current,center,heading,width,false,{1.3,0},geometry(),car,old,.04,current_speed,
+            space,world.bounds(),now,&road,current.position.x);
+        check(!baseline.selected.valid(),"fixture no longer reproduces the fixed-step deadlock");
+        print("stopped_fixed_step",baseline);
+    }
+    for(double horizon:{.75,.60,.45,.30,.15}) {
+        int index=0;
+        for(const auto& [center,heading,width]:gates) {
+            auto cfg=configuration();cfg.local_horizon_m=horizon;
+            const auto plan=hm::plan_gate(current,center,heading,width,false,{1.3,0},geometry(),car,cfg,.04,current_speed,
+                space,world.bounds(),now,&road,current.position.x);
+            std::cout<<"stopped_scene horizon="<<horizon<<" gate="<<index<<" center="<<center.x<<','<<center.y<<" width="<<width<<' ';
+            print("search",plan);
+            if(plan.selected.valid()) {
+                if(horizon==.75) {
+                    adaptive_accepted+=plan.relaxed_accepted;
+                    check(plan.selected.length<.25,"stopped-scene fix did not use a short observation segment");
+                }
+                verify(plan.selected,current,cfg,space,world.bounds(),now);
+                export_path("stopped_"+std::to_string(horizon)+"_"+std::to_string(index),plan.selected.path,true);
+            }
+            ++index;
+        }
+    }
+    check(adaptive_accepted>0,"adaptive search still deadlocked on the recorded scene");
+    std::cout<<"stopped_adaptive_accepted="<<adaptive_accepted<<'\n';
+    Access::observed_space(detector,space);Access::time(detector,now);Access::progress(detector,current.position.x);
+    Access::acquire(detector);auto live=observation(now);live.lidar_scan=std::move(last_raw);Access::update(detector,live);
+    check(Access::state(detector)==hm::State::GateFollowing && detector.reference_trajectory().size()>2 &&
+          detector.last_command().target_speed>0 && !detector.last_command().safety_stop,
+          "recorded short path did not reach the hardware controller in offline replay");
+    check(detector.reference_trajectory().back().speed==0,"recorded short segment lost its endpoint stop");
+}
+void crawl_actuation() {
+    using Access=HardwareMixedTestAccess;auto c=runner_config();
+    c.pwm.right_command_scale=.849462;c.pwm.right_command_offset=26.021505;
+    c.pwm.body_yaw_pwm_kp=35;c.pwm.body_yaw_pwm_ki=40;
+    c.pwm.overspeed_braking_enabled=true;c.pwm.wheel_stall_timeout_s=1.5;
+    HardwarePlannerRunner r(hm::mission(""),{},c);
+    int previous_left=0,previous_right=0;
+    for(int i=0;i<8;++i) {
+        Access::drive(r,100+i*100,0);
+        const auto cmd=r.last_command();
+        check(cmd.pwm_left>0 && cmd.pwm_right>0,"crawl start produced a one-wheel pivot/hold");
+        if(i) {
+            check(cmd.pwm_left<=previous_left+4,"abrupt left breakaway kick");
+            check(cmd.pwm_right<=previous_right+4,"abrupt calibrated right breakaway kick");
+        }
+        previous_left=cmd.pwm_left;previous_right=cmd.pwm_right;
+    }
+    // Recorded pattern: four ticks per wheel followed by a zero interval.
+    // Instantaneous overspeed braking alone released on that first zero.
+    Access::drive(r,1000,4);
+    check(r.last_command().pwm_left==0 && r.last_command().pwm_right==0,"recorded overspeed burst not braked");
+    const double debt=Access::crawl_credit(r);
+    Access::drive(r,1000,4,.01);
+    check(Access::crawl_credit(r)>=debt,"cached encoder interval counted twice");
+    Access::drive(r,1100,0);
+    check(r.last_command().pwm_left==0 && r.last_command().pwm_right==0,"one zero packet restarted the overspeed burst");
+    bool resumed=false;
+    for(int i=0;i<8;++i) {
+        Access::drive(r,1200+i*100,0);
+        if(r.last_command().pwm_left>0 && r.last_command().pwm_right>0){resumed=true;break;}
+    }
+    check(resumed,"crawl distance pacing cannot resume after settling");
+    HardwarePlannerRunner stalled(hm::mission(""),{},c);
+    for(int i=0;i<24;++i)Access::drive(stalled,100+i*100,0);
+    check(stalled.last_command().safety_stop && stalled.last_command().pwm_left==0 && stalled.last_command().pwm_right==0,
+          "gradual torque ramp disabled the drivetrain stall stop");
+    std::cout<<"crawl_actuation: gradual calibrated start, no one-wheel kick, overshoot pacing, cached feedback and stall stop passed\n";
+}
 void policy_parser() {
     const auto config_dir=std::filesystem::path(__FILE__).parent_path()/"../../../../config";
     hm::Config cfg;hm::mission((config_dir/"mixed_experimental_relaxed.conf").string(),&cfg);
@@ -268,6 +381,10 @@ void runtime_safety() {
           distance(progressive.reference_trajectory().back().position,end.position)>.10,"fresh observation did not extend progressive return");
     check(!progressive.goal_reached(),"intermediate observation changed mission completion");
     c.cruise_speed_limit=.10;HardwarePlannerRunner cap(world,{},c);check(cap.config().cruise_speed_limit==.04,"experimental speed cap ignored");
+    HardwarePlannerRunner blocked(world,{},runner_config());Access::blocked_gate(blocked);
+    Access::update(blocked,observation(30));
+    check(Access::state(blocked)==hm::State::GateAcquisition && blocked.last_command().pwm_left==0 && blocked.last_command().pwm_right==0,
+          "failed gate remained locked until timeout or moved while reacquiring");
 }
 }
 int main(int argc,char** argv) {
@@ -275,7 +392,7 @@ int main(int argc,char** argv) {
         if(argc==3 && std::string(argv[1])=="--unconstrained-candidate-analysis") {analysis_only(argv[2]);return 0;}
         if(argc==3 && std::string(argv[1])=="--artifacts") {artifacts=argv[2];std::filesystem::create_directories(artifacts);argc=1;}
         check(argc==1,"usage: hardware_mixed_relaxed_test [--unconstrained-candidate-analysis output.csv]");
-        gate_and_braking();progressive_rejoin();analysis_only("");recorded_comparison();policy_parser();runtime_safety();
+        gate_and_braking();progressive_rejoin();analysis_only("");recorded_comparison();stopped_recording();policy_parser();runtime_safety();crawl_actuation();
         std::cout<<"hardware relaxed offline checks passed; no device opened\n";return 0;
     }catch(const std::exception& e){std::cerr<<"FAILED: "<<e.what()<<'\n';return 1;}
 }

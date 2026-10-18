@@ -407,6 +407,8 @@ PathResult local_prefix(PathResult path,const Config& cfg) {
 // Bounded local beam search, shared by gate approach and progressive Frenet
 // return. Seven steering choices, three stages, at most twelve retained nodes.
 // Every retained prefix is executable and has a checked stop continuation.
+// A blocked 25 cm expansion must not veto an executable 5-12 cm observation
+// segment. Halve only failed expansions, with at most four lengths per node.
 void search_primitives(const ReferenceWaypoint& current,const VehicleGeometry& g,
                        VehicleModelKind model,const Config& cfg,double speed,double current_speed,
                        const std::function<double(PathResult)>& visit) {
@@ -415,16 +417,26 @@ void search_primitives(const ReferenceWaypoint& current,const VehicleGeometry& g
     std::vector<Node> beam{{root,0}};
     for(int depth=0;depth<3;++depth) {
         std::vector<Node> next;
-        for(const auto& node:beam) for(double fraction:{0.,-.333333,.333333,-.666667,.666667,-1.,1.}) {
+        for(const auto& node:beam) {
+          double extent=cfg.local_horizon_m/3;
+          for(int attempt=0;attempt<4;++attempt) {
+            bool accepted=false;
+            for(double fraction:{0.,-.333333,.333333,-.666667,.666667,-1.,1.}) {
             auto segment=primitive(node.path.path.back(),fraction*execution_curvature_limit(g,model,cfg),
-                                   cfg.local_horizon_m/3,g,model,cfg,speed,current_speed);
+                                   extent,g,model,cfg,speed,current_speed);
             if(segment.valid()) {
                 segment.path.insert(segment.path.begin(),node.path.path.begin(),node.path.path.end()-1);
                 segment.length+=node.path.length;segment.bending+=node.path.bending;
                 segment.peak_curvature=std::max(segment.peak_curvature,node.path.peak_curvature);
             }
             const double score=visit(segment);
-            if(std::isfinite(score) && segment.valid())next.push_back({std::move(segment),score});
+            if(std::isfinite(score) && segment.valid()) {
+                accepted=true;next.push_back({std::move(segment),score});
+            }
+            }
+            if(accepted || extent<=cfg.local_min_segment_m+1e-9)break;
+            extent=attempt==2?cfg.local_min_segment_m:std::max(cfg.local_min_segment_m,extent/2);
+          }
         }
         std::stable_sort(next.begin(),next.end(),[](const Node&a,const Node&b){return a.score<b.score;});
         beam.clear();

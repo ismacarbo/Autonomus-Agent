@@ -807,6 +807,9 @@ class HardwarePlannerRunner {
     double mixed_target_s_ = -1.0, mixed_entry_s_ = 0.0;
     double mixed_last_plan_s_ = -1.0, mixed_last_scan_timestamp_ = -1.0;
     double mixed_last_command_speed_ = 0.0, mixed_last_command_yaw_rate_ = 0.0;
+    double mixed_crawl_credit_m_ = 0.0;
+    std::uint32_t mixed_crawl_encoder_ms_ = 0;
+    bool mixed_crawl_hold_ = false;
     int mixed_candidates_ = 0, mixed_replans_ = 0, mixed_rejoins_ = 0, mixed_safe_stops_ = 0;
     int mixed_complete_frames_ = 0;
     bool mixed_pose_fault_ = false;

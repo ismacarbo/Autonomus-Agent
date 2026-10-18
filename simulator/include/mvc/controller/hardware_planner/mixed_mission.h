@@ -95,7 +95,9 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
                 MIXED_PARAMETER(gate_exit_search_m);
                 MIXED_PARAMETER(operational_curvature_limit);
                 MIXED_PARAMETER(local_horizon_m);
+                MIXED_PARAMETER(local_min_segment_m);
                 MIXED_PARAMETER(experimental_speed_mps);
+                MIXED_PARAMETER(crawl_pwm_rise_per_s);
 #undef MIXED_PARAMETER
                 if(!field || !(in>>*field) || !std::isfinite(*field) || *field<=0)
                     throw std::invalid_argument("invalid mixed parameter: "+key);

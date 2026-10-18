@@ -22,7 +22,10 @@ struct Config {
     // Zero inherits the hardware profile. Never overrides the steering limit.
     double operational_curvature_limit = 0.0;
     double local_horizon_m = 0.75;
+    double local_min_segment_m = 0.05;
     double experimental_speed_mps = 0.04;
+    // Canonical PWM/s before measured left/right driver calibration.
+    double crawl_pwm_rise_per_s = 35.0;
     // In this frame the captured robot pose defines (0,0,0), not an arena corner.
     bool start_reference_frame = false;
     Vec2 arena_size_m{2.00, 1.70};

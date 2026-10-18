@@ -3,6 +3,17 @@
 namespace thesis_sim {
 
 void HardwarePlannerRunner::compute_control_command(double dt) {
+    const bool relaxed_crawl=config_.mixed_dynamic.enabled &&
+        config_.mixed_dynamic.planning_policy==hardware_mixed::PlanningPolicy::ExperimentalRelaxed &&
+        config_.vehicle_model==VehicleModelKind::CarLikeBicycle && !config_.use_mcu_velocity_closed_loop;
+    const double crawl_tick_m=2*kPi*geometry_.wheel_radius/std::max(1,geometry_.encoder_ticks_per_revolution);
+    // Account for real motion, including coasting during a planner stop, once
+    // per encoder interval. A subsequent zero packet cannot erase overshoot.
+    if(relaxed_crawl && encoder_snapshot_valid_ && mixed_crawl_encoder_ms_!=last_encoder_ms_) {
+        mixed_crawl_credit_m_-=.5*(std::abs(static_cast<double>(latest_controller_left_encoder_delta_))+
+            std::abs(static_cast<double>(latest_controller_right_encoder_delta_)))*crawl_tick_m;
+        mixed_crawl_encoder_ms_=last_encoder_ms_;
+    }
     const int previous_pwm_left = last_command_.pwm_left;
     const int previous_pwm_right = last_command_.pwm_right;
     const bool previously_braking = overspeed_braking_active_;
@@ -1719,12 +1730,12 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
             last_command_.pwm_left = last_command_.pwm_right = average;
         }
     }
-    const bool hold_left_for_yaw = body_pwm_control && last_command_.target_speed > 0.0 &&
+    const bool hold_left_for_yaw = !relaxed_crawl && body_pwm_control && last_command_.target_speed > 0.0 &&
         last_command_.pwm_left <= config_.pwm.min_effective_pwm;
-    const bool hold_right_for_yaw = body_pwm_control && last_command_.target_speed > 0.0 &&
+    const bool hold_right_for_yaw = !relaxed_crawl && body_pwm_control && last_command_.target_speed > 0.0 &&
         last_command_.pwm_right <= config_.pwm.min_effective_pwm;
     const double requested_turn = last_command_.planner_target_yaw_rate;
-    const bool turn_needs_authority = body_pwm_control && last_command_.target_speed > 0.0 &&
+    const bool turn_needs_authority = !relaxed_crawl && body_pwm_control && last_command_.target_speed > 0.0 &&
         std::abs(requested_turn) > .04 &&
         (world_has_structured_reference(world_) || !body_yaw_rate_measurement_valid_ ||
          requested_turn * body_yaw_rate_measurement_ < .70 * requested_turn * requested_turn);
@@ -1907,7 +1918,7 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         // one iteration, then require another fresh stall observation to retry.
         constexpr int kBreakawayHoldCycles = 1;
         const auto wheel_breakaway_pulse_due = [&](int stall_cycles) {
-            return have_individual_wheel_motion &&
+            return !relaxed_crawl && have_individual_wheel_motion &&
                    stall_cycles >= stall_boost_cycles_required &&
                    ((stall_cycles - stall_boost_cycles_required) %
                         compact_breakaway_retry_cycles ==
@@ -1956,6 +1967,19 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
         } else if (right_breakaway_active && !left_breakaway_active &&
                    right_wheel_stall_cycles_ > 0) {
             hold_left_for_right_breakaway = true;
+        }
+        if(relaxed_crawl && have_individual_wheel_motion) {
+            // The legacy single-wheel 110 PWM kick followed by holding the
+            // other wheel produced a pivot in trial 201108. Request starting
+            // torque gradually instead; the final limiter below bounds its
+            // rise in calibrated canonical PWM and keeps the stall timeout.
+            const auto ramp_stalled=[&](int cycles,double scale,double offset,int& pwm) {
+                if(cycles<stall_boost_cycles_required)return;
+                pwm=std::max(pwm,apply_signed_pwm_calibration(per_wheel_breakaway_pwm,scale,offset,config_.pwm.max_pwm));
+                stall_boost_active_=true;
+            };
+            ramp_stalled(left_wheel_stall_cycles_,config_.pwm.left_command_scale,config_.pwm.left_command_offset,last_command_.pwm_left);
+            ramp_stalled(right_wheel_stall_cycles_,config_.pwm.right_command_scale,config_.pwm.right_command_offset,last_command_.pwm_right);
         }
     } else {
         left_wheel_stall_cycles_ = 0;
@@ -2159,6 +2183,31 @@ void HardwarePlannerRunner::compute_control_command(double dt) {
     // forward-only floors and slew limiter, just like the recovery hold.
     if (hold_left_for_yaw) last_command_.pwm_left = 0;
     if (hold_right_for_yaw) last_command_.pwm_right = 0;
+    if(relaxed_crawl && commanding_motion) {
+        const auto limit_rise=[&](int pwm,int previous,double scale,double offset) {
+            const double before=previous>0?(previous-offset)/std::max(scale,1e-6):config_.pwm.min_effective_pwm;
+            const double ceiling=std::min(static_cast<double>(std::max(config_.pwm.min_effective_pwm,config_.pwm.start_motion_pwm)),
+                std::max(static_cast<double>(config_.pwm.min_effective_pwm),before)+
+                    (previous>0?config_.mixed_dynamic.crawl_pwm_rise_per_s*safe_dt:0));
+            return std::clamp(pwm,
+                apply_signed_pwm_calibration(config_.pwm.min_effective_pwm,scale,offset,config_.pwm.max_pwm),
+                apply_signed_pwm_calibration(static_cast<int>(std::floor(ceiling)),scale,offset,config_.pwm.max_pwm));
+        };
+        last_command_.pwm_left=limit_rise(last_command_.pwm_left,previous_pwm_left,config_.pwm.left_command_scale,config_.pwm.left_command_offset);
+        last_command_.pwm_right=limit_rise(last_command_.pwm_right,previous_pwm_right,config_.pwm.right_command_scale,config_.pwm.right_command_offset);
+        mixed_crawl_credit_m_=std::min(crawl_tick_m,mixed_crawl_credit_m_+last_command_.target_speed*safe_dt);
+        const bool hold=mixed_crawl_credit_m_<-crawl_tick_m;
+        if(hold!=mixed_crawl_hold_)std::cerr<<"mixed_crawl_pacing time="<<sim_time_<<" hold="<<hold
+            <<" distance_credit_m="<<mixed_crawl_credit_m_<<" target_speed="<<last_command_.target_speed<<'\n';
+        mixed_crawl_hold_=hold;
+        if(hold) {
+            last_command_.pwm_left=last_command_.pwm_right=0;
+            wheel_speed_error_integral_left_=wheel_speed_error_integral_right_=yaw_rate_error_integral_=0;
+            stall_boost_active_=false;
+            left_wheel_stall_cycles_=right_wheel_stall_cycles_=0;
+            left_wheel_stall_elapsed_s_=right_wheel_stall_elapsed_s_=0;
+        }
+    }
     if (hardware_car && config_.pwm.overspeed_braking_enabled &&
         !config_.use_mcu_velocity_closed_loop && commanding_motion) {
         const double requested_speed = std::abs(last_command_.target_speed);
