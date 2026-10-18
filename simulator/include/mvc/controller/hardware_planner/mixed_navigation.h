@@ -71,6 +71,7 @@ struct PathResult {
     std::vector<ReferenceWaypoint> path;
     std::string reason;
     double length = 0.0, bending = 0.0, clearance = 0.0;
+    double peak_curvature = 0.0;
     // First failing point for hardware diagnostics, never a navigation target.
     Vec2 witness{};
     bool has_witness = false;
@@ -117,6 +118,22 @@ struct GatePlan {
     std::map<std::string, int> outcomes;
 };
 
+struct RejoinCandidate {
+    double s = 0.0, peak_curvature = 0.0;
+    std::string reason;
+};
+struct RejoinPlan {
+    PathResult selected;
+    double target_s = -1.0;
+    std::vector<RejoinCandidate> candidates;
+    std::map<std::string, int> outcomes;
+};
+
+RejoinPlan plan_rejoin(const ReferenceWaypoint& current, const ReferenceRoad& road,
+                      double progress, const VehicleGeometry& geometry, VehicleModelKind model,
+                      const Config& config, double speed, double current_speed,
+                      const ObservedSpace& space, const Rect& bounds, double now);
+
 // Local G2 alternatives through one measured aperture. Every returned solution
 // crosses the aperture with the entire body and passes the configured checks.
 // The gate normal stays fixed; a terminal tangent need not equal that normal.
@@ -125,7 +142,8 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
                    const Vec2& goal, const VehicleGeometry& geometry,
                    VehicleModelKind model, const Config& config, double speed,
                    double current_speed, const ObservedSpace& space,
-                   const Rect& bounds, double now);
+                   const Rect& bounds, double now,
+                   const ReferenceRoad* rejoin_road = nullptr, double road_progress = 0.0);
 
 bool gate_cleared(const Vec2& position, double yaw, const Vec2& entry,
                   const Vec2& center, double normal_yaw, double width,

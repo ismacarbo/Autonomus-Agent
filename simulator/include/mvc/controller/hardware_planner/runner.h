@@ -800,6 +800,7 @@ class HardwarePlannerRunner {
     hardware_mixed::Projection mixed_projection_;
     std::vector<ReferenceWaypoint> mixed_path_;
     std::string mixed_reason_;
+    std::string mixed_plan_failure_;
     std::string mixed_last_gate_id_;
     Vec2 mixed_previous_position_{};
     double mixed_previous_yaw_ = 0.0;

@@ -160,6 +160,8 @@ struct HardwareMixedTestAccess {
     static hm::State state(const HardwarePlannerRunner&r){return r.mixed_state_;}
     static int passes(const HardwarePlannerRunner&r){return r.passed_unstructured_gap_count_;}
     static int rejoins(const HardwarePlannerRunner&r){return r.mixed_rejoins_;}
+    static int replans(const HardwarePlannerRunner&r){return r.mixed_replans_;}
+    static void estimate(HardwarePlannerRunner&r,const RealRobotObservation& o){r.update_estimate_from_observation(o,.1);}
     static double target(const HardwarePlannerRunner&r){return r.mixed_target_s_;}
     static double normal(const HardwarePlannerRunner&r){return std::atan2(r.locked_gap_approach_direction_.y,r.locked_gap_approach_direction_.x);}
     static std::string gate_id(const HardwarePlannerRunner&r){return r.locked_gap_name_;}
@@ -253,9 +255,13 @@ void recorded_start_visibility(const std::string& name="mixed_20261017_160347_ob
     const auto check=space.validate({current,current},current,g,world.bounds(),0,cfg.mixed_dynamic);
     if(relaxed) {
         require(check.valid(),"real footprint still rejected after relaxing coverage");
-        require(HardwareMixedTestAccess::state(r)==hm::State::GateFollowing &&
-                !HardwareMixedTestAccess::gate_id(r).empty(),
-                "recorded obstacle-only replay failed to select a measured gate");
+        // The old replay selected a passable aperture without checking its
+        // return. Its nine connections cannot rejoin this 1.30 m road. Coverage
+        // is now released, but that geometric dead end must remain stopped.
+        require(HardwareMixedTestAccess::state(r)==hm::State::SafeStop &&
+                r.diagnostics().reference_invalidation_reason=="no_verified_gate" &&
+                HardwareMixedTestAccess::passes(r)==0 && !r.goal_reached(),
+                "recorded gate without a feasible return was accepted");
         auto missing=observation({0,0},11);missing.have_lidar_scan=false;
         HardwareMixedTestAccess::update(r,missing);HardwareMixedTestAccess::control(r);
         require(r.last_command().safety_stop && r.last_command().pwm_left==0 && r.last_command().pwm_right==0,
@@ -279,23 +285,114 @@ void recorded_start_visibility(const std::string& name="mixed_20261017_160347_ob
 }
 void alternative_gate_replanning() {
     auto cfg=config();cfg.cruise_speed_limit=.04;
-    auto world=hm::mission("",&cfg.mixed_dynamic);
+    hm::mission("",&cfg.mixed_dynamic);
+    // The alternative heading needs room for its subsequent return. The old
+    // 1.30 m fixture was a dead end, now covered by gate_requires_return_space.
+    auto world=WorldMap::hardware_mixed_mission({{0,0},{3,0}},{-6,-6,6,6});
+    cfg.localization.max_range_m=5;
     HardwarePlannerRunner r(world,{},cfg);
     HardwareMixedTestAccess::gate(r,{.91,-.375},"measured_alternative",.098,.6);
-    HardwareMixedTestAccess::update(r,observation({0,0},20));
+    HardwareMixedTestAccess::update(r,observation({0,0},20,5));
     require(HardwareMixedTestAccess::state(r)==hm::State::GateFollowing && !r.reference_trajectory().empty(),
             "locked gate replan did not use alternative G2 connections");
     const auto target=r.reference_trajectory().back();
     require(std::abs(target.yaw-.098)>.01,"locked gate replan reverted to infeasible normal tangent");
     HardwareMixedTestAccess::control(r);
     require(r.last_command().target_speed>0 && !r.last_command().safety_stop,"alternative gate reference not followed by MPC");
-    HardwareMixedTestAccess::update(r,observation({0,0},20.1));
+    HardwareMixedTestAccess::update(r,observation({0,0},20.1,5));
     require(distance(r.reference_trajectory().back().position,target.position)<1e-9 &&
             std::abs(r.reference_trajectory().back().yaw-target.yaw)<1e-9 &&
             std::abs(HardwareMixedTestAccess::normal(r)-.098)<1e-9 &&
             HardwareMixedTestAccess::gate_id(r)=="measured_alternative" &&
             !r.goal_reached() && HardwareMixedTestAccess::passes(r)==0,
             "stable alternate path changed gate identity/normal or completed the mission");
+}
+void recorded_rejoin_and_retry() {
+    using Access=HardwareMixedTestAccess;
+    auto cfg=config();cfg.cruise_speed_limit=.04;
+    auto world=hm::mission("",&cfg.mixed_dynamic);
+    cfg.mixed_dynamic.visibility_policy=hm::VisibilityPolicy::ObstaclesOnly;
+    cfg.localization.lidar_x_offset=.075;cfg.localization.lidar_y_offset=.04;
+    HardwarePlannerRunner r(world,{},cfg);
+    const auto file=std::filesystem::path(__FILE__).parent_path()/"data/mixed_20261018_094252_rejoin_scan.txt";
+    std::ifstream in(file);double x,y,yaw,s;size_t count;
+    require(static_cast<bool>(in>>x>>y>>yaw>>s>>count),"recorded rejoin fixture missing");
+    auto obs=observation({x,y},10);obs.lidar_scan.clear();
+    for(size_t i=0;i<count;++i) {
+        double a,range;require(static_cast<bool>(in>>a>>range),"truncated recorded rejoin fixture");
+        const double b=a-yaw;
+        obs.lidar_scan.push_back({15,b*180/pi,range*1000,range,range*std::cos(b),range*std::sin(b)});
+    }
+    Access::rejoin(r,{x,y},s);Access::pose(r,{x,y},yaw);
+    for(int i=0;i<12;++i) {
+        auto fresh=observation({x,y},10+.1*i);fresh.lidar_scan=obs.lidar_scan;
+        Access::update(r,fresh);Access::control(r);
+        require(r.diagnostics().reference_invalidation_reason=="rejoin_kinematics_unreachable",
+                "recorded geometric failure was hidden by retry scheduling or misreported as LiDAR loss");
+        require(Access::state(r)==hm::State::SafeStop && r.last_command().pwm_left==0 &&
+                r.last_command().pwm_right==0 && !r.goal_reached(),"unreachable rejoin authorized motion/completed mission");
+    }
+    require(Access::replans(r)==2,"retry throttling was bypassed or failed rejoin never retried");
+    auto stale=obs;stale.have_lidar_scan=false;Access::update(r,stale);
+    require(r.diagnostics().reference_invalidation_reason=="sensor_stale_or_start_not_ready",
+            "stable failure label hid actual sensor loss");
+    // New feasible geometry remains recoverable; a failed candidate is not a
+    // permanent mission latch. Inject pose/measurements, never integrate a plant.
+    Access::pose(r,{.85,.01});Access::progress(r,.85);
+    for(int i=0;i<8 && Access::state(r)!=hm::State::RoadRejoining;++i)
+        Access::update(r,observation({.85,.01},12+.1*i));
+    require(Access::state(r)==hm::State::RoadRejoining && !r.reference_trajectory().empty(),
+            "failed rejoin blocked later feasible observations");
+}
+
+void gate_requires_return_space() {
+    hm::Config cfg;cfg.visibility_policy=hm::VisibilityPolicy::ObstaclesOnly;
+    VehicleGeometry g;g.body_length=.25;g.body_width=.15;g.max_curvature=1.8;
+    // Keep measured walls outside both the return and its forward-road preview.
+    hm::ObservedSpace space;space.add(circle({0,0},5),cfg.observation_memory_s);
+    hm::ReferenceRoad short_road,long_road;short_road.build({{0,0},{1.3,0}},0);long_road.build({{0,0},{3,0}},0);
+    const ReferenceWaypoint from{{0,0},0,0,.04};const Rect bounds{-4,-4,4,4};
+    const auto without_return=hm::plan_gate(from,{.91,-.375},.098,.6,false,{1.3,0},g,
+        VehicleModelKind::CarLikeBicycle,cfg,.04,0,space,bounds,0);
+    require(without_return.selected.valid(),"fixture has no feasible gate connection before return check");
+    const auto late=hm::plan_gate(from,{.91,-.375},.098,.6,false,{1.3,0},g,
+        VehicleModelKind::CarLikeBicycle,cfg,.04,0,space,bounds,0,&short_road,0);
+    require(!late.selected.valid() && late.outcomes.count("no_rejoin_after_gate"),
+            "gate accepted without enough road to rejoin");
+    const auto feasible=hm::plan_gate(from,{.91,-.375},.098,.6,false,{3,0},g,
+        VehicleModelKind::CarLikeBicycle,cfg,.04,0,space,bounds,0,&long_road,0);
+    require(feasible.selected.valid(),"return check rejected a feasible gate and forward rejoin");
+}
+
+void initial_encoder_distance() {
+    using Access=HardwareMixedTestAccess;
+    auto cfg=config();auto world=hm::mission("",&cfg.mixed_dynamic);
+    HardwarePlannerRunner r(world,{},cfg);
+    auto base=observation({0,0},10);base.controller.ticks_left=10;base.controller.ticks_right=11;
+    Access::estimate(r,base);
+    auto a=observation({0,0},10.103);a.controller.ticks_left=14;a.controller.ticks_right=14;
+    Access::estimate(r,a);
+    const double tick=2*pi*r.geometry().wheel_radius/r.geometry().encoder_ticks_per_revolution;
+    require(std::abs(r.estimate().position.x-3.5*tick)<1e-8 && r.estimate().speed>0,
+            "first fresh validated encoder packet lost its measured distance");
+    Access::estimate(r,a);
+    require(std::abs(r.estimate().position.x-3.5*tick)<1e-8,"cached encoder packet was integrated twice");
+    auto b=observation({0,0},10.204);b.controller.ticks_left=16;b.controller.ticks_right=17;
+    Access::estimate(r,b);
+    require(std::abs(r.estimate().position.x-6*tick)<1e-8,"second validated interval was discarded during initialization");
+    auto zero=observation({0,0},10.410);zero.controller.ticks_left=16;zero.controller.ticks_right=17;
+    Access::estimate(r,zero);
+    require(std::abs(r.estimate().position.x-6*tick)<1e-8 && r.estimate().speed==0,
+            "valid zero delta moved the estimate or retained stale speed");
+    auto invalid=observation({0,0},10.510);invalid.controller.ticks_left=20;invalid.controller.ticks_right=21;
+    invalid.controller.enc_flags=0;
+    Access::estimate(r,invalid);
+    require(std::abs(r.estimate().position.x-6*tick)<1e-8,"unready/invalid encoder packet advanced the robot");
+    auto legacy_cfg=cfg;legacy_cfg.mixed_dynamic.enabled=false;
+    HardwarePlannerRunner legacy(world,{},legacy_cfg);
+    Access::estimate(legacy,base);Access::estimate(legacy,a);Access::estimate(legacy,b);
+    require(std::abs(legacy.estimate().position.x)<1e-8,
+            "dynamic Mixed odometry change leaked into the legacy readiness policy");
 }
 void runtime_states() {
     using Access=HardwareMixedTestAccess;
@@ -478,6 +575,6 @@ void mission_frame_parser() {
 }
 }
 int main() {
-    try {math_and_perception();gate_alternatives();obstacle_only_visibility();recorded_start_visibility();recorded_start_visibility("mixed_20261017_163834_observed_scans.txt",0);recorded_start_visibility("mixed_20261017_163834_observed_scans.txt",0,true);alternative_gate_replanning();runtime_states();reference_frame_and_start_guard();mission_frame_parser();std::cout<<"hardware Mixed mathematical, perception and state checks passed\n";return 0;}
+    try {math_and_perception();gate_alternatives();obstacle_only_visibility();initial_encoder_distance();recorded_rejoin_and_retry();gate_requires_return_space();recorded_start_visibility();recorded_start_visibility("mixed_20261017_163834_observed_scans.txt",0);recorded_start_visibility("mixed_20261017_163834_observed_scans.txt",0,true);alternative_gate_replanning();runtime_states();reference_frame_and_start_guard();mission_frame_parser();std::cout<<"hardware Mixed mathematical, perception and state checks passed\n";return 0;}
     catch(const std::exception& e){std::cerr<<"FAILED: "<<e.what()<<'\n';return 1;}
 }

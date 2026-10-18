@@ -461,7 +461,12 @@ bool HardwarePlannerRunner::controller_encoder_odometry_usable(const ControllerT
     }
 
     ++encoder_ready_streak_;
-    return encoder_ready_streak_ >= kStableEncoderReadyFrames;
+    // Dynamic Mixed must integrate every validated distance interval once.
+    // Discarding the first two ready packets lost real travel at startup (the
+    // baseline was already advanced), while collision checks used a frozen
+    // pose. Freshness, readiness, overflow and wheel-speed checks above still
+    // apply; this does not enable PWM or infer motion from a command.
+    return config_.mixed_dynamic.enabled || encoder_ready_streak_ >= kStableEncoderReadyFrames;
 }
 
 bool HardwarePlannerRunner::rearm_controller_if_needed(const ControllerTelemetry& telemetry) {

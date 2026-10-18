@@ -136,6 +136,11 @@ PathResult connect(const ReferenceWaypoint& from, const ReferenceWaypoint& to,
         double previous_k=from.curvature;
         const double k_limit=model==VehicleModelKind::CarLikeBicycle
             ? std::min(g.max_curvature,std::tan(g.max_steer_angle)/g.wheelbase) : g.max_curvature;
+        for(int i=0;i<curve.num_segments();++i) {
+            const auto& segment=curve.get(i);
+            out.peak_curvature=std::max(out.peak_curvature,
+                std::max(std::abs(segment.kappa(0)),std::abs(segment.kappa(segment.length()))));
+        }
         // Curvature is linear on each constituent clothoid. Check its exact
         // extrema and derivative, including segments shorter than sampling ds.
         for(int i=0;i<curve.num_segments();++i) {
@@ -278,12 +283,42 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
     return result;
 }
 
+RejoinPlan plan_rejoin(const ReferenceWaypoint& current, const ReferenceRoad& road,
+                      double progress, const VehicleGeometry& g, VehicleModelKind model,
+                      const Config& cfg, double speed, double current_speed,
+                      const ObservedSpace& space, const Rect& bounds, double now) {
+    RejoinPlan result;
+    result.selected.reason="no_verified_rejoin";
+    double best=std::numeric_limits<double>::infinity();
+    const Vec2 goal=road.sample(road.length()).position;
+    for(double s:road.targets(progress,cfg.rejoin_lookaheads_m)) {
+        const auto target=road.sample(s,speed);
+        auto candidate=connect(current,target,g,model,cfg,speed,current_speed);
+        const double bending=candidate.bending, peak=candidate.peak_curvature;
+        if(candidate.valid())candidate=space.validate(candidate.path,current,g,bounds,now,cfg);
+        if(candidate.valid()) {
+            const auto forward=space.validate(road.span(s,cfg.road_preview_m,cfg.sample_spacing_m,speed),
+                                               current,g,bounds,now,cfg);
+            if(!forward.valid()) {candidate.reason="target_road_"+forward.reason;candidate.path.clear();}
+        }
+        result.candidates.push_back({s,peak,candidate.reason});
+        ++result.outcomes[candidate.reason];
+        if(!candidate.valid())continue;
+        candidate.bending=bending;candidate.peak_curvature=peak;
+        const double score=candidate.length+.10*bending+.4*distance(target.position,goal)-
+            .20*std::min(candidate.clearance,1.0)-.25*std::max(0.0,s-progress);
+        if(score<best) {best=score;result.target_s=s;result.selected=std::move(candidate);}
+    }
+    return result;
+}
+
 GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
                    double normal_yaw, double width, bool plane_already_crossed,
                    const Vec2& goal, const VehicleGeometry& g,
                    VehicleModelKind model, const Config& cfg, double speed,
                    double current_speed, const ObservedSpace& space,
-                   const Rect& bounds, double now) {
+                   const Rect& bounds, double now, const ReferenceRoad* rejoin_road,
+                   double road_progress) {
     GatePlan result;
     result.selected.reason="no_verified_gate";
     const double pad=cfg.obstacle_margin_m+cfg.pose_margin_m+1.5*cfg.sample_spacing_m;
@@ -342,11 +377,36 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
                 }
                 const double bending=candidate.bending;
                 if(candidate.valid()) candidate=space.validate(candidate.path,current,g,bounds,now,cfg);
+                double return_cost=0;
+                if(candidate.valid() && rejoin_road) {
+                    // The state machine hands over as soon as the rear clears
+                    // the aperture, not necessarily at the gate path endpoint.
+                    // Check a continuation there before committing to a bypass
+                    // that leaves too little road for the selected kinematics.
+                    const auto handoff=std::find_if(candidate.path.begin(),candidate.path.end(),[&](const auto& q){
+                        const double a=angle(q.yaw-normal_yaw);
+                        const double rear=.5*(g.body_length*std::abs(std::cos(a))+g.body_width*std::abs(std::sin(a)));
+                        return fits(q) && longitudinal(q.position)>=rear+cfg.obstacle_margin_m+cfg.pose_margin_m;
+                    });
+                    if(handoff==candidate.path.end()) {candidate.path.clear();candidate.reason="no_gate_handoff";}
+                    else {
+                        const auto projection=rejoin_road->project(handoff->position,handoff->yaw,road_progress,
+                            cfg.projection_back_m,candidate.length+cfg.projection_forward_m);
+                        const auto rejoin=projection.valid
+                            ? plan_rejoin(*handoff,*rejoin_road,projection.s,g,model,cfg,speed,speed,space,bounds,now)
+                            : RejoinPlan{};
+                        if(!rejoin.selected.valid()) {
+                            candidate.path.clear();candidate.reason="no_rejoin_after_gate";
+                            for(const auto& outcome:rejoin.outcomes)
+                                result.outcomes["rejoin_"+outcome.first]+=outcome.second;
+                        } else return_cost=.35*rejoin.selected.length+.03*rejoin.selected.bending;
+                    }
+                }
                 ++result.outcomes[candidate.reason];
                 if(!candidate.valid()) continue;
                 candidate.bending=bending;
                 const double score=candidate.length+.08*bending+.5*distance(target.position,goal)-
-                                   .15*std::min(candidate.clearance,1.0);
+                                   .15*std::min(candidate.clearance,1.0)+return_cost;
                 if(score<best) {best=score;result.selected=std::move(candidate);}
             }
         }

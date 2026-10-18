@@ -35,3 +35,20 @@ test checks that no recorded return is dropped by the navigation filters.
 This file is only an offline regression input, never a mission obstacle map.
 The driver's raw export omits zero-range nodes, so it still cannot separate
 sensor no-returns from acquisition loss at the wire level.
+
+`mixed_20261018_094252_rejoin_scan.txt` contains the final filtered scan (238
+returns) of `thesis_hardware_mixed_mixed_hardware_road_gate_gui_snapshot_20261018_094252_934`.
+Header: `pose_x pose_y yaw road_progress point_count`; rows: world angle and
+measured range. Recorded pose: (0.866818, 0.362334, 0.534017 rad). The operator
+explicitly pushed the robot/moved obstacles after the first snapshot, so this
+is a regression of planning from that pose, not an autonomous mission success.
+Both forward rejoin candidates exceed the car's unchanged curvature limit.
+The test checks stable failure during the retry interval, continued retries,
+actual sensor-loss priority, and recovery after injecting feasible geometry.
+
+With gate-return checking enabled, the older 16:38 fixture in obstacles-only
+mode passes initial footprint coverage but rejects all nine gate connections:
+none has a verified return to its 1.30 m road. The previous expectation of
+GATE_FOLLOWING was therefore replaced with an explicit geometric-dead-end
+rejection. Separate larger mathematical fixtures still require a feasible
+gate/return, stable MPC tracking and two successive bypass/rejoin cycles.
