@@ -13,9 +13,16 @@ enum class State { RoadFollowing, GateAcquisition, GateFollowing, RoadRejoining,
 const char* state_name(State state);
 enum class VisibilityPolicy { Strict, ObstaclesOnly };
 const char* visibility_policy_name(VisibilityPolicy policy);
+enum class PlanningPolicy { Strict, ExperimentalRelaxed };
+const char* planning_policy_name(PlanningPolicy policy);
 
 struct Config {
     bool enabled = false;
+    PlanningPolicy planning_policy = PlanningPolicy::Strict;
+    // Zero inherits the hardware profile. Never overrides the steering limit.
+    double operational_curvature_limit = 0.0;
+    double local_horizon_m = 0.75;
+    double experimental_speed_mps = 0.04;
     // In this frame the captured robot pose defines (0,0,0), not an arena corner.
     bool start_reference_frame = false;
     Vec2 arena_size_m{2.00, 1.70};
@@ -72,6 +79,8 @@ struct PathResult {
     std::string reason;
     double length = 0.0, bending = 0.0, clearance = 0.0;
     double peak_curvature = 0.0;
+    bool crosses_gate = false, full_rejoin = false;
+    std::string strict_blocker, selection_reason;
     // First failing point for hardware diagnostics, never a navigation target.
     Vec2 witness{};
     bool has_witness = false;
@@ -82,6 +91,18 @@ struct PathResult {
 PathResult connect(const ReferenceWaypoint& from, const ReferenceWaypoint& to,
                    const VehicleGeometry& geometry, VehicleModelKind model,
                    const Config& config, double speed, double current_speed);
+
+double mechanical_curvature_limit(const VehicleGeometry&, VehicleModelKind);
+double execution_curvature_limit(const VehicleGeometry&, VehicleModelKind, const Config&);
+// A deliberately different type: diagnostic geometry cannot be valid() or
+// passed as a PathResult to the hardware selection/commit path.
+struct CandidateAnalysis {
+    std::vector<ReferenceWaypoint> geometry;
+    double peak_curvature = 0, operational_limit = 0, mechanical_limit = 0;
+    std::string execution_rejection;
+};
+CandidateAnalysis unconstrained_candidate_analysis(const ReferenceWaypoint&, const ReferenceWaypoint&,
+    const VehicleGeometry&, VehicleModelKind, const Config&, double speed, double current_speed);
 
 struct Ray { double angle = 0.0, range = 0.0; bool occupied = true; };
 struct Scan {
@@ -115,6 +136,7 @@ private:
 struct GatePlan {
     PathResult selected;
     int candidates = 0;
+    int kinematic = 0, collision_free = 0, crossing = 0, complete_rejoin = 0, relaxed_accepted = 0;
     std::map<std::string, int> outcomes;
 };
 
@@ -127,6 +149,7 @@ struct RejoinPlan {
     double target_s = -1.0;
     std::vector<RejoinCandidate> candidates;
     std::map<std::string, int> outcomes;
+    int kinematic = 0, collision_free = 0, complete_rejoin = 0, relaxed_accepted = 0;
 };
 
 RejoinPlan plan_rejoin(const ReferenceWaypoint& current, const ReferenceRoad& road,
@@ -147,7 +170,7 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
 
 bool gate_cleared(const Vec2& position, double yaw, const Vec2& entry,
                   const Vec2& center, double normal_yaw, double width,
-                  const VehicleGeometry& geometry, double margin);
+                  const VehicleGeometry& geometry, double margin, bool relaxed = false);
 bool rejoin_complete(const Projection& p, double entry_s, double target_s,
                      bool next_road_clear, const Config& config);
 

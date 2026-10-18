@@ -288,6 +288,11 @@ add_executable(thesis_robot_runner
 )
 
 if(BUILD_TESTING)
+  add_executable(thesis_hardware_mixed_relaxed_test
+    src/tests/integration/hardware_mixed_relaxed_test.cpp)
+  target_link_libraries(thesis_hardware_mixed_relaxed_test PRIVATE thesis_hardware_planner)
+  add_test(NAME thesis_hardware_mixed_relaxed_offline COMMAND thesis_hardware_mixed_relaxed_test)
+  set_tests_properties(thesis_hardware_mixed_relaxed_offline PROPERTIES TIMEOUT 60 LABELS "hardware;offline")
   add_executable(thesis_hardware_mixed_navigation_test
     src/tests/integration/hardware_mixed_navigation_test.cpp)
   target_link_libraries(thesis_hardware_mixed_navigation_test PRIVATE thesis_hardware_planner)

@@ -33,6 +33,13 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
                    !std::isfinite(cfg.arena_size_m.x) || !std::isfinite(cfg.arena_size_m.y) ||
                    cfg.arena_size_m.x<=0 || cfg.arena_size_m.y<=0)
                     throw std::invalid_argument("invalid mixed arena dimensions");
+            } else if(key=="planning_policy") {
+                std::string policy;
+                if(!(in>>policy)) throw std::invalid_argument("missing mixed planning policy");
+                if(policy=="STRICT") cfg.planning_policy=PlanningPolicy::Strict;
+                else if(policy=="EXPERIMENTAL_RELAXED" || policy=="MIXED_EXPERIMENTAL_RELAXED")
+                    cfg.planning_policy=PlanningPolicy::ExperimentalRelaxed;
+                else throw std::invalid_argument("planning_policy must be STRICT or EXPERIMENTAL_RELAXED; unconstrained_candidate_analysis is offline only");
             } else if(key=="visibility_policy") {
                 std::string policy;
                 if(!(in>>policy))throw std::invalid_argument("missing mixed visibility policy");
@@ -86,6 +93,9 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
                 MIXED_PARAMETER(gate_reject_radius_m);
                 MIXED_PARAMETER(gate_heading_search_rad);
                 MIXED_PARAMETER(gate_exit_search_m);
+                MIXED_PARAMETER(operational_curvature_limit);
+                MIXED_PARAMETER(local_horizon_m);
+                MIXED_PARAMETER(experimental_speed_mps);
 #undef MIXED_PARAMETER
                 if(!field || !(in>>*field) || !std::isfinite(*field) || *field<=0)
                     throw std::invalid_argument("invalid mixed parameter: "+key);

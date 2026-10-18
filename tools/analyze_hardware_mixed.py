@@ -48,7 +48,7 @@ def export_geometry(log_path, output_dir):
     streams = {}
     try:
         for kind, fields in (("mixed_road", ["x", "y", "yaw", "curvature"]),
-                             ("mixed_reference", ["plan", "x", "y", "yaw"])):
+                             ("mixed_reference", ["plan", "x", "y", "yaw", "curvature", "speed"])):
             stream = (output_dir / (kind + ".csv")).open("x", newline="")
             writer = csv.DictWriter(stream, fields)
             writer.writeheader()
@@ -107,6 +107,34 @@ def summarize_raw_scan(path, sector):
     }
 
 
+def summarize_searches(log_path):
+    """Counts evaluations, not independent physical trajectories; rejoin is nested."""
+    totals = collections.defaultdict(collections.Counter)
+    selections = collections.Counter()
+    policy = "STRICT"
+    fields = ("candidates", "kinematic", "collision_free", "crossing", "full_rejoin", "relaxed_accepted", "accepted")
+    with log_path.open() as stream:
+        for line in stream:
+            parts = line.split()
+            if not parts:
+                continue
+            values = dict(p.split("=", 1) for p in parts if "=" in p)
+            policy = values.get("mixed_planning_policy", values.get("policy", policy))
+            if parts[0] in ("mixed_gate_search", "mixed_rejoin_search", "mixed_observation_search"):
+                row = totals[policy + ":" + parts[0]]
+                row["searches"] += 1
+                for field in fields:
+                    if field in values:
+                        row[field] += int(values[field])
+                for key, value in values.items():
+                    if key.startswith("rejoin_"):
+                        row["nested:" + key] += int(value)
+            if parts[0] == "mixed_candidate" and "selection" in values:
+                selections[values["selection"]] += 1
+    return {"evaluations_by_policy_and_kind": dict(totals), "gate_selection_reasons": dict(selections),
+            "counting": "Repeated evaluations; nested rejoin outcomes must not be added to gate candidates."}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", type=pathlib.Path, nargs="?")
@@ -124,7 +152,10 @@ def main():
         parser.error("provide a telemetry CSV, or --raw-start-scan with --raw-sector-deg")
     if bool(args.log) != bool(args.geometry_dir):
         parser.error("--log and --geometry-dir must be specified together")
-    print(json.dumps(summarize(args.csv), indent=2))
+    summary = summarize(args.csv)
+    if args.log:
+        summary["planner_search"] = summarize_searches(args.log)
+    print(json.dumps(summary, indent=2))
     if args.log:
         export_geometry(args.log, args.geometry_dir)
 

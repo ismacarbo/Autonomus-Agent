@@ -43,6 +43,11 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
         !config_.planner_safety_stop_enabled || !std::isfinite(config_.cruise_speed_limit) ||
         config_.cruise_speed_limit<=0 || config_.cruise_speed_limit>0.12 ||
         !std::isfinite(config_.nominal_dt) || config_.nominal_dt<0.02 || config_.nominal_dt>0.15 ||
+        !std::isfinite(cfg.operational_curvature_limit) || cfg.operational_curvature_limit<0 ||
+        !std::isfinite(cfg.local_horizon_m) || cfg.local_horizon_m<.15 || cfg.local_horizon_m>1.50 ||
+        !std::isfinite(cfg.experimental_speed_mps) || cfg.experimental_speed_mps<=0 || cfg.experimental_speed_mps>.06 ||
+        (cfg.planning_policy!=hardware_mixed::PlanningPolicy::Strict &&
+         cfg.planning_policy!=hardware_mixed::PlanningPolicy::ExperimentalRelaxed) ||
         cfg.sample_spacing_m<0.005 || cfg.sample_spacing_m>0.03 || cfg.braking_decel_mps2<=0 ||
         cfg.road_preview_m<0.20 || cfg.rejoin_lookaheads_m.empty() || cfg.completion_frames<1 ||
         cfg.obstacle_margin_m<0.02 || cfg.pose_margin_m<0.01 || cfg.replan_interval_s<0.1 ||
@@ -93,6 +98,10 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
     mixed_pose_fault_=false; mixed_last_gate_id_.clear();
     mixed_state_=mixed_resume_state_=hardware_mixed::State::RoadFollowing;
     mixed_reason_="initialized_at_mission_start"; mixed_plan_failure_.clear();
+    std::cerr<<"mixed_planning_policy="<<hardware_mixed::planning_policy_name(cfg.planning_policy)
+             <<" operational_curvature="<<geometry_.max_curvature
+             <<" mechanical_curvature="<<hardware_mixed::mechanical_curvature_limit(geometry_,config_.vehicle_model)
+             <<" speed_limit="<<config_.cruise_speed_limit<<" local_horizon="<<cfg.local_horizon_m<<'\n';
     std::cerr<<"mixed_visibility_policy="<<hardware_mixed::visibility_policy_name(cfg.visibility_policy)
              <<" full_coverage_required="<<(cfg.visibility_policy==hardware_mixed::VisibilityPolicy::Strict)
              <<" measured_collision_checks=1\n";
@@ -136,6 +145,7 @@ hardware_mixed::Scan HardwarePlannerRunner::mixed_observed_scan(const RealRobotO
 void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& obs, double dt) {
     using hardware_mixed::State;
     const auto& cfg=config_.mixed_dynamic;
+    const bool relaxed=cfg.planning_policy==hardware_mixed::PlanningPolicy::ExperimentalRelaxed;
     distance_to_goal_=distance(estimate_.position,world_.goal());
     const bool fresh_scan=obs.have_lidar_scan && !obs.lidar_scan_reused &&
         obs.lidar_scan_end_timestamp_s>mixed_last_scan_timestamp_;
@@ -189,7 +199,9 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
     const auto on_road=mixed_road_.sample(projected.s);
     const double tangential_residual=std::abs(std::cos(on_road.yaw)*(estimate_.position.x-on_road.position.x)+
         std::sin(on_road.yaw)*(estimate_.position.y-on_road.position.y));
-    if (tangential_residual>cfg.max_pose_jump_m || projected.s-mixed_projection_.s>displacement+0.10) {
+    const bool endpoint_projection=projected.s<1e-4 || projected.s>mixed_road_.length()-1e-4;
+    if ((tangential_residual>cfg.max_pose_jump_m && !(relaxed && endpoint_projection)) ||
+        projected.s-mixed_projection_.s>displacement+0.10) {
         mixed_pose_fault_=true;
         mixed_stop("reference_progress_inconsistent_reset_required");return;
     }
@@ -233,6 +245,16 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         diagnostics_.planner_has_reference=path.size()>=2;
         diagnostics_.reference_invalidation_reason.clear();
         planner_speed_ref_=speed;
+        if(relaxed && state!=State::RoadFollowing && path.size()>=2) {
+            double remaining=0;
+            for(size_t i=path.size();i-->0;) {
+                if(i+1<path.size())remaining+=distance(path[i].position,path[i+1].position);
+                const double at=cfg.braking_decel_mps2*cfg.reaction_time_s;
+                const double stoppable_speed=std::sqrt(at*at+2*cfg.braking_decel_mps2*remaining)-at;
+                reference_trajectory_[i].speed=std::min(speed,stoppable_speed);
+            }
+            planner_speed_ref_=reference_trajectory_.front().speed;
+        }
         planner_accel_ref_=clamp_value((speed-estimate_.speed)/std::max(dt,0.01),-cfg.braking_decel_mps2,cfg.braking_decel_mps2);
         mixed_set_state(state,reason);
     };
@@ -244,26 +266,38 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         reference_trajectory_.clear(); planned_trajectory_.clear();
         structured_anchor_hint_index_=0;
     };
+    int cycle_generated=0,cycle_kinematic=0,cycle_clear=0,cycle_crossing=0,cycle_rejoin=0,cycle_accepted=0;
     const auto gate_plan=[&](const Vec2& center,double heading,double width,
                              bool crossed,const std::string& id) {
         auto result=hardware_mixed::plan_gate(current,center,heading,width,crossed,world_.goal(),
             geometry_,config_.vehicle_model,cfg,speed,estimate_.speed,mixed_space_,world_.bounds(),sim_time_,
             &mixed_road_,mixed_projection_.s);
         mixed_candidates_+=result.candidates;
+        cycle_generated+=result.candidates;cycle_kinematic+=result.kinematic;cycle_clear+=result.collision_free;
+        cycle_crossing+=result.crossing;cycle_rejoin+=result.complete_rejoin;cycle_accepted+=result.relaxed_accepted;
         std::cerr<<"mixed_gate_search id="<<id<<" width="<<width<<" candidates="<<result.candidates
+                 <<" policy="<<hardware_mixed::planning_policy_name(cfg.planning_policy)
+                 <<" time="<<sim_time_<<" state="<<hardware_mixed::state_name(mixed_state_)
+                 <<" kinematic="<<result.kinematic<<" collision_free="<<result.collision_free
+                 <<" crossing="<<result.crossing<<" full_rejoin="<<result.complete_rejoin
+                 <<" relaxed_accepted="<<result.relaxed_accepted
                  <<" visibility_policy="<<hardware_mixed::visibility_policy_name(cfg.visibility_policy);
         for(const auto& outcome:result.outcomes) std::cerr<<' '<<outcome.first<<'='<<outcome.second;
         std::cerr<<'\n';
         if(result.selected.valid()) {
             const auto& end=result.selected.path.back();
             std::cerr<<"mixed_candidate kind=gate id="<<id<<" result=accepted x="<<end.position.x
-                     <<" y="<<end.position.y<<" yaw="<<end.yaw<<" gate_normal="<<heading<<'\n';
+                     <<" y="<<end.position.y<<" yaw="<<end.yaw<<" gate_normal="<<heading
+                     <<" peak_curvature="<<result.selected.peak_curvature
+                     <<" strict_blocker="<<(result.selected.strict_blocker.empty()?"none":result.selected.strict_blocker)
+                     <<" selection="<<result.selected.selection_reason<<'\n';
         }
         return result.selected;
     };
 
     if (phase==State::RoadFollowing) {
-        if (std::abs(mixed_projection_.n)>cfg.lateral_tolerance_m*2 ||
+        if ((relaxed && mixed_projection_.distance>cfg.lateral_tolerance_m*2) ||
+            std::abs(mixed_projection_.n)>cfg.lateral_tolerance_m*2 ||
             std::abs(mixed_projection_.heading_error)>cfg.heading_tolerance_rad*2) {
             mixed_entry_s_=mixed_projection_.s; mixed_path_.clear();
             mixed_plan_failure_.clear();mixed_last_plan_s_=-1;
@@ -304,11 +338,26 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         reference_trajectory_.clear(); planned_trajectory_.clear();
         if (!fresh_scan || std::abs(estimate_.speed)>0.025 || std::abs(estimate_.yaw_rate)>0.05) return;
         rebuild_dynamic_gap_gates(obs.lidar_scan);
-        if(gate_specs_.empty()) {mixed_candidates_=0;mixed_stop("waiting_for_confirmed_gate");return;}
-        if(mixed_last_plan_s_>=0 && sim_time_-mixed_last_plan_s_<cfg.replan_interval_s) return;
+        if(gate_specs_.empty()) {
+            mixed_candidates_=0;
+            if(relaxed) {
+                const auto local=hardware_mixed::plan_rejoin(current,mixed_road_,mixed_projection_.s,geometry_,
+                    config_.vehicle_model,cfg,speed,estimate_.speed,mixed_space_,world_.bounds(),sim_time_);
+                std::cerr<<"mixed_observation_search candidates="<<local.candidates.size()
+                         <<" kinematic="<<local.kinematic<<" collision_free="<<local.collision_free
+                         <<" relaxed_accepted="<<local.relaxed_accepted<<'\n';
+                if(local.selected.valid()) {
+                    mixed_path_=local.selected.path;mixed_target_s_=local.target_s;
+                    mixed_entry_s_=mixed_projection_.s;mixed_last_plan_s_=sim_time_;++mixed_replans_;
+                    commit(mixed_path_,State::RoadRejoining,"safe_observation_without_gate");return;
+                }
+            }
+            mixed_stop("waiting_for_confirmed_gate");return;
+        }
+        if(!relaxed && mixed_last_plan_s_>=0 && sim_time_-mixed_last_plan_s_<cfg.replan_interval_s) return;
         mixed_last_plan_s_=sim_time_;++mixed_replans_;mixed_candidates_=0;
         int preferred=-1;
-        if (!gates_.empty()) {
+        if (!relaxed && !gates_.empty()) {
             // Existing primitive/salience ranking is a preference only. A
             // geometric or perception rejection can never be overridden.
             cl_.x_start=estimate_.position.x;cl_.y_start=estimate_.position.y;cl_.PSI_start=estimate_.yaw;
@@ -326,7 +375,7 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
             bool passed=false;
             for(const auto& p:passed_unstructured_gap_positions_)
                 if(distance(p,gate.anchor_position)<cfg.gate_reject_radius_m) passed=true;
-            if(passed || !projection.valid || projection.s<mixed_projection_.s+0.05) continue;
+            if(!projection.valid || (!relaxed && (passed || projection.s<mixed_projection_.s+0.05))) continue;
             double width=0;
             for(const auto& track:dynamic_gap_tracks_)
                 if(gate.name=="gap_track_"+std::to_string(track.id)) width=track.gap_width;
@@ -334,9 +383,13 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
             if(!path.valid()) continue;
             const Vec2 end=path.path.back().position;
             const double score=path.length+0.08*path.bending+0.5*distance(end,world_.goal())-
-                0.35*(projection.s-mixed_projection_.s)-0.15*std::min(path.clearance,1.0)-(static_cast<int>(i)==preferred?0.10:0);
+                0.35*(projection.s-mixed_projection_.s)-0.15*std::min(path.clearance,1.0)-(static_cast<int>(i)==preferred?0.10:0)+(relaxed && passed?.25:0);
             if(score<best) {best=score;selected=static_cast<int>(i);target=end;best_path=std::move(path.path);}
         }
+        std::cerr<<"mixed_search_cycle time="<<sim_time_<<" policy="<<hardware_mixed::planning_policy_name(cfg.planning_policy)
+                 <<" state=GATE_ACQUISITION candidates="<<cycle_generated<<" kinematic="<<cycle_kinematic
+                 <<" collision_free="<<cycle_clear<<" crossing="<<cycle_crossing<<" full_rejoin="<<cycle_rejoin
+                 <<" relaxed_accepted="<<cycle_accepted<<" selected="<<selected<<'\n';
         if(selected<0) {mixed_stop("no_verified_gate");return;}
         const auto spec=gate_specs_[static_cast<size_t>(selected)];
         set_locked_gap_goal(target,spec.name,spec.anchor_position);
@@ -348,7 +401,7 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         publish_locked_gap_goal();
         mixed_path_=std::move(best_path);
         for(const auto& q:mixed_path_)
-            std::cerr<<"mixed_reference plan="<<mixed_replans_<<" x="<<q.position.x<<" y="<<q.position.y<<" yaw="<<q.yaw<<'\n';
+            std::cerr<<"mixed_reference plan="<<mixed_replans_<<" x="<<q.position.x<<" y="<<q.position.y<<" yaw="<<q.yaw<<" curvature="<<q.curvature<<" speed="<<q.speed<<'\n';
         structured_anchor_hint_index_=0;
         commit(mixed_path_,State::GateFollowing,"measured_gate_locked");
         return;
@@ -367,12 +420,12 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
             const double yaw=mixed_gate_previous_pose_.yaw+fraction*wrap_angle(estimate_.yaw-mixed_gate_previous_pose_.yaw);
             const double a=wrap_angle(yaw-heading);
             const double side=0.5*(geometry_.body_width*std::abs(std::cos(a))+geometry_.body_length*std::abs(std::sin(a)));
-            mixed_gate_plane_crossed_=std::cos(a)>0.7 &&
+            mixed_gate_plane_crossed_=std::cos(a)>(relaxed?0.:.7) &&
                 std::abs(locked_gap_lateral_offset(crossing))+side+cfg.obstacle_margin_m+cfg.pose_margin_m<=0.5*locked_gap_width_m_;
         }
         mixed_gate_previous_pose_=current;
         if(fresh_scan && mixed_gate_plane_crossed_ && hardware_mixed::gate_cleared(estimate_.position,estimate_.yaw,locked_gap_start_position_,
-            locked_gap_crossing_point_,heading,locked_gap_width_m_,geometry_,cfg.obstacle_margin_m+cfg.pose_margin_m)) {
+            locked_gap_crossing_point_,heading,locked_gap_width_m_,geometry_,cfg.obstacle_margin_m+cfg.pose_margin_m,relaxed)) {
             passed_unstructured_gap_positions_.push_back(locked_gap_crossing_point_);
             ++passed_unstructured_gap_count_;
             clear_locked_gap_goal(); gates_.clear();gate_specs_.clear();dynamic_gap_tracks_.clear();
@@ -382,7 +435,11 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
             mixed_set_state(State::RoadRejoining,"gate_rear_cleared");
             reference_trajectory_.clear(); planned_trajectory_.clear();return;
         }
-        if(sim_time_-locked_gap_set_time_s_>cfg.gate_timeout_s) {mixed_stop("gate_crossing_timeout_operator_reset");return;}
+        if(sim_time_-locked_gap_set_time_s_>cfg.gate_timeout_s) {
+            if(relaxed)begin_acquisition("gate_timeout_reacquire");
+            else mixed_stop("gate_crossing_timeout_operator_reset");
+            return;
+        }
     }
 
     // Keep the selected local solution while its remaining swept footprint is
@@ -413,7 +470,7 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         if(checked.reason=="occupied_footprint") {begin_acquisition("new_obstacle_on_local_reference");return;}
         mixed_path_.clear();reference_trajectory_.clear();planned_trajectory_.clear();
     }
-    if(!fresh_scan || (mixed_last_plan_s_>=0 && sim_time_-mixed_last_plan_s_<cfg.replan_interval_s)) {
+    if(!fresh_scan || (!relaxed && mixed_last_plan_s_>=0 && sim_time_-mixed_last_plan_s_<cfg.replan_interval_s)) {
         // Scheduling a retry does not invalidate its last substantive failure.
         // In particular the 0.60 s cooldown is not a missing-LiDAR condition.
         mixed_stop(!mixed_plan_failure_.empty()?mixed_plan_failure_:
@@ -435,19 +492,26 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         *locked_gap_goal_=mixed_path_.back().position;
         publish_locked_gap_goal();structured_anchor_hint_index_=0;
         for(const auto& q:mixed_path_)
-            std::cerr<<"mixed_reference plan="<<mixed_replans_<<" x="<<q.position.x<<" y="<<q.position.y<<" yaw="<<q.yaw<<'\n';
+            std::cerr<<"mixed_reference plan="<<mixed_replans_<<" x="<<q.position.x<<" y="<<q.position.y<<" yaw="<<q.yaw<<" curvature="<<q.curvature<<" speed="<<q.speed<<'\n';
         commit(mixed_path_,State::GateFollowing,"new_verified_gate_reference");return;
     }
     auto result=hardware_mixed::plan_rejoin(current,mixed_road_,mixed_projection_.s,geometry_,
         config_.vehicle_model,cfg,speed,estimate_.speed,mixed_space_,world_.bounds(),sim_time_);
     mixed_candidates_=static_cast<int>(result.candidates.size());
-    for(const auto& candidate:result.candidates) {
+    if(!relaxed)for(const auto& candidate:result.candidates) {
         const auto target=mixed_road_.sample(candidate.s);
         std::cerr<<"mixed_candidate kind=rejoin s_target="<<candidate.s
                  <<" x="<<target.position.x<<" y="<<target.position.y<<" result="<<candidate.reason
                  <<" peak_curvature="<<candidate.peak_curvature<<" limit="<<geometry_.max_curvature<<'\n';
     }
     std::cerr<<"mixed_rejoin_search time="<<sim_time_<<" candidates="<<mixed_candidates_
+             <<" policy="<<hardware_mixed::planning_policy_name(cfg.planning_policy)
+             <<" state="<<hardware_mixed::state_name(mixed_state_)
+             <<" kinematic="<<result.kinematic<<" collision_free="<<result.collision_free
+             <<" full_rejoin="<<result.complete_rejoin<<" relaxed_accepted="<<result.relaxed_accepted
+             <<" peak_curvature="<<result.selected.peak_curvature
+             <<" strict_blocker="<<(result.selected.strict_blocker.empty()?"none":result.selected.strict_blocker)
+             <<" selection="<<result.selected.selection_reason
              <<" remaining_road="<<mixed_road_.length()-mixed_projection_.s
              <<" n="<<mixed_projection_.n<<" heading_error="<<mixed_projection_.heading_error;
     for(const auto& outcome:result.outcomes)std::cerr<<' '<<outcome.first<<'='<<outcome.second;
@@ -462,9 +526,12 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
                 ?"rejoin_kinematics_unreachable":"no_verified_rejoin";
         mixed_stop(mixed_plan_failure_);return;
     }
+    const auto& selected_end=result.selected.path.back();
+    std::cerr<<"mixed_selected kind=rejoin x="<<selected_end.position.x<<" y="<<selected_end.position.y
+             <<" yaw="<<selected_end.yaw<<" s_target="<<result.target_s<<'\n';
     mixed_target_s_=result.target_s; mixed_path_=std::move(result.selected.path); structured_anchor_hint_index_=0;
     for(const auto& q:mixed_path_)
-        std::cerr<<"mixed_reference plan="<<mixed_replans_<<" x="<<q.position.x<<" y="<<q.position.y<<" yaw="<<q.yaw<<'\n';
+        std::cerr<<"mixed_reference plan="<<mixed_replans_<<" x="<<q.position.x<<" y="<<q.position.y<<" yaw="<<q.yaw<<" curvature="<<q.curvature<<" speed="<<q.speed<<'\n';
     commit(mixed_path_,phase,"new_verified_local_reference");
 }
 

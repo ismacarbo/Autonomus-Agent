@@ -28,6 +28,7 @@ documentation/*
 !documentation/Hardware_Straight_Line_Calibration.md
 !documentation/Hardware_Drivetrain_Diagnostics.md
 !documentation/Hardware_Mixed_Goal_Directed_Dynamic.md
+!documentation/Hardware_Mixed_Experimental_Relaxed.md
 !documentation/Hardware_Unstructured_120cm_Status_20260726.md
 !documentation/Hardware_Unstructured_Gates_SLAM_Status_20260726.md
 !documentation/Mappa_Pipeline_Gate_Clotoide_PWM_20260728.md

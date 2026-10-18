@@ -1,5 +1,7 @@
 # MixedGoalDirectedDynamic — hardware reale
 
+**Aggiornamento 18 ottobre 2026:** è disponibile la modalità hardware esplicita [EXPERIMENTAL_RELAXED](Hardware_Mixed_Experimental_Relaxed.md), con segmenti arrestabili e rejoin progressivo. Le condizioni conservative descritte sotto restano il riferimento `STRICT`; `config/mixed_goal_directed_dynamic.conf` lo seleziona esplicitamente.
+
 Implementazione del 17 ottobre 2026. Nessuna prova fisica è stata eseguita durante lo sviluppo. Il preset si seleziona dal launcher `thesis_robot_runner`, con `--scenario mixed --mixed-map goal_directed_dynamic`. L'alias `MixedGoalDirectedDynamic` è equivalente. `--simulate` viene rifiutato per questo preset.
 
 ## Aggiornamento del 18 ottobre: copertura LiDAR opzionale

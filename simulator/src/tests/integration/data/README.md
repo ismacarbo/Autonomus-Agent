@@ -52,3 +52,20 @@ none has a verified return to its 1.30 m road. The previous expectation of
 GATE_FOLLOWING was therefore replaced with an explicit geometric-dead-end
 rejection. Separate larger mathematical fixtures still require a feasible
 gate/return, stable MPC tracking and two successive bypass/rejoin cycles.
+
+## Mixed 2026-10-18 10:18:39 — relaxed planning comparison
+
+`mixed_20261018_101839_observed_scans.txt` contains the last five scans (1,286
+reconstructed endpoints, t=54.204593–54.799871 s) from
+`reports/thesis_hardware_mixed_mixed_hardware_road_gate_gui_snapshot_20261018_101839_285_lidar_reconstruction.csv`.
+Source SHA-256: `122ea0d7855a8bdef3119d4fe571741ce2edbb478b624682ca7abb91d7f3ab93`.
+Fixture SHA-256: `bfcf5e1054c92b55ab4c43f8dc709a7613371dceb74af02f3b5c47d3ac0e0294`.
+
+Each scan header is `timestamp pose_x pose_y pose_yaw origin_x origin_y count`,
+followed by `count` rows of `world_angle_rad range_m`. Regenerate with
+`python3 tools/extract_mixed_relaxed_fixture.py`. No missing rays are fabricated.
+Raw quality and scan durations are unavailable in this export. The comparison
+uses the same reconstructed observations and gate geometries for both policies;
+it does not replay every search in the original terminal log. Collision tests
+use zero motion inflation for this stationary snapshot; hardware retains live
+motion uncertainty. See `documentation/Hardware_Mixed_Experimental_Relaxed.md`.

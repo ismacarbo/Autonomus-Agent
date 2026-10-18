@@ -82,6 +82,10 @@ int main(int argc, char** argv) {
                 if(!options.check_mixed_scan_path.empty())
                     return check_mixed_start_scan(options.check_mixed_scan_path,world,check,std::cout);
                 std::cout << "MixedGoalDirectedDynamic configuration valid; hardware not connected\n";
+                std::cout << "mixed_planning_policy=" << thesis_sim::hardware_mixed::planning_policy_name(check.config().mixed_dynamic.planning_policy)
+                          << "\nmixed_effective_speed=" << check.config().cruise_speed_limit
+                          << "\nmixed_mechanical_curvature=" << thesis_sim::hardware_mixed::mechanical_curvature_limit(check.geometry(),check.config().vehicle_model)
+                          << "\nmixed_local_horizon=" << check.config().mixed_dynamic.local_horizon_m << '\n';
                 std::cout << "mixed_visibility_policy="
                           << thesis_sim::hardware_mixed::visibility_policy_name(planner_config.mixed_dynamic.visibility_policy) << '\n';
                 const auto& bounds = world.bounds();

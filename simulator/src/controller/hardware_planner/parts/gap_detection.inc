@@ -4,6 +4,8 @@ namespace thesis_sim {
 
 void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA1::ScanPoint>& scan) {
     use_dynamic_gap_gates_ = dynamic_gap_mode_enabled();
+    const bool relaxed_mixed=config_.mixed_dynamic.enabled &&
+        config_.mixed_dynamic.planning_policy==hardware_mixed::PlanningPolicy::ExperimentalRelaxed;
     diagnostics_.dynamic_gap_gates = use_dynamic_gap_gates_;
     diagnostics_.candidate_gates = 0;
     diagnostics_.chosen_gate_distance = std::numeric_limits<double>::infinity();
@@ -278,7 +280,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
 
-    const double min_target_distance = micro_hardware_lab
+    const double min_target_distance = relaxed_mixed ? config_.localization.min_valid_range_m : micro_hardware_lab
         ? clamp_value(
               0.26 * current_world_span,
               config_.localization.min_valid_range_m + 0.005,
@@ -289,7 +291,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                   config_.localization.min_valid_range_m + 0.08,
                   std::max(geometry_.cg_to_front + 0.04, 0.20)),
               planning_range * 0.68);
-    const double max_target_distance = micro_hardware_lab
+    const double max_target_distance = relaxed_mixed ? planning_range : micro_hardware_lab
         ? clamp_value(
               0.62 * current_world_span,
               min_target_distance + 0.06,
@@ -608,7 +610,9 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
                 1.0 * kPi / 180.0);
         }
     }
-    const double required_gap_width = micro_hardware_lab
+    const double required_gap_width = relaxed_mixed
+        ? geometry_.body_width+2*(config_.mixed_dynamic.obstacle_margin_m+config_.mixed_dynamic.pose_margin_m+1.5*config_.mixed_dynamic.sample_spacing_m)
+        : micro_hardware_lab
         ? clamp_value(
               0.26 * current_world_span,
               0.105,
@@ -668,7 +672,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             return;
         }
 
-        for (const Vec2& passed_target : passed_unstructured_gap_positions_) {
+        if(!relaxed_mixed)for (const Vec2& passed_target : passed_unstructured_gap_positions_) {
             if (distance(passed_target, target) <= passed_gap_reject_radius) {
                 return;
             }
@@ -696,28 +700,28 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             centerline_clearance <
                 std::max(config_.localization.obstacle_stop_distance_m + 0.10,
                          config_.localization.min_valid_range_m + 0.14);
-        if (object_before_target) {
+        if (!relaxed_mixed && object_before_target) {
             return;
         }
 
-        if (!grid_segment_is_clear(local_grid, lidar_origin, target)) {
+        if (!relaxed_mixed && !grid_segment_is_clear(local_grid, lidar_origin, target)) {
             return;
         }
 
-        if (!perception_map_supports_target(lidar_origin, target)) {
+        if (!relaxed_mixed && !perception_map_supports_target(lidar_origin, target)) {
             return;
         }
 
-        if (!scan_supports_target(target, scan)) {
+        if (!relaxed_mixed && !scan_supports_target(target, scan)) {
             return;
         }
 
         int cell_x = 0;
         int cell_y = 0;
-        if (!local_grid.world_to_cell(target, &cell_x, &cell_y)) {
+        if (!relaxed_mixed && !local_grid.world_to_cell(target, &cell_x, &cell_y)) {
             return;
         }
-        if (local_grid.free_mask[static_cast<size_t>(local_grid.index(cell_x, cell_y))] == 0U) {
+        if (!relaxed_mixed && local_grid.free_mask[static_cast<size_t>(local_grid.index(cell_x, cell_y))] == 0U) {
             return;
         }
 
@@ -1594,7 +1598,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
             distance(candidate.target, persisted_spec->position) <= 0.18 &&
             track->score >= track_hold_score;
         candidate.temporally_confirmed =
-            (track->hits >= track_min_hits && track->score >= track_confirm_score) ||
+            (track->hits >= (relaxed_mixed?1:track_min_hits) && (relaxed_mixed || track->score >= track_confirm_score)) ||
             held_by_previous_gate;
         candidate.score += 0.35 * track->score + 0.08 * static_cast<double>(track->hits);
     }

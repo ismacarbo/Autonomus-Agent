@@ -198,6 +198,11 @@ void HardwarePlannerRunner::apply_config(HardwarePlannerConfig config) {
 
 void HardwarePlannerRunner::reset() {
     geometry_ = make_vehicle_geometry(config_);
+    if(config_.mixed_dynamic.enabled) {
+        if(config_.mixed_dynamic.planning_policy==hardware_mixed::PlanningPolicy::ExperimentalRelaxed)
+            config_.cruise_speed_limit=std::min(config_.cruise_speed_limit,config_.mixed_dynamic.experimental_speed_mps);
+        geometry_.max_curvature=hardware_mixed::execution_curvature_limit(geometry_,config_.vehicle_model,config_.mixed_dynamic);
+    }
     const bool tiny_indoor_loop = tiny_indoor_structured_loop(world_);
     const bool open_ended_unstructured_car =
         open_ended_unstructured_exploration(world_) &&
