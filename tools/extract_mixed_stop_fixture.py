@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Reconstruct the stopped 20:11 Mixed scene from exported observations only."""
+"""Reconstruct a stopped Mixed scene from exported observations only."""
+import argparse
 import csv
 import hashlib
 import json
@@ -7,7 +8,12 @@ import math
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-stem = "thesis_hardware_mixed_mixed_hardware_road_gate_gui_snapshot_20261018_201108_709"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--snapshot", default="thesis_hardware_mixed_mixed_hardware_road_gate_gui_snapshot_20261018_201108_709")
+parser.add_argument("--fixture", default="mixed_20261018_201108_stopped_scans.txt")
+parser.add_argument("--analysis-dir", default="documentation/analysis_20261018/mixed_201108")
+args = parser.parse_args()
+stem = args.snapshot
 source = root / "reports" / (stem + "_lidar_reconstruction.csv")
 snapshot = root / "reports" / (stem + ".json")
 history = {q["time"]: q for q in json.loads(snapshot.read_text())["history"]}
@@ -15,7 +21,7 @@ groups = {}
 with source.open() as stream:
     for row in csv.DictReader(stream):
         groups.setdefault(float(row["time"]), []).append(row)
-output = root / "simulator/src/tests/integration/data/mixed_20261018_201108_stopped_scans.txt"
+output = root / "simulator/src/tests/integration/data" / args.fixture
 last = max(groups)
 selected = {t: scan for t, scan in groups.items() if last - t <= .60}
 with output.open("w") as stream:
@@ -41,7 +47,7 @@ manifest = {
     "limitations": "Reconstructed endpoints, not raw LiDAR packets. Motion inflation uses exported telemetry. "
                    "Gates are re-extracted; this does not replay the original per-cycle gate search log.",
 }
-destination = root / "documentation/analysis_20261018/mixed_201108"
+destination = root / args.analysis_dir
 destination.mkdir(parents=True, exist_ok=True)
 (destination / "fixture_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 print(json.dumps(manifest, indent=2))

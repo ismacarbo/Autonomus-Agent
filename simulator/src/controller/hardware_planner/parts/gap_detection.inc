@@ -611,7 +611,7 @@ void HardwarePlannerRunner::rebuild_dynamic_gap_gates(const std::vector<RPLidarA
         }
     }
     const double required_gap_width = relaxed_mixed
-        ? geometry_.body_width+2*(config_.mixed_dynamic.obstacle_margin_m+config_.mixed_dynamic.pose_margin_m+1.5*config_.mixed_dynamic.sample_spacing_m)
+        ? geometry_.body_width+2*hardware_mixed::footprint_margin(config_.mixed_dynamic)
         : micro_hardware_lab
         ? clamp_value(
               0.26 * current_world_span,

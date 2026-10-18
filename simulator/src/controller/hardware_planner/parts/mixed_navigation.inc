@@ -36,6 +36,7 @@ void HardwarePlannerRunner::mixed_stop(const std::string& reason) {
 
 void HardwarePlannerRunner::reset_mixed_navigation() {
     const auto& cfg=config_.mixed_dynamic;
+    const bool physical=hardware_mixed::physical_footprint_policy(cfg);
     if (!world_is_mixed(world_) || !world_.obstacles().empty() || !world_.gates().empty() ||
         !world_.perception_obstacles().empty() || !world_.dynamic_obstacles().empty())
         throw std::invalid_argument("MixedGoalDirectedDynamic requires a mission-only map without obstacles or gates");
@@ -51,9 +52,13 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
         !std::isfinite(cfg.experimental_speed_mps) || cfg.experimental_speed_mps<=0 || cfg.experimental_speed_mps>.06 ||
         (cfg.planning_policy!=hardware_mixed::PlanningPolicy::Strict &&
          cfg.planning_policy!=hardware_mixed::PlanningPolicy::ExperimentalRelaxed) ||
+        (cfg.clearance_policy!=hardware_mixed::ClearancePolicy::ConservativeEnvelope &&
+         cfg.clearance_policy!=hardware_mixed::ClearancePolicy::PhysicalFootprint) ||
+        !std::isfinite(cfg.collision_buffer_m) || cfg.collision_buffer_m<.005 || cfg.collision_buffer_m>.03 ||
         cfg.sample_spacing_m<0.005 || cfg.sample_spacing_m>0.03 || cfg.braking_decel_mps2<=0 ||
         cfg.road_preview_m<0.20 || cfg.rejoin_lookaheads_m.empty() || cfg.completion_frames<1 ||
-        cfg.obstacle_margin_m<0.02 || cfg.pose_margin_m<0.01 || cfg.replan_interval_s<0.1 ||
+        !std::isfinite(cfg.obstacle_margin_m) || !std::isfinite(cfg.pose_margin_m) ||
+        cfg.obstacle_margin_m<(physical?0.:.02) || cfg.pose_margin_m<(physical?0.:.01) || cfg.replan_interval_s<0.1 ||
         cfg.observation_memory_s<0.1 || cfg.observation_memory_s>1.0 || cfg.max_beam_gap_rad>0.08 ||
         (cfg.visibility_policy!=hardware_mixed::VisibilityPolicy::Strict &&
          cfg.visibility_policy!=hardware_mixed::VisibilityPolicy::ObstaclesOnly) ||
@@ -69,7 +74,7 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
         : geometry_.max_curvature;
     for(size_t i=0;i<mission_road.size();++i) {
         const auto& q=mission_road[i];
-        const double pad=cfg.obstacle_margin_m+cfg.pose_margin_m+1.5*cfg.sample_spacing_m;
+        const double pad=hardware_mixed::footprint_margin(cfg);
         const double half_length=geometry_.body_length/2+pad;
         const double half_width=geometry_.body_width/2+pad;
         const double extent_x=std::abs(std::cos(q.yaw))*half_length+std::abs(std::sin(q.yaw))*half_width;
@@ -110,6 +115,10 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
     std::cerr<<"mixed_visibility_policy="<<hardware_mixed::visibility_policy_name(cfg.visibility_policy)
              <<" full_coverage_required="<<(cfg.visibility_policy==hardware_mixed::VisibilityPolicy::Strict)
              <<" measured_collision_checks=1\n";
+    std::cerr<<"mixed_clearance_policy="<<hardware_mixed::clearance_policy_name(cfg)
+             <<" collision_buffer_m="<<cfg.collision_buffer_m
+             <<" preferred_clearance_m="<<cfg.obstacle_margin_m+cfg.pose_margin_m
+             <<" virtual_gate_corridor_veto="<<!physical<<'\n';
     std::cerr << "mixed_frame name=" << (cfg.start_reference_frame ? "start_reference" : "arena")
               << " bounds_kind=" << (cfg.start_reference_frame ? "unregistered_local_envelope" : "registered_arena")
               << " arena_x_m=" << cfg.arena_size_m.x << " arena_y_m=" << cfg.arena_size_m.y
@@ -134,6 +143,13 @@ hardware_mixed::Scan HardwarePlannerRunner::mixed_observed_scan(const RealRobotO
     scan.timestamp=timestamp;
     scan.motion_uncertainty_m=(std::abs(estimate_.speed)+config_.localization.max_range_m*std::abs(estimate_.yaw_rate))*
         (obs.lidar_scan_duration_s+std::max(0.0,age_s));
+    const double duration=obs.lidar_scan_duration_s+std::max(0.0,age_s);
+    scan.rotation_uncertainty_rad=std::abs(estimate_.yaw_rate)*duration;
+    // Include the rotation of the sensor lever arm, then each return's range
+    // in ObservedSpace::add. Do not inflate near hits by max_range.
+    scan.translation_uncertainty_m=std::abs(estimate_.speed)*duration+
+        2*std::hypot(config_.localization.lidar_x_offset,config_.localization.lidar_y_offset)*
+            std::sin(std::min(kPi,scan.rotation_uncertainty_rad)/2);
     scan.raw_points=obs.lidar_scan.size();
     for(const auto& p:obs.lidar_scan) {
         if(!p.quality) {++scan.rejected_quality;continue;}
@@ -226,6 +242,9 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
             std::cerr<<"mixed_footprint reason="<<reason
                      <<" x="<<current_check.witness.x<<" y="<<current_check.witness.y
                      <<" pose_x="<<estimate_.position.x<<" pose_y="<<estimate_.position.y
+                     <<" clearance_policy="<<hardware_mixed::clearance_policy_name(cfg)
+                     <<" body_clearance_m="<<current_check.witness_clearance
+                     <<" required_clearance_m="<<current_check.required_clearance
                      <<" lidar_returns="<<obs.lidar_scan.size()<<'\n';
             if(current_check.reason=="unknown_footprint") {
                 const auto v=mixed_space_.visibility(current_check.witness,sim_time_,cfg);
@@ -437,11 +456,13 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
             const double a=wrap_angle(yaw-heading);
             const double side=0.5*(geometry_.body_width*std::abs(std::cos(a))+geometry_.body_length*std::abs(std::sin(a)));
             mixed_gate_plane_crossed_=std::cos(a)>(relaxed?0.:.7) &&
-                std::abs(locked_gap_lateral_offset(crossing))+side+cfg.obstacle_margin_m+cfg.pose_margin_m<=0.5*locked_gap_width_m_;
+                std::abs(locked_gap_lateral_offset(crossing))+side+
+                    (hardware_mixed::physical_footprint_policy(cfg)?cfg.collision_buffer_m:cfg.obstacle_margin_m+cfg.pose_margin_m)<=0.5*locked_gap_width_m_;
         }
         mixed_gate_previous_pose_=current;
         if(fresh_scan && mixed_gate_plane_crossed_ && hardware_mixed::gate_cleared(estimate_.position,estimate_.yaw,locked_gap_start_position_,
-            locked_gap_crossing_point_,heading,locked_gap_width_m_,geometry_,cfg.obstacle_margin_m+cfg.pose_margin_m,relaxed)) {
+            locked_gap_crossing_point_,heading,locked_gap_width_m_,geometry_,
+            hardware_mixed::physical_footprint_policy(cfg)?cfg.collision_buffer_m:cfg.obstacle_margin_m+cfg.pose_margin_m,relaxed)) {
             passed_unstructured_gap_positions_.push_back(locked_gap_crossing_point_);
             ++passed_unstructured_gap_count_;
             clear_locked_gap_goal(); gates_.clear();gate_specs_.clear();dynamic_gap_tracks_.clear();
@@ -593,7 +614,16 @@ void HardwarePlannerRunner::mixed_command_guard(double dt) {
             q.yaw+=h*motion.second*scale;sweep.push_back(q);
         }
         const auto checked=mixed_validate(sweep);
-        if(!checked.valid()) {mixed_stop("braking_sweep_"+checked.reason);return;}
+        if(!checked.valid()) {
+            const std::string reason="braking_sweep_"+checked.reason;
+            if(mixed_reason_!=reason)
+                std::cerr<<"mixed_braking reason="<<reason<<" speed="<<estimate_.speed
+                         <<" x="<<checked.witness.x<<" y="<<checked.witness.y
+                         <<" body_clearance_m="<<checked.witness_clearance
+                         <<" required_clearance_m="<<checked.required_clearance
+                         <<" clearance_policy="<<hardware_mixed::clearance_policy_name(cfg)<<'\n';
+            mixed_stop(reason);return;
+        }
     }
     if(std::abs(w-mixed_last_command_yaw_rate_)>cfg.max_yaw_accel_rad_s2*dt+1e-4) {
         mixed_stop("command_yaw_acceleration_rejected");return;

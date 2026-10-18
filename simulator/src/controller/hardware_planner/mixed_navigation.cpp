@@ -50,6 +50,17 @@ const char* visibility_policy_name(VisibilityPolicy policy) {
 const char* planning_policy_name(PlanningPolicy policy) {
     return policy==PlanningPolicy::Strict ? "STRICT" : "MIXED_EXPERIMENTAL_RELAXED";
 }
+bool physical_footprint_policy(const Config& cfg) {
+    return cfg.planning_policy==PlanningPolicy::ExperimentalRelaxed &&
+           cfg.clearance_policy==ClearancePolicy::PhysicalFootprint;
+}
+const char* clearance_policy_name(const Config& cfg) {
+    return physical_footprint_policy(cfg)?"physical_footprint":"conservative_envelope";
+}
+double footprint_margin(const Config& cfg) {
+    return physical_footprint_policy(cfg)?cfg.collision_buffer_m:
+        cfg.obstacle_margin_m+cfg.pose_margin_m+1.5*cfg.sample_spacing_m;
+}
 double mechanical_curvature_limit(const VehicleGeometry& g, VehicleModelKind model) {
     return model==VehicleModelKind::CarLikeBicycle ? std::tan(g.max_steer_angle)/g.wheelbase : g.max_curvature;
 }
@@ -213,8 +224,15 @@ void ObservedSpace::add(Scan scan,double memory) {
     for(auto& ray:scan.rays) ray.angle=angle(ray.angle);
     std::sort(scan.rays.begin(),scan.rays.end(),[](const Ray&a,const Ray&b){return a.angle<b.angle;});
     scan.occupied_points.clear();
-    for(const auto& ray:scan.rays) if(ray.occupied)
+    scan.occupied_uncertainty_m.clear();
+    for(const auto& ray:scan.rays) if(ray.occupied) {
         scan.occupied_points.push_back({scan.origin.x+ray.range*std::cos(ray.angle),scan.origin.y+ray.range*std::sin(ray.angle)});
+        // Rotation uncertainty belongs to this measured range, not max_range
+        // applied indiscriminately to every obstacle in the memory window.
+        const bool components=scan.translation_uncertainty_m>0 || scan.rotation_uncertainty_rad>0;
+        scan.occupied_uncertainty_m.push_back(components?scan.translation_uncertainty_m+
+            2*ray.range*std::sin(std::min(pi,scan.rotation_uncertainty_rad)/2):scan.motion_uncertainty_m);
+    }
     while(!scans_.empty() && scan.timestamp-scans_.front().timestamp>memory) scans_.pop_front();
     if(scans_.size()>=12) scans_.pop_front();
     scans_.push_back(std::move(scan));
@@ -263,23 +281,58 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
         if(!fresh) {result.reason="no_fresh_observations";return result;}
     }
     const double step=cfg.sample_spacing_m;
-    // Half a grid diagonal plus path discretisation covers unsampled footprint cells.
+    const bool physical=physical_footprint_policy(cfg);
+    // The legacy envelope uses fixed grid padding and a global motion margin.
+    // Physical checking accounts for discretisation locally along the sweep.
     double motion_margin=0;
     for(const auto& scan:scans_) if(now-scan.timestamp<=cfg.observation_memory_s)
         motion_margin=std::max(motion_margin,scan.motion_uncertainty_m);
-    const double pad=cfg.obstacle_margin_m+cfg.pose_margin_m+1.5*step+motion_margin;
+    const double pad=footprint_margin(cfg)+(physical?0:motion_margin);
     const double hl=g.body_length/2+pad, hw=g.body_width/2+pad;
     double clearance_squared=std::numeric_limits<double>::infinity();
+    double body_clearance=std::numeric_limits<double>::infinity();
+    const double radius=std::hypot(g.body_length/2,g.body_width/2);
+    const auto sweep_margin=[&](size_t i) {
+        if(!physical)return 0.;
+        double bound=0;
+        for(size_t j:{i?i-1:i,std::min(i+1,path.size()-1)}) {
+            const double ds=distance(path[i].position,path[j].position);
+            const double dyaw=std::abs(angle(path[i].yaw-path[j].yaw));
+            // Bound unsampled translation, rotating corners and arc/chord
+            // deviation locally. A stationary footprint adds no grid padding.
+            const double k=std::max({g.max_curvature,std::abs(path[i].curvature),std::abs(path[j].curvature)});
+            // k*ds also covers heading excursions inside an S segment whose
+            // two sampled endpoint headings happen to be equal.
+            bound=std::max(bound,.5*ds+.5*radius*std::max(dyaw,k*ds)+k*ds*ds);
+        }
+        return bound;
+    };
     for(size_t i=0;i<path.size();++i) {
         const auto& q=path[i];
         if(!finite(q.position)||!std::isfinite(q.yaw)) {result.reason="nonfinite_path";return result;}
         const double c=std::cos(q.yaw),s=std::sin(q.yaw);
+        const double sweep=sweep_margin(i);
         for(const auto& scan:scans_) {
             if(now-scan.timestamp<0 || now-scan.timestamp>cfg.observation_memory_s) continue;
-            for(const Vec2& hit:scan.occupied_points) {
+            for(size_t hit_index=0;hit_index<scan.occupied_points.size();++hit_index) {
+                const Vec2& hit=scan.occupied_points[hit_index];
                 const double dx=hit.x-q.position.x,dy=hit.y-q.position.y;
                 clearance_squared=std::min(clearance_squared,dx*dx+dy*dy);
-                if(std::abs(c*dx+s*dy)<=hl && std::abs(-s*dx+c*dy)<=hw) {
+                const double x=std::abs(c*dx+s*dy),y=std::abs(-s*dx+c*dy);
+                if(!physical && !(x<=hl && y<=hw))continue;
+                const double ex=x-g.body_length/2,ey=y-g.body_width/2;
+                const double uncertainty=physical?scan.occupied_uncertainty_m[hit_index]:0;
+                const double required=pad+sweep+uncertainty;
+                const double ox=std::max(ex,0.),oy=std::max(ey,0.);
+                const double squared=ox*ox+oy*oy;
+                // Far returns cannot change the minimum or cause collision;
+                // avoid a square root per return per candidate on the Pi.
+                const double relevant=std::max(required,body_clearance+uncertainty);
+                if(physical && squared>relevant*relevant)continue;
+                const double signed_distance=std::sqrt(squared)+std::min(std::max(ex,ey),0.);
+                body_clearance=std::min(body_clearance,signed_distance-uncertainty);
+                if(physical?signed_distance<=required:(x<=hl && y<=hw)) {
+                    result.witness_clearance=signed_distance;result.required_clearance=required;
                     result.reason="occupied_footprint";result.witness=hit;result.has_witness=true;return result;
                 }
             }
@@ -290,11 +343,12 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
     // earlier in the sampled corridor.
     for(size_t i=0;i<path.size();++i) {
         const auto& q=path[i];
+        const double qhl=hl+sweep_margin(i),qhw=hw+sweep_margin(i);
         if(cfg.visibility_policy==VisibilityPolicy::ObstaclesOnly) {
             // Exact extrema of the padded oriented rectangle. A dense grid
             // adds no information when visibility interpolation is disabled.
-            const double ex=std::abs(std::cos(q.yaw))*hl+std::abs(std::sin(q.yaw))*hw;
-            const double ey=std::abs(std::sin(q.yaw))*hl+std::abs(std::cos(q.yaw))*hw;
+            const double ex=std::abs(std::cos(q.yaw))*qhl+std::abs(std::sin(q.yaw))*qhw;
+            const double ey=std::abs(std::sin(q.yaw))*qhl+std::abs(std::cos(q.yaw))*qhw;
             if(q.position.x-ex<bounds.min_x || q.position.x+ex>bounds.max_x ||
                q.position.y-ey<bounds.min_y || q.position.y+ey>bounds.max_y) {
                 result.reason="geofence";result.witness=q.position;result.has_witness=true;return result;
@@ -302,10 +356,10 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
             if(i)result.length+=distance(path[i-1].position,q.position);
             continue;
         }
-        const int nx=std::max(1,static_cast<int>(std::ceil(2*hl/step)));
-        const int ny=std::max(1,static_cast<int>(std::ceil(2*hw/step)));
+        const int nx=std::max(1,static_cast<int>(std::ceil(2*qhl/step)));
+        const int ny=std::max(1,static_cast<int>(std::ceil(2*qhw/step)));
         for(int ix=0;ix<=nx;++ix) for(int iy=0;iy<=ny;++iy) {
-            const double x=-hl+2*hl*ix/nx,y=-hw+2*hw*iy/ny;
+            const double x=-qhl+2*qhl*ix/nx,y=-qhw+2*qhw*iy/ny;
             const Vec2 p{q.position.x+std::cos(q.yaw)*x-std::sin(q.yaw)*y,
                          q.position.y+std::sin(q.yaw)*x+std::cos(q.yaw)*y};
             if(p.x<bounds.min_x||p.x>bounds.max_x||p.y<bounds.min_y||p.y>bounds.max_y) {
@@ -320,7 +374,11 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
         }
         if(i) result.length+=distance(path[i-1].position,q.position);
     }
-    result.clearance=std::sqrt(clearance_squared);
+    result.clearance=physical?body_clearance:std::sqrt(clearance_squared);
+    if(physical) {
+        const double preferred=cfg.obstacle_margin_m+cfg.pose_margin_m;
+        result.soft_clearance_penalty=std::clamp((preferred-body_clearance)/std::max(preferred,1e-6),0.,1.);
+    }
     result.path=path; result.reason="accepted";
     return result;
 }
@@ -384,6 +442,7 @@ PathResult stoppable(PathResult candidate, const ReferenceWaypoint& current,
     const auto braking=space.validate(tail,current,g,bounds,now,cfg);
     if(!braking.valid()) {check=braking;check.reason="stopping_tail_"+check.reason;return check;}
     candidate.clearance=std::min(check.clearance,braking.clearance);
+    candidate.soft_clearance_penalty=std::max(check.soft_clearance_penalty,braking.soft_clearance_penalty);
     return candidate;
 }
 
@@ -488,7 +547,8 @@ RejoinPlan plan_rejoin(const ReferenceWaypoint& current, const ReferenceRoad& ro
                                   candidate.length+cfg.projection_forward_m);
         const double score=relaxed(cfg)
             ? .10*candidate.length+.02*candidate.bending+distance(end.position,goal)+
-              3*std::abs(p.n)+.65*std::abs(p.heading_error)-.10*std::min(candidate.clearance,1.)
+              3*std::abs(p.n)+.65*std::abs(p.heading_error)-.10*std::min(candidate.clearance,1.)+
+              .10*candidate.soft_clearance_penalty
             : candidate.length+.10*candidate.bending+.4*distance(end.position,goal)-
               .20*std::min(candidate.clearance,1.0)-.25*std::max(0.0,target_s-progress);
         candidate.selection_reason=candidate.full_rejoin?"complete_rejoin":"progressive_frenet_segment";
@@ -523,7 +583,8 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
                    const Rect& bounds, double now, const ReferenceRoad* rejoin_road,
                    double road_progress) {
     GatePlan result;result.selected.reason="no_verified_gate";
-    const double pad=cfg.obstacle_margin_m+cfg.pose_margin_m+1.5*cfg.sample_spacing_m;
+    const double pad=footprint_margin(cfg);
+    const bool physical=physical_footprint_policy(cfg);
     if(!finite(center) || !std::isfinite(normal_yaw) || !std::isfinite(width) || width<=g.body_width+2*pad) {
         result.outcomes["aperture_too_narrow"]=1;return result;
     }
@@ -557,6 +618,7 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
         return crossed && (relaxed(cfg)||fits(end)) && longitudinal(end.position)>rear(end)+pad;
     };
     double best=std::numeric_limits<double>::infinity();
+    int rejoin_preferences=0;
     auto consider=[&](PathResult candidate) {
         ++result.candidates;
         if(candidate.valid())++result.kinematic;
@@ -568,7 +630,10 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
             const bool aperture_ok=relaxed(cfg)?std::all_of(candidate.path.begin(),candidate.path.end(),[&](const auto& q){
                 return std::abs(longitudinal(q.position))>rear(q)+pad || fits(q);
             }):crossed;
-            if(!aperture_ok){candidate.path.clear();candidate.reason="aperture_crossing_rejected";}
+            // A measured opening is a target, not an infinite wall/corridor.
+            // Real obstacle endpoints and the swept body remain authoritative.
+            if(!aperture_ok && !physical){candidate.path.clear();candidate.reason="aperture_crossing_rejected";}
+            else if(!aperture_ok)candidate.strict_blocker="aperture_crossing_rejected";
         }
         const double bending=candidate.bending,peak=candidate.peak_curvature;
         if(candidate.valid())candidate=relaxed(cfg)
@@ -579,10 +644,16 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
             ++result.collision_free;
             if(crossed)++result.crossing;
             candidate.crosses_gate=crossed;
-            if(!crossed)candidate.strict_blocker="incomplete_gate_crossing";
-            if(rejoin_road && crossed) {
+            if(!crossed && candidate.strict_blocker.empty())candidate.strict_blocker="incomplete_gate_crossing";
+            // Prejoining is only a preference here: bound this optional work
+            // independently of how many physically clear candidates exist.
+            if(physical && rejoin_road && crossed && rejoin_preferences>=8)
+                candidate.strict_blocker="rejoin_not_precomputed";
+            if(rejoin_road && crossed && (!physical || rejoin_preferences<8)) {
+                ++rejoin_preferences;
                 const auto handoff=std::find_if(candidate.path.begin(),candidate.path.end(),[&](const auto& q){
-                    return (relaxed(cfg)||fits(q)) && longitudinal(q.position)>=rear(q)+cfg.obstacle_margin_m+cfg.pose_margin_m;
+                    const double margin=physical?pad:cfg.obstacle_margin_m+cfg.pose_margin_m;
+                    return (relaxed(cfg)||fits(q)) && longitudinal(q.position)>=rear(q)+margin;
                 });
                 if(handoff==candidate.path.end()){candidate.path.clear();candidate.reason="no_gate_handoff";}
                 else {
@@ -612,7 +683,7 @@ GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
         const Vec2 exit{center.x+(g.body_length/2+pad+.05)*normal.x,center.y+(g.body_length/2+pad+.05)*normal.y};
         const double score=relaxed(cfg)
             ? .1*candidate.length+.015*bending+distance(target.position,exit)+.35*distance(target.position,goal)-
-              .10*std::min(candidate.clearance,1.)+return_cost-(crossed?.15:0)
+              .10*std::min(candidate.clearance,1.)+return_cost-(crossed?.15:0)+.10*candidate.soft_clearance_penalty
             :candidate.length+.08*bending+.5*distance(target.position,goal)-.15*std::min(candidate.clearance,1.)+return_cost;
         candidate.selection_reason=crossed?(candidate.full_rejoin?"gate_with_full_rejoin":"gate_without_precomputed_rejoin"):
             "safe_intermediate_observation";

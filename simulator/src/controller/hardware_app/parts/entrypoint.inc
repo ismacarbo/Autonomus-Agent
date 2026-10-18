@@ -88,6 +88,8 @@ int main(int argc, char** argv) {
                           << "\nmixed_local_horizon=" << check.config().mixed_dynamic.local_horizon_m << '\n';
                 std::cout << "mixed_visibility_policy="
                           << thesis_sim::hardware_mixed::visibility_policy_name(planner_config.mixed_dynamic.visibility_policy) << '\n';
+                std::cout << "mixed_clearance_policy=" << thesis_sim::hardware_mixed::clearance_policy_name(check.config().mixed_dynamic)
+                          << "\nmixed_collision_buffer_m=" << check.config().mixed_dynamic.collision_buffer_m << '\n';
                 const auto& bounds = world.bounds();
                 std::cout << "mixed_frame=" << (planner_config.mixed_dynamic.start_reference_frame ? "start_reference" : "arena") << '\n'
                           << "mixed_bounds_kind=" << (planner_config.mixed_dynamic.start_reference_frame ? "unregistered_local_envelope" : "registered_arena") << '\n'

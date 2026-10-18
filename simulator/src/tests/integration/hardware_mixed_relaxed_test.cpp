@@ -113,6 +113,55 @@ void progressive_rejoin() {
     check(distance(road.sample(road.length()).position,{3,0})<1e-9,"goal moved");
     check(!hm::rejoin_complete({true,1,.2,.01,.2},.25,1,true,cfg),"unaligned rejoin declared complete");
 }
+void physical_clearance() {
+    auto cfg=configuration();cfg.clearance_policy=hm::ClearancePolicy::PhysicalFootprint;
+    const auto g=geometry();const ReferenceWaypoint q{{0,0},0,0,.04};
+    const auto point_space=[](Vec2 p,double uncertainty=0.) {
+        hm::Scan scan;scan.rays={{std::atan2(p.y,p.x),std::hypot(p.x,p.y),true},{pi,4,false}};
+        scan.motion_uncertainty_m=uncertainty;hm::ObservedSpace space;space.add(scan,.6);return space;
+    };
+    const auto check_point=[&](Vec2 p){return point_space(p).validate({q,q},q,g,bounds,0,cfg);};
+    check(!check_point({.12,0}).valid(),"physical body collision accepted");
+    check(!check_point({.13,0}).valid(),"measurement buffer bypassed");
+    const auto soft=check_point({.15,0});
+    check(soft.valid() && soft.soft_clearance_penalty>0,"preferred clearance still vetoes a clear body");
+    auto strict=cfg;strict.planning_policy=hm::PlanningPolicy::Strict;
+    check(!point_space({.15,0}).validate({q,q},q,g,bounds,0,strict).valid(),"Strict footprint silently relaxed");
+    cfg.obstacle_margin_m=cfg.pose_margin_m=0;
+    check(check_point({.15,0}).soft_clearance_penalty==0,"zero optional margins not supported");
+    check(!point_space({.15,0},.02).validate({q,q},q,g,bounds,0,cfg).valid(),"measurement motion uncertainty disabled");
+    ReferenceWaypoint end=q;end.position.x=.30;
+    check(check_point({.15,0}).valid() && point_space({.15,0}).validate({end,end},end,g,bounds,0,cfg).valid(),
+          "sweep test endpoints not individually clear");
+    check(!point_space({.15,0}).validate({q,end},q,g,bounds,0,cfg).valid(),"collision between sampled poses missed");
+    end=q;end.yaw=pi/2;const auto corner=point_space({.0353,.14});
+    check(corner.validate({q,q},q,g,bounds,0,cfg).valid() && corner.validate({end,end},end,g,bounds,0,cfg).valid(),
+          "rotating-corner endpoints not clear");
+    check(!corner.validate({q,end},q,g,bounds,0,cfg).valid(),"unsampled rotating corner collision missed");
+    hm::Scan scan;scan.rays={{0,.17,true},{pi,4,false}};scan.motion_uncertainty_m=.25;
+    scan.translation_uncertainty_m=.002;scan.rotation_uncertainty_rad=.1;
+    hm::ObservedSpace motion;motion.add(scan,.6);
+    check(motion.validate({q,q},q,g,bounds,0,cfg).valid(),"near hit inflated by max-range rotation");
+    scan.origin={1,0};scan.rays={{0,2,true},{pi,4,false}};scan.translation_uncertainty_m=.20;
+    motion.add(scan,.6);
+    check(motion.validate({q,q},q,g,bounds,0,cfg).valid(),"unrelated scan uncertainty smeared onto near hit");
+    scan.origin={0,0};scan.rays={{0,.17,true},{pi,4,false}};scan.translation_uncertainty_m=.04;
+    hm::ObservedSpace uncertain;uncertain.add(scan,.6);
+    check(!uncertain.validate({q,q},q,g,bounds,0,cfg).valid(),"per-hit uncertainty not enforced");
+    check(!motion.validate({q,q},q,g,bounds,1,cfg).valid(),"physical policy accepted stale observations");
+    // Short prefixes fit, but even the minimum segment's braking tail hits
+    // the wall at this measured speed. It must not reach selection.
+    cfg.local_horizon_m=.15;
+    auto straight=hm::connect(q,{{.05,0},0,0,.04},g,car,cfg,.04,.20);
+    const auto wall=point_space({.215,0});
+    check(straight.valid() && wall.validate(straight.path,q,g,bounds,0,cfg).valid(),"braking test prefix obstructed");
+    const auto stopping=hm::plan_gate(q,{.3,0},0,.4,false,{1.3,0},g,car,cfg,.04,.20,wall,bounds,0);
+    check(!stopping.selected.valid() && stopping.outcomes.count("stopping_tail_occupied_footprint"),
+          "braking continuation collision accepted");
+    const auto aperture=hm::plan_gate(q,{0,.35},0,.25,false,{1.3,0},g,car,cfg,.04,0,clear_space(),bounds,0);
+    check(aperture.selected.valid() && !aperture.selected.crosses_gate,"virtual corridor veto retained or false crossing counted");
+    std::cout<<"physical_clearance: body, buffer, swept intervals/corners, per-hit uncertainty, braking and virtual aperture passed\n";
+}
 void analysis_only(const std::string& path) {
     const auto g=geometry();const auto cfg=configuration();const ReferenceWaypoint a{{0,0},0,0,.04},b{{.1,.4},1.5,0,.04};
     const auto curve=hm::unconstrained_candidate_analysis(a,b,g,car,cfg,.04,0);
@@ -301,6 +350,59 @@ void stopped_recording() {
           "recorded short path did not reach the hardware controller in offline replay");
     check(detector.reference_trajectory().back().speed==0,"recorded short segment lost its endpoint stop");
 }
+void footprint_recording() {
+    using Access=HardwareMixedTestAccess;
+    auto c=runner_config();const auto world=hm::mission("");HardwarePlannerRunner detector(world,{},c);
+    std::ifstream in(std::filesystem::path(__FILE__).parent_path()/"data/mixed_20261018_203702_footprint_scans.txt");
+    check(in.good(),"missing footprint-stop fixture");
+    double now=0,current_speed=0;size_t n=0;hm::Scan scan;hm::ObservedSpace space;ReferenceWaypoint current;
+    std::vector<RPLidarA1::ScanPoint> last_raw;
+    while(in>>now>>current.position.x>>current.position.y>>current.yaw>>current.curvature>>current_speed
+            >>scan.origin.x>>scan.origin.y>>scan.motion_uncertainty_m>>n) {
+        scan.timestamp=now;scan.rays.clear();std::vector<RPLidarA1::ScanPoint> raw;
+        for(size_t i=0;i<n;++i) {
+            double a,r;check(bool(in>>a>>r),"truncated footprint fixture");scan.rays.push_back({a,r,true});
+            const double body=a-current.yaw;raw.push_back({15,body*180/pi,r*1000,r,r*std::cos(body),r*std::sin(body)});
+        }
+        space.add(scan,.6);current.speed=.04;Access::pose(detector,current);Access::detect(detector,raw);last_raw=std::move(raw);
+    }
+    const auto baseline=space.validate({current,current},current,geometry(),world.bounds(),now,c.mixed_dynamic);
+    check(!baseline.valid() && baseline.reason=="occupied_footprint","recorded padded-body deadlock not reproduced");
+    auto cfg=c.mixed_dynamic;cfg.clearance_policy=hm::ClearancePolicy::PhysicalFootprint;
+    const auto body=space.validate({current,current},current,geometry(),world.bounds(),now,cfg);
+    check(body.valid() && body.clearance>.10 && body.clearance<.12,"recorded physical-body clearance incorrect");
+    std::cout<<"footprint_recorded body_clearance_m="<<body.clearance<<" old_reason="<<baseline.reason<<'\n';
+    hm::ReferenceRoad road;road.build({{0,0},{1.3,0}},0);
+    // Both policies receive the very same measured gate set.
+    const auto gates=Access::gates(detector);check(!gates.empty(),"footprint fixture gate extraction failed");
+    int accepted=0,crossed=0,index=0,total=0;double elapsed=0;
+    for(const auto& [center,heading,width]:gates) {
+        const auto old=hm::plan_gate(current,center,heading,width,false,{1.3,0},geometry(),car,c.mixed_dynamic,.04,current_speed,
+                                    space,world.bounds(),now,&road,current.position.x);
+        check(!old.selected.valid(),"old footprint unexpectedly permits search");print("footprint_old",old);
+        const auto start=std::chrono::steady_clock::now();
+        const auto plan=hm::plan_gate(current,center,heading,width,false,{1.3,0},geometry(),car,cfg,.04,current_speed,
+                                     space,world.bounds(),now,&road,current.position.x);
+        elapsed+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        print("footprint_physical",plan);accepted+=plan.relaxed_accepted;crossed+=plan.crossing;total+=plan.candidates;
+        if(plan.selected.valid()) {
+            verify(plan.selected,current,cfg,space,world.bounds(),now);
+            export_path("footprint_selected_"+std::to_string(index),plan.selected.path,true);
+            const auto& q=plan.selected.path.back();
+            std::cout<<"footprint_target length="<<plan.selected.length<<" x="<<q.position.x<<" y="<<q.position.y<<" yaw="<<q.yaw<<'\n';
+        }
+        ++index;
+    }
+    check(accepted>0,"physical clearance failed to unblock recorded scene");
+    std::cout<<"footprint_summary gates="<<gates.size()<<" accepted="<<accepted<<" candidates="<<total<<" crossing="<<crossed<<" ms="<<elapsed<<'\n';
+    c.mixed_dynamic=cfg;HardwarePlannerRunner runtime(world,{},c);
+    Access::pose(runtime,current);Access::observed_space(runtime,space);Access::time(runtime,now);Access::progress(runtime,current.position.x);
+    Access::acquire(runtime);auto live=observation(now);live.lidar_scan=std::move(last_raw);Access::update(runtime,live);
+    check(Access::state(runtime)==hm::State::GateFollowing && runtime.reference_trajectory().size()>2 &&
+          runtime.last_command().target_speed>0 && !runtime.last_command().safety_stop,
+          "physical-clearance reference did not reach offline hardware controller");
+    check(runtime.reference_trajectory().back().speed==0,"physical-clearance reference endpoint cannot stop");
+}
 void crawl_actuation() {
     using Access=HardwareMixedTestAccess;auto c=runner_config();
     c.pwm.right_command_scale=.849462;c.pwm.right_command_offset=26.021505;
@@ -343,6 +445,7 @@ void policy_parser() {
     const auto config_dir=std::filesystem::path(__FILE__).parent_path()/"../../../../config";
     hm::Config cfg;hm::mission((config_dir/"mixed_experimental_relaxed.conf").string(),&cfg);
     check(cfg.planning_policy==hm::PlanningPolicy::ExperimentalRelaxed && cfg.operational_curvature_limit==1.8,"experimental configuration not parsed");
+    check(hm::physical_footprint_policy(cfg) && cfg.collision_buffer_m==.01,"physical clearance configuration not parsed");
     hm::mission((config_dir/"mixed_goal_directed_dynamic.conf").string(),&cfg);
     check(cfg.planning_policy==hm::PlanningPolicy::Strict,"reference configuration is not Strict");
     const auto file=std::filesystem::temp_directory_path()/("mixed_analysis_rejected_"+
@@ -354,8 +457,10 @@ void policy_parser() {
     check(hm::rejoin_complete({true,1.3,0,0,0},1.3,1.3,true,cfg),"aligned mission endpoint needs nonexistent forward road");
     check(!hm::rejoin_complete({true,1.3,0,0,.2},0,1.3,true,cfg),"projection beyond road endpoint falsely completed rejoin");
 }
-void runtime_safety() {
-    using Access=HardwareMixedTestAccess;auto c=runner_config();auto world=hm::mission("");HardwarePlannerRunner r(world,{},c);
+void runtime_safety(bool physical=false) {
+    using Access=HardwareMixedTestAccess;auto c=runner_config();
+    if(physical)c.mixed_dynamic.clearance_policy=hm::ClearancePolicy::PhysicalFootprint;
+    auto world=hm::mission("");HardwarePlannerRunner r(world,{},c);
     Access::pose(r,{{.05,.15},0,0,.04});Access::rejoin(r);
     Access::update(r,observation(10));
     check(Access::state(r)==hm::State::RoadRejoining && r.reference_trajectory().size()>2,"runner did not commit progressive reference");
@@ -392,7 +497,8 @@ int main(int argc,char** argv) {
         if(argc==3 && std::string(argv[1])=="--unconstrained-candidate-analysis") {analysis_only(argv[2]);return 0;}
         if(argc==3 && std::string(argv[1])=="--artifacts") {artifacts=argv[2];std::filesystem::create_directories(artifacts);argc=1;}
         check(argc==1,"usage: hardware_mixed_relaxed_test [--unconstrained-candidate-analysis output.csv]");
-        gate_and_braking();progressive_rejoin();analysis_only("");recorded_comparison();stopped_recording();policy_parser();runtime_safety();crawl_actuation();
+        gate_and_braking();physical_clearance();progressive_rejoin();analysis_only("");recorded_comparison();stopped_recording();
+        footprint_recording();policy_parser();runtime_safety();runtime_safety(true);crawl_actuation();
         std::cout<<"hardware relaxed offline checks passed; no device opened\n";return 0;
     }catch(const std::exception& e){std::cerr<<"FAILED: "<<e.what()<<'\n';return 1;}
 }

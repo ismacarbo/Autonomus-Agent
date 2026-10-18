@@ -1,5 +1,7 @@
 # Mixed hardware — EXPERIMENTAL_RELAXED, 18 ottobre 2026
 
+**Aggiornamento dopo la prova delle 20:35:** [rimozione del veto dell'inviluppo prudenziale e del corridoio virtuale](Hardware_Mixed_Footprint_20261018_203702.md). La configurazione sperimentale usa ora `clearance_policy physical_footprint`; i margini descritti sotto appartengono alla prima iterazione.
+
 **Aggiornamento dopo la prova delle 20:10:** [correzione dello stop e degli impulsi di partenza](Hardware_Mixed_Stop_20261018_201108.md). Il seguito documenta la prima iterazione; la correzione aggiunge primitive di lunghezza adattiva, riacquisizione immediata e regolazione della marcia lenta.
 
 Implementazione esclusiva del percorso hardware. La configurazione storica resta **STRICT**; la nuova configurazione esplicita è `config/mixed_experimental_relaxed.conf`. Il log identifica la modalità come `MIXED_EXPERIMENTAL_RELAXED`. Non sono stati aperti dispositivi né avviati motori. Simulation planner, preset simulati, GUI e firmware non sono stati modificati.

@@ -15,10 +15,13 @@ enum class VisibilityPolicy { Strict, ObstaclesOnly };
 const char* visibility_policy_name(VisibilityPolicy policy);
 enum class PlanningPolicy { Strict, ExperimentalRelaxed };
 const char* planning_policy_name(PlanningPolicy policy);
+enum class ClearancePolicy { ConservativeEnvelope, PhysicalFootprint };
 
 struct Config {
     bool enabled = false;
     PlanningPolicy planning_policy = PlanningPolicy::Strict;
+    ClearancePolicy clearance_policy = ClearancePolicy::ConservativeEnvelope;
+    double collision_buffer_m = 0.01;
     // Zero inherits the hardware profile. Never overrides the steering limit.
     double operational_curvature_limit = 0.0;
     double local_horizon_m = 0.75;
@@ -59,6 +62,10 @@ struct Config {
     int completion_frames = 3;
 };
 
+bool physical_footprint_policy(const Config& config);
+const char* clearance_policy_name(const Config& config);
+double footprint_margin(const Config& config);
+
 struct Projection {
     bool valid = false;
     double s = 0.0, n = 0.0, heading_error = 0.0, distance = 0.0;
@@ -82,6 +89,8 @@ struct PathResult {
     std::string reason;
     double length = 0.0, bending = 0.0, clearance = 0.0;
     double peak_curvature = 0.0;
+    double soft_clearance_penalty = 0.0;
+    double witness_clearance = 0.0, required_clearance = 0.0;
     bool crosses_gate = false, full_rejoin = false;
     std::string strict_blocker, selection_reason;
     // First failing point for hardware diagnostics, never a navigation target.
@@ -112,8 +121,10 @@ struct Scan {
     Vec2 origin;
     double timestamp = 0.0;
     double motion_uncertainty_m = 0.0;
+    double translation_uncertainty_m = 0.0, rotation_uncertainty_rad = 0.0;
     std::vector<Ray> rays;
     std::vector<Vec2> occupied_points;
+    std::vector<double> occupied_uncertainty_m;
     size_t raw_points = 0, rejected_quality = 0, rejected_range = 0, rejected_self = 0;
 };
 struct Visibility {
@@ -160,9 +171,9 @@ RejoinPlan plan_rejoin(const ReferenceWaypoint& current, const ReferenceRoad& ro
                       const Config& config, double speed, double current_speed,
                       const ObservedSpace& space, const Rect& bounds, double now);
 
-// Local G2 alternatives through one measured aperture. Every returned solution
-// crosses the aperture with the entire body and passes the configured checks.
-// The gate normal stays fixed; a terminal tangent need not equal that normal.
+// Local G2 / primitive alternatives toward one measured aperture. Relaxed can
+// return a stoppable intermediate segment; crosses_gate distinguishes it from
+// a completed crossing. Strict requires crossing and a complete checked rejoin.
 GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
                    double normal_yaw, double width, bool plane_already_crossed,
                    const Vec2& goal, const VehicleGeometry& geometry,

@@ -40,6 +40,12 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
                 else if(policy=="EXPERIMENTAL_RELAXED" || policy=="MIXED_EXPERIMENTAL_RELAXED")
                     cfg.planning_policy=PlanningPolicy::ExperimentalRelaxed;
                 else throw std::invalid_argument("planning_policy must be STRICT or EXPERIMENTAL_RELAXED; unconstrained_candidate_analysis is offline only");
+            } else if(key=="clearance_policy") {
+                std::string policy;
+                if(!(in>>policy))throw std::invalid_argument("missing clearance policy");
+                if(policy=="conservative_envelope")cfg.clearance_policy=ClearancePolicy::ConservativeEnvelope;
+                else if(policy=="physical_footprint")cfg.clearance_policy=ClearancePolicy::PhysicalFootprint;
+                else throw std::invalid_argument("clearance_policy must be conservative_envelope or physical_footprint");
             } else if(key=="visibility_policy") {
                 std::string policy;
                 if(!(in>>policy))throw std::invalid_argument("missing mixed visibility policy");
@@ -98,8 +104,10 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
                 MIXED_PARAMETER(local_min_segment_m);
                 MIXED_PARAMETER(experimental_speed_mps);
                 MIXED_PARAMETER(crawl_pwm_rise_per_s);
+                MIXED_PARAMETER(collision_buffer_m);
 #undef MIXED_PARAMETER
-                if(!field || !(in>>*field) || !std::isfinite(*field) || *field<=0)
+                const bool soft_margin=key=="obstacle_margin_m" || key=="pose_margin_m";
+                if(!field || !(in>>*field) || !std::isfinite(*field) || *field<0 || (!soft_margin && *field==0))
                     throw std::invalid_argument("invalid mixed parameter: "+key);
             }
             std::string extra;if(in>>extra) throw std::invalid_argument("extra tokens in mixed mission: "+key);
