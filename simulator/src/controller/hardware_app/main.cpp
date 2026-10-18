@@ -1,4 +1,5 @@
 #include "parts/options.inc"
+#include "parts/mixed_scan_check.inc"
 #include "parts/trial_recording.inc"
 #include "parts/stream_config.inc"
 #include "parts/slam_session.inc"

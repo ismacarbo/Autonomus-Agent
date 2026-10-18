@@ -47,6 +47,8 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
         cfg.road_preview_m<0.20 || cfg.rejoin_lookaheads_m.empty() || cfg.completion_frames<1 ||
         cfg.obstacle_margin_m<0.02 || cfg.pose_margin_m<0.01 || cfg.replan_interval_s<0.1 ||
         cfg.observation_memory_s<0.1 || cfg.observation_memory_s>1.0 || cfg.max_beam_gap_rad>0.08 ||
+        (cfg.visibility_policy!=hardware_mixed::VisibilityPolicy::Strict &&
+         cfg.visibility_policy!=hardware_mixed::VisibilityPolicy::ObstaclesOnly) ||
         cfg.reaction_time_s<config_.localization.max_controller_age_s+config_.nominal_dt ||
         cfg.braking_decel_mps2>geometry_.max_decel || cfg.lateral_tolerance_m>0.10 || cfg.heading_tolerance_rad>0.30 ||
         !std::isfinite(cfg.gate_heading_search_rad) || cfg.gate_heading_search_rad<=0 || cfg.gate_heading_search_rad>0.70 ||
@@ -91,6 +93,9 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
     mixed_pose_fault_=false; mixed_last_gate_id_.clear();
     mixed_state_=mixed_resume_state_=hardware_mixed::State::RoadFollowing;
     mixed_reason_="initialized_at_mission_start";
+    std::cerr<<"mixed_visibility_policy="<<hardware_mixed::visibility_policy_name(cfg.visibility_policy)
+             <<" full_coverage_required="<<(cfg.visibility_policy==hardware_mixed::VisibilityPolicy::Strict)
+             <<" measured_collision_checks=1\n";
     std::cerr << "mixed_frame name=" << (cfg.start_reference_frame ? "start_reference" : "arena")
               << " bounds_kind=" << (cfg.start_reference_frame ? "unregistered_local_envelope" : "registered_arena")
               << " arena_x_m=" << cfg.arena_size_m.x << " arena_y_m=" << cfg.arena_size_m.y
@@ -106,6 +111,26 @@ void HardwarePlannerRunner::reset_mixed_navigation() {
 hardware_mixed::PathResult HardwarePlannerRunner::mixed_validate(const std::vector<ReferenceWaypoint>& path) const {
     return mixed_space_.validate(path,{estimate_.position,estimate_.yaw,estimate_.curvature,estimate_.speed},
                                  geometry_,world_.bounds(),sim_time_,config_.mixed_dynamic);
+}
+
+hardware_mixed::Scan HardwarePlannerRunner::mixed_observed_scan(const RealRobotObservation& obs,
+                                                                double timestamp, double age_s) const {
+    hardware_mixed::Scan scan;
+    scan.origin=lidar_origin_world(estimate_.position,estimate_.yaw,config_.localization);
+    scan.timestamp=timestamp;
+    scan.motion_uncertainty_m=(std::abs(estimate_.speed)+config_.localization.max_range_m*std::abs(estimate_.yaw_rate))*
+        (obs.lidar_scan_duration_s+std::max(0.0,age_s));
+    scan.raw_points=obs.lidar_scan.size();
+    for(const auto& p:obs.lidar_scan) {
+        if(!p.quality) {++scan.rejected_quality;continue;}
+        if(!std::isfinite(p.angle_deg) || !std::isfinite(p.distance_m) ||
+           p.distance_m<config_.localization.min_valid_range_m) {++scan.rejected_range;continue;}
+        if(scan_point_is_self_hit(p)) {++scan.rejected_self;continue;}
+        scan.rays.push_back({estimate_.yaw+lidar_body_local_angle_rad(config_.localization,p.angle_deg),
+            std::min(p.distance_m,config_.localization.max_range_m),
+            p.distance_m<config_.localization.max_range_m-0.03});
+    }
+    return scan;
 }
 
 void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& obs, double dt) {
@@ -146,20 +171,9 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         mixed_stop("sensor_stale_or_start_not_ready"); return;
     }
     if (fresh_scan) {
-        hardware_mixed::Scan scan;
-        scan.origin=lidar_origin_world(estimate_.position,estimate_.yaw,config_.localization);
-        scan.timestamp=sim_time_-std::max(0.0,diagnostics_.lidar_age_s);
         // Raw returns are conservatively inflated for motion during the scan
         // and its transport age; the detector still uses existing deskewed hits.
-        scan.motion_uncertainty_m=(std::abs(estimate_.speed)+config_.localization.max_range_m*std::abs(estimate_.yaw_rate))*
-            (obs.lidar_scan_duration_s+std::max(0.0,diagnostics_.lidar_age_s));
-        for (const auto& p:obs.lidar_scan) {
-            if (!p.quality || !std::isfinite(p.angle_deg) || !std::isfinite(p.distance_m) ||
-                p.distance_m<config_.localization.min_valid_range_m || scan_point_is_self_hit(p)) continue;
-            scan.rays.push_back({estimate_.yaw+lidar_body_local_angle_rad(config_.localization,p.angle_deg),
-                std::min(p.distance_m,config_.localization.max_range_m),
-                p.distance_m<config_.localization.max_range_m-0.03});
-        }
+        auto scan=mixed_observed_scan(obs,sim_time_-std::max(0.0,diagnostics_.lidar_age_s),diagnostics_.lidar_age_s);
         if (scan.rays.size()<static_cast<size_t>(config_.localization.min_scan_points)) {
             mixed_stop("insufficient_valid_lidar_returns"); return;
         }
@@ -195,6 +209,17 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
                      <<" x="<<current_check.witness.x<<" y="<<current_check.witness.y
                      <<" pose_x="<<estimate_.position.x<<" pose_y="<<estimate_.position.y
                      <<" lidar_returns="<<obs.lidar_scan.size()<<'\n';
+            if(current_check.reason=="unknown_footprint") {
+                const auto v=mixed_space_.visibility(current_check.witness,sim_time_,cfg);
+                const auto filtered=mixed_observed_scan(obs,sim_time_);
+                std::cerr<<"mixed_visibility cause="<<v.reason<<" angle_world_deg="<<v.angle*180/kPi
+                         <<" beam_gap_deg="<<v.gap*180/kPi<<" max_gap_deg="<<cfg.max_beam_gap_rad*180/kPi
+                         <<" left_deg="<<v.left_angle*180/kPi<<" right_deg="<<v.right_angle*180/kPi
+                         <<" left_range_m="<<v.left_range<<" right_range_m="<<v.right_range
+                         <<" scan_age_s="<<v.age<<" raw="<<filtered.raw_points<<" used="<<filtered.rays.size()
+                         <<" rejected_quality="<<filtered.rejected_quality<<" rejected_range="<<filtered.rejected_range
+                         <<" rejected_self="<<filtered.rejected_self<<'\n';
+            }
         }
         mixed_stop(reason);return;
     }
@@ -222,7 +247,8 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
         auto result=hardware_mixed::plan_gate(current,center,heading,width,crossed,world_.goal(),
             geometry_,config_.vehicle_model,cfg,speed,estimate_.speed,mixed_space_,world_.bounds(),sim_time_);
         mixed_candidates_+=result.candidates;
-        std::cerr<<"mixed_gate_search id="<<id<<" width="<<width<<" candidates="<<result.candidates;
+        std::cerr<<"mixed_gate_search id="<<id<<" width="<<width<<" candidates="<<result.candidates
+                 <<" visibility_policy="<<hardware_mixed::visibility_policy_name(cfg.visibility_policy);
         for(const auto& outcome:result.outcomes) std::cerr<<' '<<outcome.first<<'='<<outcome.second;
         std::cerr<<'\n';
         if(result.selected.valid()) {
@@ -264,7 +290,8 @@ void HardwarePlannerRunner::update_mixed_navigation(const RealRobotObservation& 
             }
         }
         structured_anchor_hint_index_=0;
-        commit(road_ahead,State::RoadFollowing,"verified_road");
+        commit(road_ahead,State::RoadFollowing,cfg.visibility_policy==hardware_mixed::VisibilityPolicy::Strict
+            ?"verified_road":"road_obstacles_checked");
         planner_speed_ref_=std::min(speed,std::sqrt(2*cfg.braking_decel_mps2*std::max(0.0,distance_to_goal_-0.5*config_.goal_tolerance_m)));
         return;
     }

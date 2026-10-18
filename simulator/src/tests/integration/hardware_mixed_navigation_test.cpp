@@ -1,5 +1,6 @@
 #include "mvc/controller/hardware_planner/runner.h"
 #include "mvc/controller/hardware_planner/mixed_mission.h"
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -54,6 +55,15 @@ void math_and_perception() {
     hm::ObservedSpace sparse;hm::Scan rays;rays.rays={{-.2,2,true},{.2,2,true}};
     sparse.add(rays,cfg.observation_memory_s);
     require(!sparse.known_free({1,0},0,cfg),"missing beams interpolated as free");
+    auto visibility=sparse.visibility({1,0},0,cfg);
+    require(!visibility.free && std::string(visibility.reason)=="beam_gap" &&
+            std::abs(visibility.gap-.4)<1e-9,"unknown sector diagnostic does not expose bounding rays");
+    hm::ObservedSpace wrapped;hm::Scan seam;seam.rays={{-pi+.01,2,true},{pi-.01,2,true}};
+    wrapped.add(seam,cfg.observation_memory_s);
+    require(wrapped.known_free({-1,0},0,cfg) &&
+            std::abs(wrapped.visibility({-1,0},0,cfg).gap-.02)<1e-9,
+            "visibility diagnostic broke the angular seam");
+    require(!wrapped.visibility({-1,0},1,cfg).has_bracket,"expired ray bracket reported as current");
     require(!hm::gate_cleared({0,0},0,{-1,0},{0,0},0,.7,g,.06),"gate proximity counted as crossing");
     require(!hm::gate_cleared({.3,0},pi,{-1,0},{0,0},0,.7,g,.06),"reverse heading counted as crossing");
     require(!hm::gate_cleared({.3,.3},0,{-1,0},{0,0},0,.4,g,.06),"body outside aperture counted");
@@ -95,6 +105,34 @@ void gate_alternatives() {
     auto blocked_scan=circle({0,0},.30);hm::ObservedSpace blocked;blocked.add(blocked_scan,cfg.observation_memory_s);
     auto collision=hm::plan_gate(from,center,normal,.6,false,goal,g,VehicleModelKind::CarLikeBicycle,cfg,.04,0,blocked,bounds,0);
     require(!collision.selected.valid() && collision.outcomes.count("occupied_footprint"),"gate score overrode collision rejection");
+}
+
+void obstacle_only_visibility() {
+    hm::Config cfg;VehicleGeometry g;g.body_length=.25;g.body_width=.15;
+    const ReferenceWaypoint q{{0,0},0,0,.04},target{{.5,0},0,0,.04};
+    const Rect bounds{-3,-3,3,3};
+    auto scan=circle({.075,.04},2);
+    scan.rays.erase(std::remove_if(scan.rays.begin(),scan.rays.end(),[](const hm::Ray& ray){
+        return ray.angle>-130*pi/180 && ray.angle<-110*pi/180;
+    }),scan.rays.end());
+    hm::ObservedSpace space;space.add(scan,cfg.observation_memory_s);
+    require(space.validate({q,target},q,g,bounds,0,cfg).reason=="unknown_footprint",
+            "strict default no longer rejects an angular hole");
+    cfg.visibility_policy=hm::VisibilityPolicy::ObstaclesOnly;
+    require(space.validate({q,target},q,g,bounds,0,cfg).valid(),
+            "obstacle-only policy still blocks a trajectory for missing rays");
+    require(!space.known_free({-.0586364,-.165},0,cfg),
+            "relaxed validation rewrote missing visibility as observed free space");
+    require(space.validate({q,target},q,g,bounds,1,cfg).reason=="no_fresh_observations",
+            "obstacle-only policy accepted expired perception");
+    hm::ObservedSpace empty;
+    require(empty.validate({q,target},q,g,bounds,0,cfg).reason=="no_fresh_observations",
+            "obstacle-only policy accepted absent perception");
+    require(space.validate({q,target},q,g,{-1,-1,.6,1},0,cfg).reason=="geofence",
+            "relaxed visibility disabled padded geofence");
+    hm::Scan hit;hit.rays={{0,.18,true},{.01,2,true}};space.add(hit,cfg.observation_memory_s);
+    require(space.validate({q,target},q,g,bounds,0,cfg).reason=="occupied_footprint",
+            "relaxed visibility disabled obstacle clearance around the body");
 }
 }
 
@@ -174,14 +212,17 @@ HardwarePlannerConfig config() {
     c.goal_tolerance_m=.06;c.goal_stop_speed_mps=.025;
     return c;
 }
-void recorded_start_visibility() {
+void recorded_start_visibility(const std::string& name="mixed_20261017_160347_observed_scans.txt",double yaw=.000480,
+                               bool relaxed=false) {
     auto cfg=config();cfg.cruise_speed_limit=.04;
     cfg.localization.lidar_x_offset=.075;cfg.localization.lidar_y_offset=.04;
-    const auto path=std::filesystem::path(__FILE__).parent_path()/"data/mixed_20261017_160347_observed_scans.txt";
+    const auto path=std::filesystem::path(__FILE__).parent_path()/"data"/name;
     std::ifstream file(path);require(file.good(),"recorded hardware scan fixture missing");
     hm::Config mission_cfg;auto world=hm::mission("",&mission_cfg);
-    cfg.mixed_dynamic=mission_cfg;HardwarePlannerRunner r(world,{},cfg);
-    HardwareMixedTestAccess::pose(r,{0,0},.000480);
+    cfg.mixed_dynamic=mission_cfg;
+    if(relaxed)cfg.mixed_dynamic.visibility_policy=hm::VisibilityPolicy::ObstaclesOnly;
+    HardwarePlannerRunner r(world,{},cfg);
+    HardwareMixedTestAccess::pose(r,{0,0},yaw);
     hm::ObservedSpace space;hm::Scan scan;size_t count=0,scans=0;
     while(file>>scan.timestamp>>scan.origin.x>>scan.origin.y>>count) {
         scan.rays.clear();auto obs=observation({0,0},10+scan.timestamp);obs.lidar_scan.clear();
@@ -190,23 +231,44 @@ void recorded_start_visibility() {
             const double a=std::atan2(hit.y-scan.origin.y,hit.x-scan.origin.x);
             const double range=distance(scan.origin,hit);
             scan.rays.push_back({a,range,true});
-            const double body_angle=a-.000480;
+            const double body_angle=a-yaw;
             obs.lidar_scan.push_back({15,body_angle*180/pi,range*1000,range,
                                      range*std::cos(body_angle),range*std::sin(body_angle)});
         }
         space.add(scan,cfg.mixed_dynamic.observation_memory_s);
         HardwareMixedTestAccess::update(r,obs);HardwareMixedTestAccess::control(r);++scans;
-        require(r.last_command().safety_stop && r.last_command().pwm_left==0 && r.last_command().pwm_right==0,
-                "recorded missing visibility authorized motor command");
+        if(!relaxed) {
+            require(r.last_command().safety_stop && r.last_command().pwm_left==0 && r.last_command().pwm_right==0,
+                    "recorded missing visibility authorized motor command in strict mode");
+        } else {
+            require(r.diagnostics().reference_invalidation_reason!="current_unknown_footprint",
+                    "recorded start still blocked by missing visibility in obstacle-only mode");
+            if(scans==1)require(HardwareMixedTestAccess::state(r)==hm::State::GateAcquisition,
+                    "relaxed start failed to detect the measured obstacle and acquire a gate");
+        }
     }
     require(scans==5,"wrong hardware scan history length");
     VehicleGeometry g;g.body_length=.25;g.body_width=.15;
-    const ReferenceWaypoint current{{0,0},.000480,0,0};
+    const ReferenceWaypoint current{{0,0},yaw,0,0};
     const auto check=space.validate({current,current},current,g,world.bounds(),0,cfg.mixed_dynamic);
+    if(relaxed) {
+        require(check.valid(),"real footprint still rejected after relaxing coverage");
+        require(HardwareMixedTestAccess::state(r)==hm::State::GateFollowing &&
+                !HardwareMixedTestAccess::gate_id(r).empty(),
+                "recorded obstacle-only replay failed to select a measured gate");
+        auto missing=observation({0,0},11);missing.have_lidar_scan=false;
+        HardwareMixedTestAccess::update(r,missing);HardwareMixedTestAccess::control(r);
+        require(r.last_command().safety_stop && r.last_command().pwm_left==0 && r.last_command().pwm_right==0,
+                "relaxed real replay disabled missing-LiDAR stop");
+        return;
+    }
     require(check.reason=="unknown_footprint" && check.has_witness && check.witness.y<0,
             "real blind sector disappeared or lacks diagnostic coordinates");
     require(r.diagnostics().reference_invalidation_reason=="current_unknown_footprint",
             "initial visibility failure still hidden behind generic gate error");
+    const auto visibility=space.visibility(check.witness,0,cfg.mixed_dynamic);
+    require(!visibility.free && visibility.has_bracket && visibility.gap>cfg.mixed_dynamic.max_beam_gap_rad &&
+            std::string(visibility.reason)=="beam_gap","recorded beam gap diagnostic disagrees with runtime check");
     // The same stop is recoverable only after fresh measurements actually cover
     // the footprint. Inject a fully observed mathematical scan, not free cells
     // inferred from the missing sector of the recording.
@@ -392,6 +454,11 @@ void mission_frame_parser() {
     auto w=hm::mission(fixture.path.string(),&cfg);
     require(cfg.start_reference_frame && w.bounds().min_x<0 && w.bounds().min_y<0,
             "capture origin became an arena corner");
+    require(cfg.visibility_policy==hm::VisibilityPolicy::Strict,"legacy mission default lost strict visibility");
+    fixture.write("visibility_policy obstacles_only\n");hm::mission(fixture.path.string(),&cfg);
+    require(cfg.visibility_policy==hm::VisibilityPolicy::ObstaclesOnly,"explicit visibility relaxation ignored");
+    fixture.write("visibility_policy strict\n");hm::mission(fixture.path.string(),&cfg);
+    require(cfg.visibility_policy==hm::VisibilityPolicy::Strict,"strict visibility could not be restored");
     // A deliberately measured arena frame remains supported, with its own bounds.
     fixture.write("frame arena\nbounds 0 0 2 1.7\nroad .35 .85\nroad 1.65 .85\n");
     w=hm::mission(fixture.path.string(),&cfg);
@@ -401,6 +468,8 @@ void mission_frame_parser() {
         "frame start_reference\nbounds 0 0 2 1.7\nroad 0 0\nroad 1.3 0\n",
         "frame start_reference\nroad .35 .85\nroad 1.65 .85\n",
         "frame start_reference\narena_size -2 1.7\n",
+        "visibility_policy disable_everything\n",
+        "visibility_policy\n",
         "frame arena\nroad .35 .85\nroad 1.65 .85\n"}) {
         fixture.write(invalid);bool rejected=false;
         try{hm::mission(fixture.path.string());}catch(const std::invalid_argument&){rejected=true;}
@@ -409,6 +478,6 @@ void mission_frame_parser() {
 }
 }
 int main() {
-    try {math_and_perception();gate_alternatives();recorded_start_visibility();alternative_gate_replanning();runtime_states();reference_frame_and_start_guard();mission_frame_parser();std::cout<<"hardware Mixed mathematical, perception and state checks passed\n";return 0;}
+    try {math_and_perception();gate_alternatives();obstacle_only_visibility();recorded_start_visibility();recorded_start_visibility("mixed_20261017_163834_observed_scans.txt",0);recorded_start_visibility("mixed_20261017_163834_observed_scans.txt",0,true);alternative_gate_replanning();runtime_states();reference_frame_and_start_guard();mission_frame_parser();std::cout<<"hardware Mixed mathematical, perception and state checks passed\n";return 0;}
     catch(const std::exception& e){std::cerr<<"FAILED: "<<e.what()<<'\n';return 1;}
 }

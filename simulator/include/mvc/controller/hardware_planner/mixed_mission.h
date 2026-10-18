@@ -33,6 +33,12 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
                    !std::isfinite(cfg.arena_size_m.x) || !std::isfinite(cfg.arena_size_m.y) ||
                    cfg.arena_size_m.x<=0 || cfg.arena_size_m.y<=0)
                     throw std::invalid_argument("invalid mixed arena dimensions");
+            } else if(key=="visibility_policy") {
+                std::string policy;
+                if(!(in>>policy))throw std::invalid_argument("missing mixed visibility policy");
+                if(policy=="strict")cfg.visibility_policy=VisibilityPolicy::Strict;
+                else if(policy=="obstacles_only")cfg.visibility_policy=VisibilityPolicy::ObstaclesOnly;
+                else throw std::invalid_argument("mixed visibility policy must be strict or obstacles_only");
             } else if(key=="road") {
                 Vec2 p;
                 if(!(in>>p.x>>p.y)) throw std::invalid_argument("invalid road point");
@@ -96,7 +102,7 @@ inline WorldMap mission(const std::string& path, Config* config = nullptr) {
             throw std::invalid_argument("start_reference road must start at local (0,0), initially along +X");
         // Any two points inside a rectangle are at most its diagonal apart.
         // This finite envelope is NOT a located physical arena perimeter.
-        // All motion still needs live observed free space for the full body.
+        // This does not replace live obstacle checks or the visibility policy.
         const double radius=std::hypot(cfg.arena_size_m.x,cfg.arena_size_m.y);
         world.set_bounds({-radius,-radius,radius,radius});
     } else if(!have_bounds) {

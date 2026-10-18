@@ -11,6 +11,8 @@ namespace thesis_sim::hardware_mixed {
 
 enum class State { RoadFollowing, GateAcquisition, GateFollowing, RoadRejoining, SafeStop, GoalReached };
 const char* state_name(State state);
+enum class VisibilityPolicy { Strict, ObstaclesOnly };
+const char* visibility_policy_name(VisibilityPolicy policy);
 
 struct Config {
     bool enabled = false;
@@ -33,6 +35,9 @@ struct Config {
     double replan_interval_s = 0.60;
     double observation_memory_s = 0.60;
     double max_beam_gap_rad = 0.055;
+    // Strict requires observed free space; ObstaclesOnly checks measured
+    // obstacles but does not reject gaps in visibility. The map stays unknown.
+    VisibilityPolicy visibility_policy = VisibilityPolicy::Strict;
     double braking_decel_mps2 = 0.20;
     double reaction_time_s = 0.40;
     double max_yaw_accel_rad_s2 = 0.60;
@@ -84,12 +89,21 @@ struct Scan {
     double motion_uncertainty_m = 0.0;
     std::vector<Ray> rays;
     std::vector<Vec2> occupied_points;
+    size_t raw_points = 0, rejected_quality = 0, rejected_range = 0, rejected_self = 0;
+};
+struct Visibility {
+    bool free = false, has_bracket = false;
+    const char* reason = "no_fresh_beams";
+    double angle = 0, distance = 0, gap = 0, age = 0;
+    double left_angle = 0, right_angle = 0, left_range = 0, right_range = 0;
 };
 class ObservedSpace {
 public:
     void clear() { scans_.clear(); }
     void add(Scan scan, double memory_s);
     bool known_free(const Vec2& point, double now, const Config& config) const;
+    // Explains the same test used by known_free; it does not fill missing rays.
+    Visibility visibility(const Vec2& point, double now, const Config& config) const;
     PathResult validate(const std::vector<ReferenceWaypoint>& path,
                         const ReferenceWaypoint& current, const VehicleGeometry& geometry,
                         const Rect& bounds, double now, const Config& config) const;
@@ -104,7 +118,7 @@ struct GatePlan {
 };
 
 // Local G2 alternatives through one measured aperture. Every returned solution
-// crosses the aperture with the entire body and is observed/collision checked.
+// crosses the aperture with the entire body and passes the configured checks.
 // The gate normal stays fixed; a terminal tangent need not equal that normal.
 GatePlan plan_gate(const ReferenceWaypoint& current, const Vec2& center,
                    double normal_yaw, double width, bool plane_already_crossed,

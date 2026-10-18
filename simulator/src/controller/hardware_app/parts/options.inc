@@ -15,6 +15,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -121,6 +122,7 @@ struct AppOptions {
     int mixed_preset = 1;
     std::string mixed_config_path;
     bool check_mixed_config = false;
+    std::string check_mixed_scan_path;
     std::string world_file;
     std::string stream_host;
     int stream_port = 0;
@@ -616,6 +618,7 @@ void print_usage(const char* argv0) {
         << "  --mixed-map goal_directed_dynamic  hardware-only adaptive Mixed mission\n"
         << "  --mixed-config PATH       mission road, bounds and rejoin/safety parameters\n"
         << "  --check-mixed-config      validate configuration without opening hardware\n"
+        << "  --check-mixed-scan CSV    check a stationary start capture with Mixed visibility rules; no devices\n"
         << "                            dynamic Mixed requires start matching; capture its dedicated reference first\n"
         << "  --simulate                run the selected hardware scenario against synthetic sensors\n"
         << "  --scenario MODE           structured | unstructured | mixed\n"
@@ -678,6 +681,11 @@ AppOptions parse_args(int argc, char** argv) {
             options.mixed_config_path = argv[++i];
         } else if (arg == "--check-mixed-config") {
             options.check_mixed_config = true;
+        } else if (arg == "--check-mixed-scan") {
+            if(i+1>=argc || std::string(argv[i+1]).empty() || std::string(argv[i+1]).rfind("--",0)==0)
+                throw std::invalid_argument("--check-mixed-scan requires a raw start-scan CSV");
+            options.check_mixed_scan_path=argv[++i];
+            options.check_mixed_config=true;
         } else if (arg == "--simulate") {
             options.simulate = true;
         } else if (arg == "--scenario" && i + 1 < argc) {

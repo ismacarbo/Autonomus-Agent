@@ -4,6 +4,7 @@
 
 // Exercise the runner's actual CLI and TCP control path, without serial devices.
 #include "../../controller/hardware_app/parts/options.inc"
+#include "../../controller/hardware_app/parts/mixed_scan_check.inc"
 #include "../../controller/hardware_app/parts/trial_recording.inc"
 #include "../../controller/hardware_app/parts/stream_config.inc"
 }  // namespace
@@ -34,10 +35,17 @@ void check_dynamic_mixed_options() {
             "explicit start reference was ignored");
     require(parse({"runner","--scenario","unstructured","--no-start-matching"}).start_matching_enabled==false,
             "legacy hardware start-matching setting changed");
+    const auto scan_options=parse({"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic",
+                                   "--check-mixed-scan","capture_raw_scans.csv"});
+    require(scan_options.check_mixed_config && scan_options.check_mixed_scan_path=="capture_raw_scans.csv",
+            "raw scan check could enter hardware connection path");
     for(const auto& args:std::vector<std::vector<std::string>>{
         {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--simulate"},
         {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--no-start-matching"},
         {"runner","--check-mixed-config"},
+        {"runner","--check-mixed-scan","capture.csv"},
+        {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--check-mixed-scan"},
+        {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--check-mixed-scan","--controller-port","invalid"},
         {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--cruise-speed","nan"},
         {"runner","--scenario","mixed","--mixed-map","goal_directed_dynamic","--cruise-speed","-1"}}) {
         bool rejected=false;
@@ -45,6 +53,97 @@ void check_dynamic_mixed_options() {
         require(rejected,"invalid dynamic Mixed CLI accepted");
     }
     std::cout<<"hardware_dynamic_mixed_options: ok\n";
+}
+
+void check_dynamic_mixed_scan() {
+    const auto path=std::filesystem::temp_directory_path()/
+        ("mixed_scan_check_"+std::to_string(getpid())+".csv");
+    struct Cleanup {std::filesystem::path path;~Cleanup(){std::error_code ec;std::filesystem::remove(path,ec);}} cleanup{path};
+    HardwarePlannerConfig cfg;
+    auto world=thesis_sim::hardware_mixed::mission("",&cfg.mixed_dynamic);
+    cfg.cruise_speed_limit=.04;cfg.planner_safety_stop_enabled=true;
+    cfg.localization.lidar_x_offset=.075;cfg.localization.lidar_y_offset=.04;
+    cfg.localization.lidar_yaw_offset=0;cfg.localization.lidar_flip_left_right=true;
+    cfg.localization.max_range_m=2.5;cfg.start_matching.enabled=false;
+    HardwarePlannerRunner runner(world,{},cfg);
+    RealRobotObservation filtering;
+    filtering.lidar_scan={{15,120,1000,1,0,0},{0,121,1000,1,0,0},
+        {15,122,50,.05,0,0},{15,90,120,.12,0,0},{15,119,3200,3.2,0,0}};
+    const auto filtered=runner.mixed_observed_scan(filtering,0);
+    require(filtered.raw_points==5 && filtered.rays.size()==2 && filtered.rejected_quality==1 &&
+            filtered.rejected_range==1 && filtered.rejected_self==1 &&
+            std::abs(filtered.rays.front().angle+120*3.14159265358979323846/180)<1e-9 &&
+            filtered.rays.back().range==2.5 && !filtered.rays.back().occupied,
+            "raw checker diverged from navigation filters, mirroring or far-return handling");
+    const auto capture=[&](bool missing,bool occupied,bool zero_quality=false) {
+        std::ofstream out(path);
+        out<<"acquisition_index,scan_index,scan_start_timestamp_s,scan_end_timestamp_s,angle_deg,range_m,quality,accepted\n";
+        for(int scan=0;scan<5;++scan)for(int degree=0;degree<360;++degree) {
+            if(missing && degree>=113 && degree<=127)continue;
+            const double range=occupied && degree==0?.13:2.0;
+            out<<"0,"<<scan<<','<<1+.14*scan<<','<<1.10+.14*scan<<','<<degree<<','<<range
+               <<','<<(zero_quality?0:15)<<",1\n";
+        }
+    };
+    capture(false,false);
+    std::ostringstream good;
+    require(check_mixed_start_scan(path.string(),world,runner,good)==0 &&
+            good.str().find("mixed_start_footprint=observed_clear")!=std::string::npos &&
+            good.str().find("motor_controller_opened=0 motion_authorized=0")!=std::string::npos,
+            "offline clear footprint check failed or claims motion authorization");
+    capture(true,false);
+    std::ostringstream blind;
+    require(check_mixed_start_scan(path.string(),world,runner,blind)==3 &&
+            blind.str().find("cause=beam_gap")!=std::string::npos,
+            "offline checker filled a missing raw sector");
+    capture(false,true);
+    std::ostringstream blocked;
+    require(check_mixed_start_scan(path.string(),world,runner,blocked)==3 &&
+            blocked.str().find("reason=occupied_footprint")!=std::string::npos,
+            "offline checker accepted an occupied start margin");
+    capture(false,false,true);
+    std::ostringstream quality;
+    require(check_mixed_start_scan(path.string(),world,runner,quality)==3 &&
+            quality.str().find("insufficient_valid_lidar_returns")!=std::string::npos,
+            "offline checker trusted matcher accepted=1 instead of navigation quality filter");
+    {std::ofstream malformed(path);malformed<<"angle_deg,range_m\n0,1\n";}
+    bool rejected=false;
+    try{read_mixed_start_scans(path.string());}catch(const std::exception&){rejected=true;}
+    require(rejected,"malformed raw CSV accepted");
+    capture(false,false);
+    {std::ofstream mixed(path,std::ios::app);mixed<<"1,0,2,2.1,0,2,15,1\n";}
+    rejected=false;
+    try{read_mixed_start_scans(path.string());}catch(const std::exception&){rejected=true;}
+    require(rejected,"separate acquisitions fused as one stationary pose");
+    const auto measured_path=std::filesystem::path(__FILE__).parent_path()/
+        "data/mixed_20261017_160242_raw_scans.csv";
+    const auto measured=read_mixed_start_scans(measured_path.string());
+    size_t raw_count=0,used_count=0,capped_count=0;
+    for(const auto& obs:measured) {
+        const auto scan=runner.mixed_observed_scan(obs,obs.lidar_scan_end_timestamp_s);
+        raw_count+=scan.raw_points;used_count+=scan.rays.size();
+        require(scan.rejected_quality==0 && scan.rejected_range==0 && scan.rejected_self==0,
+                "real capture acquired a navigation filter rejection");
+        for(const auto& ray:scan.rays)if(!ray.occupied && ray.range==2.5)++capped_count;
+    }
+    require(measured.size()==5 && raw_count==1293 && used_count==raw_count && capped_count==5,
+            "real raw capture lost its measured far returns or changed fixture contents");
+    std::ostringstream measured_result;
+    require(check_mixed_start_scan(measured_path.string(),world,runner,measured_result)==3 &&
+            measured_result.str().find("beam_gap_deg=7.5")!=std::string::npos &&
+            measured_result.str().find("reason=unknown_footprint")!=std::string::npos,
+            "real missing sector was made free by retaining far returns");
+    cfg.mixed_dynamic.visibility_policy=thesis_sim::hardware_mixed::VisibilityPolicy::ObstaclesOnly;
+    HardwarePlannerRunner relaxed(world,{},cfg);
+    std::ostringstream relaxed_result;
+    require(check_mixed_start_scan(measured_path.string(),world,relaxed,relaxed_result)==0 &&
+            relaxed_result.str().find("mixed_start_footprint=measured_obstacles_clear full_visibility_verified=0")!=std::string::npos,
+            "explicit obstacle-only policy did not release the real raw footprint or misreported it as observed");
+    capture(false,true);std::ostringstream relaxed_collision;
+    require(check_mixed_start_scan(path.string(),world,relaxed,relaxed_collision)==3 &&
+            relaxed_collision.str().find("reason=occupied_footprint")!=std::string::npos,
+            "obstacle-only raw checker ignored a measured collision");
+    std::cout<<"hardware_dynamic_mixed_scan: ok\n";
 }
 
 void check_trial_recording() {
@@ -784,7 +883,7 @@ void check_lateral_gate_pwm_plant(double lateral_offset, double period = 0.1,
 
 int main(int argc, char** argv) {
     if(argc==2 && std::string(argv[1])=="--mixed-options") {
-        try {check_dynamic_mixed_options();return 0;}
+        try {check_dynamic_mixed_options();check_dynamic_mixed_scan();return 0;}
         catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
     }
     try {

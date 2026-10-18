@@ -2,6 +2,22 @@
 
 Implementazione del 17 ottobre 2026. Nessuna prova fisica è stata eseguita durante lo sviluppo. Il preset si seleziona dal launcher `thesis_robot_runner`, con `--scenario mixed --mixed-map goal_directed_dynamic`. L'alias `MixedGoalDirectedDynamic` è equivalente. `--simulate` viene rifiutato per questo preset.
 
+## Aggiornamento del 18 ottobre: copertura LiDAR opzionale
+
+Su richiesta dell'operatore, `config/mixed_goal_directed_dynamic.conf` contiene ora **`visibility_policy obstacles_only`**. La presenza di settori senza raggi non causa più `current_unknown_footprint` o `unknown_footprint`: il controllo iniziale, ROAD, gate, rejoin e arco di arresto verificano gli ostacoli misurati senza richiedere copertura completa della sagoma. Le celle sconosciute restano sconosciute; non vengono inventati raggi o marcate celle libere. Un ostacolo in una zona non osservata può quindi sfuggire al controllo.
+
+Restano attivi collisioni con ostacoli misurati, ingombro e margini, limiti cinematici/dinamici, scansioni fresche e sufficienti, matching, localizzazione, watchdog, STOP e perdita della comunicazione. Il parametro non modifica velocità, geometria, raggio minimo o posizione iniziale. La missione resta quella completa da 130 cm.
+
+Per ripristinare la verifica di copertura impostare **`visibility_policy strict`** nello stesso file e riavviare manualmente il runner. `strict` resta il default del codice per le configurazioni che omettono il parametro. Il log iniziale della configurazione aggiornata deve riportare:
+
+```text
+mixed_visibility_policy=obstacles_only full_coverage_required=0 measured_collision_checks=1
+```
+
+Replay offline dei dati del report `20261017_163834_681`: superato il controllo iniziale, rilevato l'ostacolo, trovate 9 connessioni ammissibili su 63 per un gate misurato e raggiunto `GATE_FOLLOWING`. L'iniezione successiva di perdita LiDAR arresta il controllo. Sul CSV raw copiato dall'operatore, `--check-mixed-scan` termina con exit 0 e `mixed_start_footprint=measured_obstacles_clear full_visibility_verified=0`; gli stessi dati in modalità `strict` restituiscono exit 3, `unknown_footprint`. Sono verifiche offline, senza dispositivi o movimento: non dimostrano il completamento fisico del bypass o del rejoin.
+
+[Comandi di trasferimento, build e missione completa](../reports/mixed_relax_20261018/Modifica_e_comandi.md). Le diagnosi delle sezioni storiche in fondo descrivono il comportamento precedente con `strict`.
+
 ## Confini della modifica
 
 Il simulation planner, i suoi preset, il rendering, la GUI e i modelli fisici restano invariati. La directory storicamente denominata `simulator/` contiene anche il runtime del Raspberry Pi: le modifiche riguardano quel runtime e i suoi test offline. L'unica nuova API nel modello condiviso è `WorldMap::hardware_mixed_mission`, implementata nella libreria hardware: costruisce una mappa missione con strada, start, goal e limiti numerici, senza ostacoli, gate o template. Nel frame locale i limiti non rappresentano il perimetro fisico registrato. Non viene registrata fra i preset simulati. I vecchi preset hardware mantengono la modalità precedente, perché `mixed_dynamic.enabled` è falso per default.
@@ -14,7 +30,7 @@ Il nuovo percorso non esegue le vecchie euristiche Mixed per alternare checkpoin
 
 | Stato | Comportamento e uscita |
 |---|---|
-| `ROAD_FOLLOWING` | Proietta la posa sulla strada persistente, campiona il tratto avanti, richiede visibilità dell'ingombro e riutilizza `sel_jr` structured e MPC. Un ostacolo percepito nel corridoio attiva l'acquisizione. |
+| `ROAD_FOLLOWING` | Proietta la posa sulla strada persistente, campiona il tratto avanti, applica la politica di visibilità configurata e riutilizza `sel_jr` structured e MPC. Un ostacolo percepito nel corridoio attiva l'acquisizione. |
 | `GATE_ACQUISITION` | Arresto; usa scansioni nuove per confermare aperture. I candidati devono avanzare lungo la strada, superare i controlli G2/cinematici/percezione e non ripetere aperture già passate. La preferenza di `sel_jr`/salience non può annullare un rifiuto. |
 | `GATE_FOLLOWING` | ID, piano del gate, normale e larghezza restano bloccati. La traiettoria viene mantenuta se verificata; il passaggio richiede direzione coerente, sagoma compresa nell'apertura al passaggio del piano e parte posteriore oltre il piano con margine. La posa oltre il gate da sola non prova l'attraversamento. |
 | `ROAD_REJOINING` | Rimuove il riferimento del gate e genera una nuova connessione alla strada originale. Non torna implicitamente al riferimento structured. |
@@ -23,7 +39,7 @@ Il nuovo percorso non esegue le vecchie euristiche Mixed per alternare checkpoin
 
 Dopo il gate viene conservata la posizione dell'apertura attraversata. Il contatore aumenta solo per attraversamenti fisici; un rejoin ha un contatore separato. I track vengono ricreati per il prossimo ostacolo con ID crescenti e le aperture passate vengono escluse entro un raggio configurabile. Non esiste un numero di gate richiesto per finire.
 
-Dal fix del report `20261017_160347_774`, ogni gate misurato viene valutato con fino a 63 connessioni G2: tre distanze d'uscita, tre posizioni laterali entro la larghezza disponibile e sette orientamenti finali. L'orientamento finale della curva può differire dalla normale del passaggio; la normale, il piano e l'identità del gate restano quelli misurati. Il candidato deve attraversare il piano nel verso corretto, con sagoma e margini dentro l'apertura, e terminare con il retro libero. Restano obbligatorie curvatura, dinamica, collisioni e osservabilità dell'intero percorso. Anche il replan dello stesso gate usa questa ricerca, conservando lock e storia dell'attraversamento. La curva viene mantenuta quando resta valida e la ricerca viene limitata dal periodo di replanning.
+Dal fix del report `20261017_160347_774`, ogni gate misurato viene valutato con fino a 63 connessioni G2: tre distanze d'uscita, tre posizioni laterali entro la larghezza disponibile e sette orientamenti finali. L'orientamento finale della curva può differire dalla normale del passaggio; la normale, il piano e l'identità del gate restano quelli misurati. Il candidato deve attraversare il piano nel verso corretto, con sagoma e margini dentro l'apertura, e terminare con il retro libero. Restano obbligatorie curvatura, dinamica e collisioni; l'osservabilità dell'intero percorso è richiesta soltanto con `strict`. Anche il replan dello stesso gate usa questa ricerca, conservando lock e storia dell'attraversamento. La curva viene mantenuta quando resta valida e la ricerca viene limitata dal periodo di replanning.
 
 ## Strada persistente e Frenet
 
@@ -35,7 +51,7 @@ Nel punto proiettato si calcolano tangente `theta(s)`, `s`, `n = -sin(theta) dx 
 
 I target sono `s_i = min(lunghezza_strada, s0 + lookahead_i)`, con offset positivi e duplicati rimossi. Per ciascuno vengono costruiti posizione, tangente e curvatura della strada. La connessione è una spline di tre clotoidi G2 (`G2solve3arc`) dalla posa e curvatura correnti alla posa e curvatura del target. Non si cerca un'intersezione della vecchia curva del gate.
 
-La selezione valuta lunghezza, integrale della curvatura al quadrato, clearance, avanzamento curvilineo e distanza residua dal goal. Endpoint e tangente sono vincoli, non soltanto termini di costo. Il tratto stradale successivo al target deve essere osservato e percorribile. Un target vicino non fattibile non impedisce di esaminare quelli successivi.
+La selezione valuta lunghezza, integrale della curvatura al quadrato, clearance, avanzamento curvilineo e distanza residua dal goal. Endpoint e tangente sono vincoli, non soltanto termini di costo. Il tratto stradale successivo al target deve superare gli stessi controlli di collisione e la politica di visibilità scelta. Un target vicino non fattibile non impedisce di esaminare quelli successivi.
 
 Le connessioni devono rispettare raggio/sterzo del modello car-like oppure curvatura/yaw rate del modello tracked. Gli estremi e la derivata della curvatura sono verificati su ogni clotoide, anche se più corta del passo di campionamento. Sono controllate accelerazione angolare e velocità di sterzata alla velocità prevista e a quella misurata. La regolarità geometrica da sola non autorizza il movimento. Non vengono amplificati i limiti di curvatura del car-like attraverso le euristiche dei vecchi preset compatti.
 
@@ -43,9 +59,9 @@ Le connessioni devono rispettare raggio/sterzo del modello car-like oppure curva
 
 La validazione usa raggi LiDAR reali con qualità e range validi. Due raggi vicini delimitano un settore conservativo osservato; intervalli angolari grandi e ritorni mancanti restano sconosciuti. La memoria locale conserva scansioni per un tempo limitato. Gli endpoint occupati prevalgono su osservazioni precedenti di spazio libero. Non viene usata la ground truth. Con `frame start_reference`, i bounds sono un inviluppo numerico finito, non il perimetro fisico registrato. Pareti e barriere sono rilevate dal LiDAR e sottoposte agli stessi controlli di sagoma degli altri ostacoli. Con `frame arena` si possono ancora fornire limiti fisici misurati nello stesso frame della strada.
 
-Si verificano sagome rettangolari orientate, riempite con campioni, con margine ostacoli, margine posa, compensazione della discretizzazione e inflazione per il moto durante scansione e trasporto. La sola posizione del centro non basta. La porzione già occupata dal corpo del robot è esclusa dalla richiesta di visibilità, ma non dal controllo di collisione con ritorni validi. Tutto lo spazio aggiuntivo deve risultare osservato.
+Si verificano sagome rettangolari orientate, riempite con campioni, con margine ostacoli, margine posa, compensazione della discretizzazione e inflazione per il moto durante scansione e trasporto. La sola posizione del centro non basta. Con `strict`, la porzione già occupata dal corpo del robot è esclusa dalla richiesta di visibilità, ma non dal controllo di collisione con ritorni validi; tutto lo spazio aggiuntivo deve risultare osservato. Con `obstacles_only` si conserva il controllo di collisione sulla stessa sagoma con margini, senza richiedere copertura dei settori mancanti.
 
-La sagoma attuale viene verificata prima della ricerca dei gate. `current_occupied_footprint` significa che un ritorno misurato entra nella sagoma con margine; `current_unknown_footprint` significa che una parte del margine non è osservata. Il log `mixed_footprint` riporta il punto responsabile in coordinate di missione. Queste cause non vengono più nascoste da `no_verified_gate`. Le osservazioni fresche possono risolvere uno stop per copertura temporaneamente insufficiente; un settore cieco persistente resta sconosciuto. Non viene riempito con la mappa teorica né con un aumento arbitrario dell'interpolazione angolare.
+La sagoma attuale viene verificata prima della ricerca dei gate. `current_occupied_footprint` significa che un ritorno misurato entra nella sagoma con margine; `current_unknown_footprint`, presente soltanto con `strict`, significa che una parte del margine non è osservata. Il log `mixed_footprint` riporta il punto responsabile in coordinate di missione. Queste cause non vengono più nascoste da `no_verified_gate`. Le osservazioni fresche possono risolvere uno stop per copertura temporaneamente insufficiente; un settore cieco persistente resta sconosciuto anche con `obstacles_only`, ma in tale modalità non causa da solo uno stop.
 
 La curva locale resta stabile finché il corridoio rimanente è valido e il robot la segue entro le soglie. Ogni ciclo la ricontrolla. Un nuovo ostacolo sulla curva fa tornare all'acquisizione; dati insufficienti causano stop. Una curva sostitutiva viene generata su scansione nuova, dopo il periodo minimo e con velocità lineare e angolare quasi nulle, per rendere conservativa la discontinuità del riferimento. Il tracking MPC e i limiti di variazione dei comandi restano attivi.
 
@@ -55,7 +71,7 @@ Sono mantenute le protezioni preesistenti. Il nuovo percorso aggiunge controlli 
 
 ## Configurazione e localizzazione
 
-L'arena comunicata dall'operatore misura **200 × 170 cm**, con **pareti/barriere visibili all'altezza del LiDAR**. Il robot può essere collocato nella posa iniziale scelta dall'operatore, senza coordinate obbligatorie `(35,85)` cm. Restano necessari lo spazio libero e la copertura LiDAR della sagoma con margine: con i parametri correnti il margine base è 9 cm dalla carrozzeria (3,5 cm ostacoli + 2,5 cm posa + 3 cm discretizzazione), oltre all'eventuale inflazione per il moto.
+L'arena comunicata dall'operatore misura **200 × 170 cm**, con **pareti/barriere visibili all'altezza del LiDAR**. Il robot può essere collocato nella posa iniziale scelta dall'operatore, senza coordinate obbligatorie `(35,85)` cm. La sagoma con margine deve essere priva di ostacoli misurati; la copertura completa è richiesta soltanto con `strict`. Con i parametri correnti il margine base è 9 cm dalla carrozzeria (3,5 cm ostacoli + 2,5 cm posa + 3 cm discretizzazione), oltre all'eventuale inflazione per il moto.
 
 La prima cattura LiDAR definisce il sistema di riferimento della missione:
 
@@ -73,15 +89,16 @@ arena_size 2.00 1.70
 road 0 0
 road 1.30 0
 lookaheads 0.35 0.55 0.80 1.10 1.50
+visibility_policy obstacles_only
 ```
 
 Seguono i parametri di sicurezza riportati sotto. Per cambiare la distanza del goal basta cambiare l'ultima coordinata X della strada. Le coordinate sono relative alla cattura, non a un angolo dell'arena. I lookahead vengono limitati al goal e deduplicati: non sono checkpoint obbligatori. Non è presente una missione di prova breve.
 
-**Come vengono trattati i bordi:** dimensioni dell'arena e scan matching non forniscono da soli la posa del rettangolo nel frame del robot. Non viene quindi inventato un rettangolo centrato sullo start. `WorldMap::bounds` contiene un inviluppo finito `[-D,+D] × [-D,+D]`, con `D = hypot(2.00,1.70) ≈ 2.625 m`: qualsiasi punto dell'arena può distare al massimo una diagonale dallo start, qualunque sia l'orientamento iniziale. È un limite numerico esterno, **non una garanzia di permanenza dentro un rettangolo fisico registrato**. Nessuno spazio dell'inviluppo è dichiarato libero: ogni sagoma futura deve essere verificata dalle osservazioni correnti. Le pareti/barriere visibili, confermate dall'operatore, impediscono percorsi in collisione; un bordo solo disegnato a terra non sarebbe rilevabile. Non è implementato un riconoscimento automatico dei quattro lati dell'arena.
+**Come vengono trattati i bordi:** dimensioni dell'arena e scan matching non forniscono da soli la posa del rettangolo nel frame del robot. Non viene quindi inventato un rettangolo centrato sullo start. `WorldMap::bounds` contiene un inviluppo finito `[-D,+D] × [-D,+D]`, con `D = hypot(2.00,1.70) ≈ 2.625 m`: qualsiasi punto dell'arena può distare al massimo una diagonale dallo start, qualunque sia l'orientamento iniziale. È un limite numerico esterno, **non una garanzia di permanenza dentro un rettangolo fisico registrato**. Nessuno spazio dell'inviluppo è dichiarato libero. Gli endpoint misurati delle pareti/barriere vengono controllati contro ogni sagoma futura con margine; con `obstacles_only` i tratti non osservati non bloccano da soli il percorso. Un bordo solo disegnato a terra non sarebbe rilevabile. Non è implementato un riconoscimento automatico dei quattro lati dell'arena.
 
 Per missioni con coordinate fisiche note resta supportato `frame arena` insieme a `bounds min_x min_y max_x max_y`; il parser rifiuta di mescolare `frame start_reference` e bounds fisici. Le missioni precedenti con bounds espliciti senza `frame` mantengono il frame arena. Non vengono disabilitati controlli di collisione, freschezza, localizzazione, sagoma o frenata.
 
-Il profilo car misura 25 × 15 cm e conserva curvatura massima 1.8 m⁻¹, raggio minimo circa 56 cm. Lo start è libero, ma ciò non garantisce che goal e aggiramenti siano raggiungibili da qualsiasi posa: puntare il muso lungo la linea desiderata, lasciando spazio fisico per arrivare a 130 cm e aggirare gli ostacoli. Un ostacolo, una parete o spazio non osservato possono imporre SAFE_STOP. Non vengono ridotti margini o raggio minimo per far entrare la manovra.
+Il profilo car misura 25 × 15 cm e conserva curvatura massima 1.8 m⁻¹, raggio minimo circa 56 cm. Lo start è libero, ma ciò non garantisce che goal e aggiramenti siano raggiungibili da qualsiasi posa: puntare il muso lungo la linea desiderata, lasciando spazio fisico per arrivare a 130 cm e aggirare gli ostacoli. Un ostacolo o una parete misurati possono imporre SAFE_STOP; lo spazio non osservato lo impone soltanto con `strict`. Non vengono ridotti margini o raggio minimo per far entrare la manovra.
 
 Il matcher iniziale è **obbligatorio per questo preset**: `--no-start-matching` viene rifiutato. La nuova reference car dedicata è `datasets/localization/car_mixed_local_start.csv`; il vecchio file collegato allo start `(35,85)` non viene ereditato. La prima cattura nella posizione liberamente scelta stabilisce lo start. Le scansioni delle esecuzioni successive correggono la posa nel frame della cattura, senza spostare la reference road o il goal. Per scegliere un nuovo start fisico, acquisire una nuova reference, conservando quella precedente con un nome diverso. Per ripetere la stessa missione, riutilizzare la reference e riposizionare vicino allo stesso punto.
 
@@ -104,12 +121,13 @@ Il matcher corregge soltanto lo start. SLAM Toolbox resta il backend online: `--
 | `reaction_time_s` | 0.40 s | Comprende latenza sensori, elaborazione e comando; misurare sul Pi. |
 | `max_yaw_accel_rad_s2` | 0.60 rad/s² | Limite conservativo tracked e limite dinamico delle connessioni. |
 | `observation_memory_s` | 0.60 s | Memoria corta; occorrono nuove osservazioni quando scade. |
-| `max_beam_gap_rad` | 0.055 rad | Non riempire settori non osservati. |
+| `visibility_policy` | `strict` nel codice; `obstacles_only` nel file della missione | Con `obstacles_only` i settori non osservati non impediscono la traiettoria; restano collisioni, margini e freschezza. |
+| `max_beam_gap_rad` | 0.055 rad | Definisce la copertura osservata; blocca le traiettorie solo con `strict`. |
 | `max_pose_sigma_m`, `max_yaw_sigma_rad` | 0.60 m, 0.35 rad | Guardie sull'incertezza dell'EKF esistente; calibrare insieme alla localizzazione. |
 | `projection_back_m`, `projection_forward_m` | 0.08, 0.25 m | Impediscono salti di ramo senza bloccare la normale progressione. |
 | `gate_timeout_s`, `gate_reject_radius_m` | 30 s, 0.22 m | Lock bloccato e riacquisizione di aperture già superate. |
 | `gate_heading_search_rad` | 0.60 rad | Ampiezza degli orientamenti finali alternativi; non cambia la normale del gate o i limiti del car. |
-| `gate_exit_search_m` | 0.30 m | Estensione aggiuntiva campionata oltre l'uscita minima del gate; tutta la curva deve essere osservata. |
+| `gate_exit_search_m` | 0.30 m | Estensione aggiuntiva campionata oltre l'uscita minima del gate; tutta la curva viene controllata secondo la politica scelta. |
 
 Gli altri parametri configurabili sono elencati in `mixed_mission.h` / `hardware_mixed::Config`. Il profilo robot car/tank continua a determinare ingombro, encoder, diametro ruote, carreggiata e attuazione. Non usare lo stesso profilo per entrambi i robot.
 
@@ -219,7 +237,7 @@ CSV: stato, causa stop, posa/yaw, `s/n/delta_yaw`, goal, ID gate, contatori, tar
 
 `mixed_gate_search` riporta il numero reale di connessioni provate per gate e il conteggio di ogni risultato: `curvature_or_yaw_rate`, `aperture_crossing_rejected`, `occupied_footprint`, `unknown_footprint`, `accepted`. `mixed_candidate ... result=accepted` aggiunge punto e orientamento finale selezionati. Per vedere le nuove diagnosi: `rg 'mixed_footprint|mixed_gate_search|mixed_candidate|mixed_transition' reports/mixed-real/*.log`.
 
-Il report fisico `20261017_160347_774` ha matcher accettato, SLAM collegato (187 aggiornamenti) e distanza dalla carrozzeria di circa 30 cm dalla parete. Rimane un intervallo di circa 15° privo di ritorni utilizzabili attorno a −120° nel frame robot, che interseca il margine laterale/posteriore. Anche le ultime cinque scansioni negli ultimi 0,60 s non verificano quella zona. La nuova build lo segnala come `current_unknown_footprint`: questo è uno stop richiesto dai dati, non una prova fisica riuscita dopo il fix. Il JSON GUI non permette di distinguere una schermatura del LiDAR da ritorni scartati per range/qualità/sagoma.
+Il report fisico `20261017_160347_774` ha matcher accettato, SLAM collegato (187 aggiornamenti) e distanza dalla carrozzeria di circa 30 cm dalla parete. Rimane un intervallo di circa 15° privo di ritorni utilizzabili attorno a −120° nel frame robot, che interseca il margine laterale/posteriore. Anche le ultime cinque scansioni negli ultimi 0,60 s non verificano quella zona. La build diagnostica precedente lo segnalava come `current_unknown_footprint`; la stessa causa resta bloccante con `strict`, mentre la configurazione `obstacles_only` del 18 ottobre la disattiva. Il JSON GUI non permette di distinguere una schermatura del LiDAR da ritorni scartati per range/qualità/sagoma.
 
 Per analizzare il CSV raw già prodotto dalla cattura iniziale, senza aprire dispositivi o muovere il robot, sul Pi si può usare:
 
@@ -240,24 +258,26 @@ Con il profilo car 1.8.0 gli angoli raw +110…+130° corrispondono al settore r
 | C | Due ostacoli separati | Due cicli, ID distinti, due gate e due rejoin, nessun limite a due gate nel codice. |
 | D | Spostare fisicamente l'ostacolo e ripartire | Nessuna modifica di coordinate ostacolo/checkpoint; target diverso derivato dalle misure. |
 | E | Impedire il primo rientro | Rifiuto motivato del primo candidato e selezione più avanti oppure SAFE_STOP. |
-| F | Passaggio stretto / osservazioni insufficienti | Nessuna traiettoria non verificata, comando zero e causa leggibile. |
+| F | Passaggio stretto / osservazioni insufficienti | Stop se apertura misurata troppo stretta, LiDAR assente/scaduto o punti validi insufficienti. Un settore mancante da solo causa stop soltanto con `strict`. |
 
 Annotare misura e posizione fisica degli ostacoli solo nel resoconto della prova, non nella configurazione operativa. Non introdurre ostacoli durante un movimento senza una procedura controllata: per le prime prove fermare e riavviare.
 
 ## Limitazioni da verificare sul robot
 
-- Non è un global planner: se nessuna connessione locale interamente osservata è disponibile, si ferma. Non esplora spazio ignoto con manovre speculative e non implementa un recovery in retromarcia nuovo.
+- Non è un global planner: se nessuna connessione locale supera i controlli configurati, si ferma. Con `obstacles_only` una connessione può attraversare spazio non osservato; un ostacolo non misurato può sfuggire al controllo. Non implementa un recovery in retromarcia nuovo.
 - Il piano di un gate può non liberare un ostacolo lungo. Il rejoin successivo deve essere verificato; può terminare in stop in presenza di occlusioni. Non viene ipotizzata la forma completa dell'ostacolo da una scansione.
 - Il LiDAR è planare: oggetti fuori piano, superfici problematiche e dettagli fra i raggi non sono certificati dal controllo geometrico. Serve validazione reale del sensore e dei margini.
 - I limiti di frenata, errore posa e tracking sono parametri di ingegneria da misurare. La verifica offline non certifica accelerazioni o clearance effettive della piattaforma.
-- La memoria libera scade rapidamente; questa scelta può produrre stop conservativi. Rifiuti `unknown_footprint` non vanno eliminati trattando l'ignoto come libero.
+- La memoria delle osservazioni scade rapidamente. `strict` può produrre stop per copertura insufficiente; `obstacles_only` disattiva quel criterio senza modificare la mappa o aumentare la durata della memoria.
 - Il tracking viene mantenuto fra replanning; la sostituzione di una curva avviene dopo decelerazione/arresto. Non si promette un bypass senza soste.
 - ROAD e rejoin sono prioritariamente per una strada aperta. La proiezione locale previene salti ma non risolve una localizzazione iniziale sbagliata o una topologia globale ambigua.
 - La stima odometrica può superare il limite di covarianza prima della fine della missione lunga. SLAM feedback e calibrazione sono parte della validazione fisica necessaria.
 - La configurazione live di mappa/profilo è rifiutata nel nuovo preset. Ripartire dal launcher per cambiarla; nessuna nuova GUI è stata introdotta.
 - Compilazione e tempi misurati nell'ambiente di sviluppo non sostituiscono compilazione, latenza e prove sul Raspberry Pi 5.
 
-## Verifiche dello sviluppo
+## Verifiche dello sviluppo prima della modifica del 18 ottobre
+
+Le sezioni seguenti conservano risultati e diagnosi storici con copertura `strict`. Le indicazioni per recuperare la copertura non sono un prerequisito aggiuntivo della modalità `obstacles_only` richiesta successivamente; per i comandi attuali vedere l’aggiornamento in apertura.
 
 Eseguite il 17 ottobre 2026 nell'ambiente di sviluppo **Linux x86_64, GCC 15.2, Release**, con GUI disabilitata. Compilati con successo `thesis_robot_runner`, `thesis_hardware_mixed_navigation_test` e gli eseguibili necessari ai controlli sotto. Non è una compilazione eseguita sul Pi né una prova di movimento.
 
@@ -293,6 +313,47 @@ build-hardware-mixed/simulator/thesis_hardware_runtime_settings_smoke --mixed-op
 
 Aggiornamento dopo il report fisico `20261017_160347_774`: compilazione Release riuscita di runner e test hardware; **3/3 test offline passati in 0,91 s** (`thesis_hardware_mixed_navigation_offline`: 0,66 s; `thesis_start_matching_runtime`: 0,25 s; `thesis_slam_observation`: 0,00 s). La suite Mixed include connessioni alternative con limite car invariato, rifiuti per apertura stretta/collisioni/spazio ignoto, replan MPC con normale e ID stabili, e le cinque scansioni misurate del report. Quest'ultima regressione richiede lo stop `current_unknown_footprint`, non una falsa autorizzazione al moto. Verificati anche parser della missione senza connessione hardware e riepilogo Python dei CSV raw (qualità zero, self hit, settore assente, wrap angolare, schema errato). Log della build e dei test: `build-hardware-mixed/validation/gate-search-fix-{build,tests}.log`. Nessuna esecuzione sul Raspberry e nessun movimento fisico effettuati per questa correzione.
 
+## Verifica offline della visibilità iniziale (report delle 16:38)
+
+Diagnosi storica in modalità `strict`; il comando usa la politica presente nel file passato con `--mixed-config`.
+
+Il report `20261017_163834_681` conferma matching accettato (0,966124), SLAM collegato (83 aggiornamenti), 148 campioni `current_unknown_footprint` dopo 15 campioni di attesa iniziale. Non c'è movimento. Il punto che blocca la sagoma è circa `(-0.0586364,-0.165)` m: rispetto al LiDAR si trova a −123,10°, verso destra e dietro. Nella scansione finale i raggi esportati che lo delimitano sono −126,23° e −112,70°, separati da 13,53°; il limite resta 3,15°. La ricostruzione GUI contiene punti già filtrati, non tutti i ritorni raw.
+
+**Contare i punti in un settore non certifica che il settore sia interamente osservato.** I 55 ritorni accettati dalla cattura nell'intervallo raw 110–130° possono trovarsi ai bordi della lacuna centrale. Il riepilogo Python ora mostra angolo, range, qualità e motivo del filtro per ogni ritorno del settore, separatamente per scansione.
+
+Il runner aggiunge `--check-mixed-scan`: legge un CSV raw di una singola cattura stazionaria con la stessa conversione, specchiatura, filtri e controllo della sagoma del runtime Mixed. La memoria rimane di 0,60 s e non viene fusa tutta la cattura in una mappa permanentemente libera. Le colonne `accepted` del matcher non vengono usate come autorizzazione: per esempio qualità zero viene rifiutata dal planner anche se il matcher aveva conservato il punto. Ritorni positivi oltre la portata del planner sono limitati alla portata come nel runtime, senza creare un ostacolo artificiale sul limite. Un CSV con tempi incoerenti o acquisizioni distinte viene rifiutato.
+
+Dopo aver aggiornato i sorgenti sul Raspberry, con il runner precedente fermo:
+
+```sh
+cd ~/Desktop/Autonomus-Agent
+cmake --build build-hardware-mixed \
+  --target thesis_robot_runner thesis_hardware_mixed_navigation_test thesis_hardware_runtime_settings_smoke -j 2 && \
+ctest --test-dir build-hardware-mixed \
+  -R '^thesis_hardware_mixed_navigation_offline$' --output-on-failure && \
+build-hardware-mixed/simulator/thesis_hardware_runtime_settings_smoke --mixed-options
+```
+
+Nel terminale che conserva `MIXED_REFERENCE`, verificare **la cattura già salvata**, senza avviare controller, LiDAR, rete o motori:
+
+```sh
+build-hardware-mixed/simulator/thesis_robot_runner \
+  --scenario mixed --mixed-map goal_directed_dynamic \
+  --mixed-config config/mixed_goal_directed_dynamic.conf \
+  --vehicle-model car --calibration-profile config/robots/car_calibrated.json \
+  --check-mixed-scan "${MIXED_REFERENCE%.csv}_raw_scans.csv"
+```
+
+L'output riporta `hardware_connected=0 motor_controller_opened=0 motion_authorized=0`, i conteggi dei filtri e, se manca copertura, i due raggi che delimitano il punto responsabile del rifiuto. Exit code **3** e `mixed_start_footprint=blocked` sono un risultato diagnostico, non un errore di avvio. Exit code **0** riporta `observed_clear` con `strict`, oppure `measured_obstacles_clear full_visibility_verified=0` con `obstacles_only`. Questi risultati descrivono soltanto l'ultima sagoma registrata: non certificano la strada, i gate, lo stato presente dei sensori o il successo di una missione. Non è una prova breve con movimento.
+
+Il log live aggiunge `mixed_visibility cause=beam_gap|range_occluded|no_fresh_beams`, estremi del settore, range, età e conteggi dei filtri quando compare lo stop. Se la cattura supera il controllo ma le scansioni live no, confrontare queste informazioni: una reference storica non sostituisce osservazioni live mancanti.
+
+Per risolvere un settore effettivamente non osservato occorre intervenire sulle misure: verificare la linea di vista del LiDAR nel settore indicato, possibili schermature di cavi/supporti e superfici che non restituiscono misure valide. Dai soli endpoint esportati non si distingue una schermatura da perdita in acquisizione o ritorni invalidi. Non alzare la soglia angolare né ridurre i margini per aggirare lo stop. Se si cambia montaggio, correggere gli estrinseci e acquisire una nuova reference; se si cambia posa, catturare una nuova reference. Lo start resta libero.
+
+La modifica diagnostica precedente non cambiava i criteri di movimento: lo stesso insieme incompleto richiedeva ancora stop. La successiva politica `obstacles_only`, descritta in apertura, modifica esplicitamente quel comportamento; la partenza fisica resta da verificare. Simulation planner, preset e GUI restano invariati.
+
+Verifica locale Linux x86_64: build Release del runner e degli harness riuscita; **3/3 CTest offline passati in 0,86 s**, più `thesis_hardware_runtime_settings_smoke --mixed-options` (parser e controllo raw). La CLI reale è stata eseguita senza porte su fixture di scansione completa, settore mancante, qualità zero e replay degli endpoint esportati: rispettivamente exit code 0, 3, 3, 3, sempre `motion_authorized=0`. Il replay degli endpoint non ricostruisce ritorni raw non esportati. Artefatti in `reports/mixed_visibility_20261017/`. Nessuna build sul Pi o prova fisica è stata eseguita dall’assistente.
+
 ## Elenco dei file della modifica
 
 Ogni modifica sotto `simulator/` appartiene all'infrastruttura hardware condivisa o ai suoi test; nessuna modifica al comportamento simulato viene abilitata.
@@ -326,3 +387,14 @@ Ogni modifica sotto `simulator/` appartiene all'infrastruttura hardware condivis
 | `simulator/src/tests/integration/hardware_runtime_settings_test.cpp` | Controlli delle nuove opzioni hardware. |
 
 `planning.inc` e `trajectory.inc` sono stati analizzati e rimangono invariati: il dispatch hardware sceglie la macchina a stati dedicata prima di entrarvi; i vecchi runtime continuano a usarli come prima.
+
+La [figura della scansione](../reports/mixed_visibility_20261017/visibility_163834.png) suggerisce che la lacuna verso destra/dietro coincida con un’interruzione dei ritorni fra due tratti del perimetro. È un’inferenza dalla point cloud, non una prova di una schermatura o di un varco fisico. Controllare quel tratto e, se manca una superficie rilevabile, completarlo con una barriera stabile e opaca visibile all’altezza del LiDAR, fuori dalla sagoma del robot. Acquisire poi una nuova reference e verificarla offline. Questo intervento aggiunge misure reali; non dichiara libero spazio non osservato.
+
+
+## Aggiornamento 18 ottobre 2026: CSV raw analizzato
+
+Il raw della cattura `20261017_160242_473086656`, ora disponibile sul PC, è stato verificato con la CLI offline. La conversione Mixed conserva tutti i 2.582 ritorni, senza scarti per qualità, range minimo o sagoma. I 10 ritorni oltre 2,5 m sono già conservati dal planner come raggi limitati alla portata: il filtro di range del matcher non è la causa dello stop. Nessun ritorno raw appare fra 117 e 123° nelle dieci scansioni. La migliore coppia recente attorno al punto bloccante è separata da 7,50°, contro 3,15° ammessi. Il controllo restituisce `unknown_footprint` senza aprire dispositivi.
+
+Restano 13 campioni non verificati del margine sulle ultime cinque scansioni: 8 posteriori destri e 5 anteriori destri. Occorre controllare entrambe le direzioni, non soltanto la prima riportata nel log. Il raw esportato non contiene i nodi a distanza zero, quindi non dimostra da solo se manchino ritorni fisici o nodi del flusso seriale. Prima della successiva missione controllare visibilità e continuità delle barriere all'altezza del laser, acquisire una nuova reference stazionaria e verificarla offline. Non aumentare la soglia né ridurre il margine per forzare il movimento.
+
+Nuova regressione sulle cinque scansioni raw originali (1.293 punti), build locale dell'harness e `--mixed-options`: PASS. Nessuna modifica ai controlli di movimento o al simulatore. [Analisi completa e comandi della cattura](../reports/mixed_raw_20261018/Analisi_raw_e_prossimo_controllo.md).

@@ -79,7 +79,11 @@ int main(int argc, char** argv) {
             planner_config.pwm.yaw_rate_target_slew_rate_rad_s2 = planner_config.mixed_dynamic.max_yaw_accel_rad_s2;
             if (options.check_mixed_config) {
                 HardwarePlannerRunner check(world, bridge_options, planner_config);
+                if(!options.check_mixed_scan_path.empty())
+                    return check_mixed_start_scan(options.check_mixed_scan_path,world,check,std::cout);
                 std::cout << "MixedGoalDirectedDynamic configuration valid; hardware not connected\n";
+                std::cout << "mixed_visibility_policy="
+                          << thesis_sim::hardware_mixed::visibility_policy_name(planner_config.mixed_dynamic.visibility_policy) << '\n';
                 const auto& bounds = world.bounds();
                 std::cout << "mixed_frame=" << (planner_config.mixed_dynamic.start_reference_frame ? "start_reference" : "arena") << '\n'
                           << "mixed_bounds_kind=" << (planner_config.mixed_dynamic.start_reference_frame ? "unregistered_local_envelope" : "registered_arena") << '\n'

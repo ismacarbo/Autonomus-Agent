@@ -83,6 +83,14 @@ def summarize_raw_scan(path, sector):
               if math.isfinite(float(row["range_m"])) and float(row["range_m"]) > 0]
     counts = collections.Counter((row.get("acquisition_index", "0"), row["scan_index"]) for row in selected)
     scans = sorted({(row.get("acquisition_index", "0"), row["scan_index"]) for row in rows})
+    # Counts alone hide a persistent hole between populated sector edges.
+    # Show the actual angles for every scan, without merging different times.
+    angle_rows = collections.defaultdict(list)
+    for row in selected:
+        angle_rows[(row.get("acquisition_index", "0"), row["scan_index"])].append({
+            "angle_deg": float(row["angle_deg"]), "range_m": float(row["range_m"]),
+            "quality": int(float(row["quality"])), "capture_filter": row["rejection_reason"],
+        })
     return {
         "recording": str(path), "raw_sector_deg": list(sector),
         "angle_convention": "sensor raw degrees; car profile 1.8.0 mirrors these into body angles",
@@ -92,7 +100,9 @@ def summarize_raw_scan(path, sector):
         "capture_rejection_reasons": dict(collections.Counter(row["rejection_reason"] for row in selected)),
         "range_min_m": min(ranges) if ranges else None,
         "range_max_m": max(ranges) if ranges else None,
-        "per_scan": [{"acquisition": a, "scan": s, "sector_points": counts[a, s]} for a, s in scans],
+        "per_scan": [{"acquisition": a, "scan": s, "sector_points": counts[a, s],
+                      "returns": sorted(angle_rows[a, s], key=lambda p: (p["angle_deg"]-start)%360)}
+                     for a, s in scans],
         "limitation": "Capture filters differ from navigation filters; missing exported returns do not distinguish sensor occlusion from acquisition loss. This is not motion authorization.",
     }
 

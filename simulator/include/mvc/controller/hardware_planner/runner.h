@@ -615,6 +615,10 @@ class HardwarePlannerRunner {
     const WorldMap& world() const { return world_; }
     const HardwarePlannerConfig& config() const { return config_; }
     const VehicleGeometry& geometry() const { return geometry_; }
+    // Pure scan conversion shared by Mixed navigation and its offline raw-CSV
+    // checker. Does not open a device, update state, or issue a command.
+    hardware_mixed::Scan mixed_observed_scan(const RealRobotObservation& observation,
+                                             double timestamp, double age_s = 0.0) const;
     const HardwarePlannerEstimate& estimate() const { return estimate_; }
     const HardwareControlCommand& last_command() const { return last_command_; }
     const std::optional<MpcCommand>& last_mpc_command() const { return last_mpc_command_; }

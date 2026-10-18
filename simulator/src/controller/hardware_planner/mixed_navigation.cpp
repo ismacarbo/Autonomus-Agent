@@ -42,6 +42,10 @@ const char* state_name(State s) {
     return "SAFE_STOP";
 }
 
+const char* visibility_policy_name(VisibilityPolicy policy) {
+    return policy==VisibilityPolicy::Strict?"strict":"obstacles_only";
+}
+
 void ReferenceRoad::build(const std::vector<Vec2>& points, double yaw) {
     if (points.size() < 2 || !std::isfinite(yaw) || distance(points.front(), points.back()) < 0.10)
         throw std::invalid_argument("MixedGoalDirectedDynamic requires an open reference road");
@@ -185,6 +189,11 @@ void ObservedSpace::add(Scan scan,double memory) {
 }
 
 bool ObservedSpace::known_free(const Vec2& p,double now,const Config& cfg) const {
+    return visibility(p,now,cfg).free;
+}
+
+Visibility ObservedSpace::visibility(const Vec2& p,double now,const Config& cfg) const {
+    Visibility best;
     for(auto it=scans_.rbegin();it!=scans_.rend();++it) {
         const auto& scan=*it;
         if(now-scan.timestamp>cfg.observation_memory_s || scan.rays.size()<2) continue;
@@ -194,12 +203,19 @@ bool ObservedSpace::known_free(const Vec2& p,double now,const Config& cfg) const
         const Ray& right=upper==scan.rays.end()?scan.rays.front():*upper;
         const Ray& left=upper==scan.rays.begin()?scan.rays.back():*(upper-1);
         double gap=right.angle-left.angle; if(gap<=0)gap+=2*pi;
-        // Only interpolate tightly adjacent measured beams. Missing returns are unknown.
-        if(gap>cfg.max_beam_gap_rad) continue;
         const double radius=std::min(left.range,right.range)*std::cos(gap/2)-cfg.sample_spacing_m;
-        if(distance(p,scan.origin)<radius) return true;
+        Visibility candidate;
+        candidate.has_bracket=true;candidate.angle=a;candidate.distance=distance(p,scan.origin);
+        candidate.gap=gap;candidate.age=now-scan.timestamp;
+        candidate.left_angle=left.angle;candidate.right_angle=right.angle;
+        candidate.left_range=left.range;candidate.right_range=right.range;
+        // Only interpolate tightly adjacent measured beams. Missing returns are unknown.
+        candidate.free=gap<=cfg.max_beam_gap_rad && candidate.distance<radius;
+        candidate.reason=candidate.free?"observed":gap>cfg.max_beam_gap_rad?"beam_gap":"range_occluded";
+        if(candidate.free) return candidate;
+        if(!best.has_bracket || candidate.gap<best.gap) best=candidate;
     }
-    return false;
+    return best;
 }
 
 PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
@@ -207,6 +223,13 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
                                   const Rect& bounds,double now,const Config& cfg) const {
     PathResult result; result.reason="no_reference";
     if(path.size()<2) return result;
+    if(cfg.visibility_policy==VisibilityPolicy::ObstaclesOnly) {
+        const bool fresh=std::any_of(scans_.begin(),scans_.end(),[&](const Scan& scan){
+            const double age=now-scan.timestamp;
+            return std::isfinite(age) && age>=0 && age<=cfg.observation_memory_s && scan.rays.size()>=2;
+        });
+        if(!fresh) {result.reason="no_fresh_observations";return result;}
+    }
     const double step=cfg.sample_spacing_m;
     // Half a grid diagonal plus path discretisation covers unsampled footprint cells.
     double motion_margin=0;
@@ -244,7 +267,8 @@ PathResult ObservedSpace::validate(const std::vector<ReferenceWaypoint>& path,
             }
             // The physical body at the current pose is occupied by the robot,
             // not an inference that its unobserved surroundings are free.
-            if(!inside(p,current,g.body_length/2,g.body_width/2) && !known_free(p,now,cfg)) {
+            if(cfg.visibility_policy==VisibilityPolicy::Strict &&
+               !inside(p,current,g.body_length/2,g.body_width/2) && !known_free(p,now,cfg)) {
                 result.reason="unknown_footprint";result.witness=p;result.has_witness=true;return result;
             }
         }
